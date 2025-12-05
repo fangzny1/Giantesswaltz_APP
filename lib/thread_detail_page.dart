@@ -424,8 +424,17 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
           var floorNode = div.querySelector('.pi strong a em');
           String floorText = floorNode?.text ?? "${floorIndex++}楼";
 
+          // === 【核心修复】同时获取正文和附件列表 ===
           var contentNode = div.querySelector('td.t_f');
           String content = contentNode?.innerHtml ?? "";
+
+          // 修复：获取手机端上传/未插入正文的图片附件 (.pattl)
+          var attachmentNode = div.querySelector('.pattl');
+          if (attachmentNode != null) {
+            // 将附件列表的 HTML 拼接到正文后面
+            content +=
+                "<br><div class='attachments'>${attachmentNode.innerHtml}</div>";
+          }
 
           // === Step 2: 内容清洗与链接替换 ===
           content = content.replaceAll(r'\n', '<br>');

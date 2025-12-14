@@ -1,4 +1,4 @@
-package com.example.flutter_giantessnight_1
+package com.example.giantessnight_app
 
 import io.flutter.embedding.android.FlutterActivity
 

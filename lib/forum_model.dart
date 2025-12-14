@@ -97,13 +97,16 @@ class BookmarkItem {
   final String author;
   final int page; // 看到第几页了
   final String savedTime; // 保存时间
-
+  final String authorId; // 【新增】保存楼主UID
+  final bool isNovelMode;
   BookmarkItem({
     required this.tid,
     required this.subject,
     required this.author,
+    required this.authorId,
     required this.page,
     required this.savedTime,
+    this.isNovelMode = false,
   });
 
   // 转 JSON 存本地
@@ -112,7 +115,9 @@ class BookmarkItem {
     'subject': subject,
     'author': author,
     'page': page,
+
     'savedTime': savedTime,
+    'isNovelMode': isNovelMode,
   };
 
   factory BookmarkItem.fromJson(Map<String, dynamic> json) {
@@ -120,8 +125,10 @@ class BookmarkItem {
       tid: json['tid'],
       subject: json['subject'],
       author: json['author'],
+      authorId: json['authorId'] ?? "", // 【新增】兼容旧数据
       page: json['page'] ?? 1,
       savedTime: json['savedTime'],
+      isNovelMode: json['isNovelMode'] ?? false, // 读取状态，兼容旧数据
     );
   }
 }

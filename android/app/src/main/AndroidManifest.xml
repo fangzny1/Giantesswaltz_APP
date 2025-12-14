@@ -1,13 +1,37 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
-    
-    <!-- 【重点】网络权限加在这里！必须在 application 外面 -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.example.giantessnight_app"> <!-- 【重要】确认这里的包名和 build.gradle 里的一致 -->
+
+    <!-- ========================================== -->
+    <!-- 1. 网络权限 (基础 + 状态检测)             -->
+    <!-- ========================================== -->
     <uses-permission android:name="android.permission.INTERNET"/>
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE"/>
+
+    <!-- ========================================== -->
+    <!-- 2. 存储权限 (分版本兼容)                  -->
+    <!-- ========================================== -->
+    
+    <!-- Android 9 (API 28) 及以下：需要写权限才能保存图片 -->
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29"/>
+    
+    <!-- Android 12 (API 32) 及以下：读取图片的权限 -->
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32"/>
+
+    <!-- Android 13 (API 33) 及以上：必须使用细分媒体权限 -->
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES"/>
+    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO"/>
 
     <application
         android:label="GiantessNight"
         android:name="${applicationName}"
-        android:usesCleartextTraffic="true" 
-        android:icon="@mipmap/launcher_icon">
+        android:icon="@mipmap/launcher_icon"
+        android:usesCleartextTraffic="true"
+        android:requestLegacyExternalStorage="true" 
+        android:enableOnBackInvokedCallback="true">
+        
+        <!-- (注意：上面加了 requestLegacyExternalStorage 是为了兼容 Android 10 的过渡期) -->
+
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -17,10 +41,6 @@
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
             android:hardwareAccelerated="true"
             android:windowSoftInputMode="adjustResize">
-            <!-- Specifies an Android theme to apply to this Activity as soon as
-                 the Android process has started. This theme is visible to the user
-                 while the Flutter UI initializes. After that, this theme continues
-                 to determine the Window background behind the Flutter UI. -->
             <meta-data
               android:name="io.flutter.embedding.android.NormalTheme"
               android:resource="@style/NormalTheme"
@@ -30,14 +50,11 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
-        <!-- Don't delete the meta-data below.
-             This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
     </application>
 
-    <!-- 查询权限配置 -->
     <queries>
          <intent>
             <action android:name="android.intent.action.VIEW" />

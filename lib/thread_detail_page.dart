@@ -1,14 +1,15 @@
 import 'dart:convert';
-import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_giantessnight_1/image_preview_page.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 import 'package:html/parser.dart' as html_parser;
 import 'package:flutter_widget_from_html/flutter_widget_from_html.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:cached_network_image/cached_network_image.dart'; // 建议引入这个库
+import 'package:flutter_cache_manager/flutter_cache_manager.dart';
 
-// 引入其他页面 (确保这些文件存在)
 import 'login_page.dart';
 import 'user_detail_page.dart';
 import 'forum_model.dart';
@@ -39,12 +40,15 @@ class ThreadDetailPage extends StatefulWidget {
   final String tid;
   final String subject;
   final int initialPage;
-
+  final bool initialNovelMode;
+  final String? initialAuthorId;
   const ThreadDetailPage({
     super.key,
     required this.tid,
     required this.subject,
     this.initialPage = 1,
+    this.initialNovelMode = false,
+    this.initialAuthorId,
   });
 
   @override
@@ -65,15 +69,17 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
   bool _isLoadingPrev = false;
   bool _hasMore = true;
 
+  // 功能开关
   bool _isOnlyLandlord = false;
   bool _isReaderMode = false;
+  bool _isNovelMode = false; // 【新增】小说模式
   bool _isFabOpen = false;
 
   bool _isFavorited = false;
   String? _favid;
 
-  double _fontSize = 16.0;
-  Color _readerBgColor = const Color(0xFFFAF9DE);
+  double _fontSize = 18.0; // 默认字体调大一点点，适合阅读
+  Color _readerBgColor = const Color(0xFFFAF9DE); // 默认羊皮纸
   Color _readerTextColor = Colors.black87;
 
   late AnimationController _fabAnimationController;
@@ -85,9 +91,16 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
 
   String? _landlordUid;
   final String _baseUrl = "https://www.giantessnight.com/gnforum2012/";
-
-  // 存储 Cookie
   String _userCookies = "";
+
+  // 自定义缓存管理器（保存7天，最多500张图）
+  final customCacheManager = CacheManager(
+    Config(
+      'gn_forum_imageCache',
+      stalePeriod: const Duration(days: 7),
+      maxNrOfCacheObjects: 500,
+    ),
+  );
 
   @override
   void initState() {
@@ -105,9 +118,46 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
       curve: Curves.easeInOut,
     );
 
+    _loadSettings(); // 【新增】加载背景色设置
+    if (widget.initialNovelMode) {
+      _isNovelMode = true;
+      _isOnlyLandlord = true;
+      _isReaderMode = true;
+      SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+
+      // 【关键】如果有传入楼主ID，直接赋值！
+      // 这样 _loadPage 发送请求时就会带上 &authorid=xxx，服务器就能返回正确的页码
+      if (widget.initialAuthorId != null &&
+          widget.initialAuthorId!.isNotEmpty) {
+        _landlordUid = widget.initialAuthorId;
+      }
+    }
     _initWebView();
     _initFavCheck();
     _scrollController.addListener(_onScroll);
+  }
+
+  // 加载用户之前的阅读偏好
+  Future<void> _loadSettings() async {
+    final prefs = await SharedPreferences.getInstance();
+    int? colorVal = prefs.getInt('reader_bg_color');
+    if (colorVal != null) {
+      setState(() {
+        _readerBgColor = Color(colorVal);
+        // 简单的反色逻辑，如果是深色背景，字变白
+        if (_readerBgColor.computeLuminance() < 0.5) {
+          _readerTextColor = Colors.white70;
+        } else {
+          _readerTextColor = Colors.black87;
+        }
+      });
+    }
+  }
+
+  // 保存设置
+  Future<void> _saveSettings(Color color) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt('reader_bg_color', color.value);
   }
 
   @override
@@ -120,7 +170,8 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
 
   void _onScroll() {
     if (_scrollController.position.pixels >=
-        _scrollController.position.maxScrollExtent - 500) {
+        _scrollController.position.maxScrollExtent - 800) {
+      // 稍微提前一点加载
       _loadNext();
     }
   }
@@ -132,7 +183,6 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
       ..setNavigationDelegate(
         NavigationDelegate(
           onPageFinished: (url) async {
-            // 1. 同步 Cookie
             try {
               final String cookies =
                   await _hiddenController.runJavaScriptReturningResult(
@@ -154,7 +204,6 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
             } catch (e) {
               print("Cookie 同步失败: $e");
             }
-            // 2. 解析
             _parseHtmlData();
           },
         ),
@@ -222,6 +271,51 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
     });
   }
 
+  // 【核心功能】切换小说模式
+  void _toggleNovelMode() {
+    if (_landlordUid == null) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text("正在获取楼主信息，请稍候...")));
+      return;
+    }
+
+    setState(() {
+      _isNovelMode = !_isNovelMode;
+
+      // 开启小说模式 = 开启只看楼主 + 开启阅读模式
+      if (_isNovelMode) {
+        _isOnlyLandlord = true;
+        _isReaderMode = true;
+        // 沉浸式状态栏
+        SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+
+        // 重置列表，重新加载只看楼主的数据
+        _posts.clear();
+        _minPage = 1;
+        _maxPage = 1;
+        _targetPage = 1;
+        _isLoading = true;
+        _loadPage(1);
+      } else {
+        // 关闭小说模式，恢复普通模式
+        _isOnlyLandlord = false;
+        _isReaderMode = false;
+        SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+
+        // 重新加载全部回复
+        _posts.clear();
+        _minPage = 1;
+        _maxPage = 1;
+        _targetPage = 1;
+        _isLoading = true;
+        _loadPage(1);
+      }
+      _toggleFab();
+    });
+  }
+
+  // 切换普通阅读模式（不强制只看楼主）
   void _toggleReaderMode() {
     setState(() {
       _isReaderMode = !_isReaderMode;
@@ -270,6 +364,118 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
     }
   }
 
+  void _showSaveBookmarkDialog() {
+    if (_posts.isEmpty) return;
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Theme.of(context).cardColor,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (context) {
+        return Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.all(16.0),
+              child: Text(
+                "选择你读到的楼层进行存档",
+                style: TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.bold,
+                  color: Theme.of(context).primaryColor,
+                ),
+              ),
+            ),
+            Expanded(
+              child: ListView.builder(
+                itemCount: _posts.length,
+                itemBuilder: (context, index) {
+                  // 倒序显示，因为大家通常是看到最新的（最底下）
+                  // 如果想正序（从第1楼开始），就用 final post = _posts[index];
+                  final int reverseIndex = _posts.length - 1 - index;
+                  final post = _posts[reverseIndex];
+
+                  // 简单的摘要提取
+                  String summary = post.contentHtml
+                      .replaceAll(RegExp(r'<[^>]*>'), '') // 去掉HTML标签
+                      .replaceAll('&nbsp;', ' ')
+                      .trim();
+                  if (summary.length > 30)
+                    summary = "${summary.substring(0, 30)}...";
+                  if (summary.isEmpty) summary = "[图片/表情]";
+
+                  return ListTile(
+                    leading: CircleAvatar(
+                      backgroundColor: Theme.of(
+                        context,
+                      ).colorScheme.primaryContainer,
+                      child: Text(
+                        post.floor.replaceAll("楼", ""),
+                        style: const TextStyle(fontSize: 12),
+                      ),
+                    ),
+                    title: Text(
+                      post.author,
+                      style: const TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                    subtitle: Text(
+                      summary,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    trailing: const Icon(Icons.bookmark_add_outlined),
+                    onTap: () {
+                      // 【核心逻辑】保存选中的这一楼
+                      // 我们假设每一页有 10 楼（Discuz 默认），反推页码
+                      // 但为了稳妥，我们直接保存当前加载到的最大页码 _maxPage
+                      // 或者，如果你希望保存这个楼层所在的具体位置，需要后端支持，这里我们先保存 _maxPage
+                      // 这样下次进来，至少能保证这一楼是加载出来的
+                      _saveBookmarkWithFloor(post.floor, _maxPage);
+                      Navigator.pop(context);
+                    },
+                  );
+                },
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Future<void> _saveBookmarkWithFloor(String floorName, int pageToSave) async {
+    final prefs = await SharedPreferences.getInstance();
+    String? jsonStr = prefs.getString('local_bookmarks');
+    List<dynamic> jsonList = [];
+    if (jsonStr != null && jsonStr.startsWith("["))
+      jsonList = jsonDecode(jsonStr);
+
+    String subjectSuffix = _isNovelMode ? " (小说)" : "";
+
+    final newMark = BookmarkItem(
+      tid: widget.tid,
+      subject: widget.subject.replaceAll(" (小说)", "") + subjectSuffix,
+      author: _posts.isNotEmpty ? _posts.first.author : "未知",
+      authorId: _landlordUid ?? "",
+      page: pageToSave, // 保存当前最大页码
+      // 这里的 savedTime 我们利用一下，存入具体的楼层信息，方便列表显示
+      savedTime:
+          "${DateTime.now().toString().substring(5, 16)} · 读至 $floorName",
+      isNovelMode: _isNovelMode,
+    );
+
+    jsonList.removeWhere((e) => e['tid'] == widget.tid);
+    jsonList.insert(0, newMark.toJson());
+    await prefs.setString('local_bookmarks', jsonEncode(jsonList));
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text("已保存进度：第 $pageToSave 页 - $floorName")),
+      );
+    }
+  }
+
   Future<void> _saveBookmark() async {
     final prefs = await SharedPreferences.getInstance();
     String? jsonStr = prefs.getString('local_bookmarks');
@@ -277,12 +483,17 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
     if (jsonStr != null && jsonStr.startsWith("["))
       jsonList = jsonDecode(jsonStr);
 
+    // 【优化】书签标题加上模式标识
+    String subjectSuffix = _isNovelMode ? " (小说模式)" : "";
+
     final newMark = BookmarkItem(
       tid: widget.tid,
       subject: widget.subject,
       author: _posts.isNotEmpty ? _posts.first.author : "未知",
+      authorId: _landlordUid ?? "",
       page: _maxPage,
       savedTime: DateTime.now().toString().substring(0, 16),
+      isNovelMode: _isNovelMode,
     );
 
     jsonList.removeWhere((e) => e['tid'] == widget.tid);
@@ -306,6 +517,9 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
     }
     setState(() {
       _isOnlyLandlord = !_isOnlyLandlord;
+      // 如果手动切换只看楼主，退出小说模式状态（逻辑上解耦）
+      if (!_isOnlyLandlord) _isNovelMode = false;
+
       _posts.clear();
       _minPage = 1;
       _maxPage = 1;
@@ -317,6 +531,7 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
     _loadPage(1);
   }
 
+  // ... _parseFavList 保持不变 (略，为了节省篇幅，逻辑未变)
   Future<void> _parseFavList() async {
     try {
       final String rawHtml =
@@ -363,12 +578,8 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
       String cleanHtml = _cleanHtml(rawHtml);
       var document = html_parser.parse(cleanHtml);
 
-      // 【Step 1】 建立 AID -> 静态 URL 映射表
-      // Discuz 会在页面底部（ignore_js_op 或 pattl）列出所有附件，
-      // 并提供 img[aid] 和 zoomfile (静态链接)
+      // 1. 建立 AID -> 静态 URL 映射
       Map<String, String> aidToStaticUrl = {};
-
-      // 查找所有带有 aid 属性且有 zoomfile 的 img 标签
       var attachmentImgs = document.querySelectorAll('img[aid][zoomfile]');
       for (var img in attachmentImgs) {
         String? aid = img.attributes['aid'];
@@ -377,19 +588,15 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
           aidToStaticUrl[aid] = url;
         }
       }
-      // 补充：有时候是 file 属性存静态链
       for (var img in attachmentImgs) {
         String? aid = img.attributes['aid'];
         String? url = img.attributes['file'];
         if (aid != null && url != null && url.contains("data/attachment")) {
-          // 如果 zoomfile 没存，用 file 补
           if (!aidToStaticUrl.containsKey(aid)) {
             aidToStaticUrl[aid] = url;
           }
         }
       }
-
-      print("🔎 发现附件静态映射: ${aidToStaticUrl.length} 个");
 
       List<PostItem> newPosts = [];
       var postDivs = document.querySelectorAll('div[id^="post_"]');
@@ -424,28 +631,25 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
           var floorNode = div.querySelector('.pi strong a em');
           String floorText = floorNode?.text ?? "${floorIndex++}楼";
 
-          // === 【核心修复】同时获取正文和附件列表 ===
+          // === 修复：拼接 .pattl 附件区到正文 ===
           var contentNode = div.querySelector('td.t_f');
           String content = contentNode?.innerHtml ?? "";
-
-          // 修复：获取手机端上传/未插入正文的图片附件 (.pattl)
           var attachmentNode = div.querySelector('.pattl');
           if (attachmentNode != null) {
-            // 将附件列表的 HTML 拼接到正文后面
             content +=
                 "<br><div class='attachments'>${attachmentNode.innerHtml}</div>";
           }
+          // =================================
 
-          // === Step 2: 内容清洗与链接替换 ===
+          // === 清洗内容 ===
           content = content.replaceAll(r'\n', '<br>');
           content = content.replaceAll('<div class="mbn savephotop">', '<div>');
 
+          // 智能替换图片
           content = content.replaceAllMapped(
             RegExp(r'<img[^>]+>', dotAll: true),
             (match) {
               String imgTag = match.group(0)!;
-
-              // 提取属性
               String? zoomUrl = RegExp(
                 r'zoomfile="([^"]+)"',
               ).firstMatch(imgTag)?.group(1);
@@ -456,37 +660,27 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
                 r'src="([^"]+)"',
               ).firstMatch(imgTag)?.group(1);
 
-              // 尝试提取 AID (从 URL 中提取)
-              // 常见的动态链接: forum.php?mod=image&aid=129125&...
               String? aidFromUrl;
               RegExp aidReg = RegExp(r'aid=(\d+)');
-
-              if (fileUrl != null) {
+              if (fileUrl != null)
                 aidFromUrl = aidReg.firstMatch(fileUrl)?.group(1);
-              }
-              if (aidFromUrl == null && srcUrl != null) {
+              if (aidFromUrl == null && srcUrl != null)
                 aidFromUrl = aidReg.firstMatch(srcUrl)?.group(1);
-              }
 
               String bestUrl = "";
 
-              // 【策略 1】 如果有 AID 且在静态映射表中存在，直接用静态链接 (100% 解决 WAF/缩略图问题)
               if (aidFromUrl != null &&
                   aidToStaticUrl.containsKey(aidFromUrl)) {
                 bestUrl = aidToStaticUrl[aidFromUrl]!;
-                // print("✅ 成功替换动态链接 aid=$aidFromUrl -> $bestUrl");
-              }
-              // 【策略 2】 否则按照优先级寻找静态属性
-              else if (zoomUrl != null && zoomUrl.contains("data/attachment")) {
+              } else if (zoomUrl != null &&
+                  zoomUrl.contains("data/attachment")) {
                 bestUrl = zoomUrl;
               } else if (fileUrl != null &&
                   fileUrl.contains("data/attachment")) {
                 bestUrl = fileUrl;
               } else if (srcUrl != null && srcUrl.contains("data/attachment")) {
                 bestUrl = srcUrl;
-              }
-              // 【策略 3】 实在没办法，只能用动态链接，但要清洗
-              else if (fileUrl != null && fileUrl.isNotEmpty) {
+              } else if (fileUrl != null && fileUrl.isNotEmpty) {
                 bestUrl = fileUrl;
               } else if (srcUrl != null && srcUrl.isNotEmpty) {
                 if (!srcUrl.contains("loading.gif") &&
@@ -497,18 +691,13 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
               }
 
               if (bestUrl.isNotEmpty) {
-                // 1. 修复 HTML 实体
                 bestUrl = bestUrl.replaceAll('&amp;', '&');
-
-                // 2. 清洗动态链接 (强力去毒)
                 if (bestUrl.contains("mod=image")) {
                   bestUrl = bestUrl.replaceAll(RegExp(r'&mobile=[0-9]+'), '');
                   bestUrl = bestUrl.replaceAll(RegExp(r'&mobile=yes'), '');
                   bestUrl = bestUrl.replaceAll(RegExp(r'&mobile=no'), '');
                   bestUrl = bestUrl.replaceAll('&type=fixnone', '');
                 }
-
-                // 3. 补全路径
                 if (!bestUrl.startsWith('http')) {
                   String base = _baseUrl.endsWith('/')
                       ? _baseUrl
@@ -518,7 +707,6 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
                       : bestUrl;
                   bestUrl = base + path;
                 }
-
                 return '<img src="$bestUrl" style="max-width:100%; height:auto; display:block; margin: 8px 0;">';
               }
               return "";
@@ -565,9 +753,20 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
             if (newPosts.isNotEmpty) _maxPage = _targetPage;
           }
 
-          if (!hasNextPage && _targetPage >= _maxPage) _hasMore = false;
-          if (newPosts.isEmpty && _targetPage > 1) _hasMore = false;
-
+          // 【核心修复】更严格的到底判断逻辑
+          if (!hasNextPage) {
+            // 如果网页里没有“下一页”按钮，那肯定到底了
+            _hasMore = false;
+          } else if (_targetPage >= _maxPage && newPosts.isEmpty) {
+            // 如果请求了下一页，但没解析出数据，也算到底了
+            _hasMore = false;
+          } else if (newPosts.length < 5) {
+            // 如果这一页的数据少得可怜（通常 Discuz 一页 10-20 楼），大概率是最后一页
+            _hasMore = false;
+          } else {
+            // 否则才认为还有更多
+            _hasMore = true;
+          }
           _isLoading = false;
           _isLoadingMore = false;
           _isLoadingPrev = false;
@@ -583,7 +782,7 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
     }
   }
 
-  // 使用原生 Image.network 加载
+  // 【核心升级】使用 CachedNetworkImage + 弱网点击重试
   Widget _buildClickableImage(String url) {
     if (url.isEmpty) return const SizedBox();
 
@@ -594,61 +793,35 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
       fullUrl = base + path;
     }
 
-    return GestureDetector(
-      onTap: () => _launchURL(fullUrl),
-      child: Container(
-        margin: const EdgeInsets.symmetric(vertical: 8),
-        child: Image.network(
-          fullUrl,
-          headers: {
-            'Cookie': _userCookies,
-            'User-Agent': kUserAgent,
-            'Referer': _baseUrl,
-            'Accept':
-                'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
-          },
-          fit: BoxFit.contain,
-          loadingBuilder: (context, child, loadingProgress) {
-            if (loadingProgress == null) return child;
-            return Container(
-              height: 200,
-              width: double.infinity,
-              color: Theme.of(context).colorScheme.surfaceContainerHighest,
-              alignment: Alignment.center,
-              child: SizedBox(
-                width: 30,
-                height: 30,
-                child: CircularProgressIndicator(
-                  strokeWidth: 2,
-                  value: loadingProgress.expectedTotalBytes != null
-                      ? loadingProgress.cumulativeBytesLoaded /
-                            loadingProgress.expectedTotalBytes!
-                      : null,
-                ),
-              ),
-            );
-          },
-          errorBuilder: (context, error, stackTrace) {
-            return Container(
-              height: 100,
-              width: double.infinity,
-              color: Theme.of(context).colorScheme.surfaceContainerHighest,
-              alignment: Alignment.center,
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  const Icon(Icons.broken_image, color: Colors.grey),
-                  const SizedBox(height: 4),
-                  const Text(
-                    "图片加载失败(点击浏览器打开)",
-                    style: TextStyle(fontSize: 10, color: Colors.grey),
-                  ),
-                ],
-              ),
-            );
-          },
-        ),
-      ),
+    // 使用我们新写的 State 组件
+    return RetryableImage(
+      imageUrl: fullUrl,
+      cacheManager: customCacheManager,
+      headers: {
+        'Cookie': _userCookies,
+        'User-Agent': kUserAgent,
+        'Referer': _baseUrl,
+        'Accept':
+            'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+      },
+      // 点击预览逻辑
+      onTap: (previewUrl) {
+        // 跳转到我们之前写的 ImagePreviewPage
+        // 注意：这里要引入 image_preview_page.dart
+        Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (context) => ImagePreviewPage(
+              imageUrl: previewUrl,
+              headers: {
+                'Cookie': _userCookies,
+                'User-Agent': kUserAgent,
+                'Referer': _baseUrl,
+              },
+            ),
+          ),
+        );
+      },
     );
   }
 
@@ -699,7 +872,7 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
                   ),
                   const SizedBox(height: 20),
                   const Text(
-                    "背景颜色",
+                    "背景颜色 (自动保存)",
                     style: TextStyle(fontWeight: FontWeight.bold),
                   ),
                   const SizedBox(height: 10),
@@ -715,7 +888,12 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
                         const Color(0xFFFAF9DE),
                         Colors.black87,
                         "护眼",
-                      ),
+                      ), // 羊皮纸
+                      _buildColorBtn(
+                        const Color(0xFFC7EDCC),
+                        Colors.black87,
+                        "豆沙",
+                      ), // 护眼绿
                       _buildColorBtn(
                         const Color(0xFF1A1A1A),
                         Colors.white70,
@@ -734,13 +912,14 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
   }
 
   Widget _buildColorBtn(Color bg, Color text, String label) {
-    bool isSelected = _readerBgColor == bg;
+    bool isSelected = _readerBgColor.value == bg.value;
     return GestureDetector(
       onTap: () {
         setState(() {
           _readerBgColor = bg;
           _readerTextColor = text;
         });
+        _saveSettings(bg); // 保存设置
         Navigator.pop(context);
       },
       child: Column(
@@ -793,6 +972,7 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
           NestedScrollView(
             controller: _scrollController,
             headerSliverBuilder: (context, innerBoxIsScrolled) {
+              if (_isReaderMode) return []; // 阅读模式隐藏 AppBar
               return [
                 SliverAppBar(
                   floating: false,
@@ -800,18 +980,12 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
                   snap: false,
                   title: Text(
                     widget.subject,
-                    style: TextStyle(
-                      fontSize: 16,
-                      color: _isReaderMode ? _readerTextColor : null,
-                    ),
+                    style: const TextStyle(fontSize: 16),
                   ),
                   centerTitle: false,
                   elevation: 0,
                   backgroundColor: bgColor,
                   surfaceTintColor: Colors.transparent,
-                  iconTheme: IconThemeData(
-                    color: _isReaderMode ? _readerTextColor : null,
-                  ),
                 ),
               ];
             },
@@ -838,7 +1012,7 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
       right: 16,
       bottom: 32,
       child: Opacity(
-        opacity: (_isReaderMode && !_isFabOpen) ? 0.3 : 1.0,
+        opacity: (_isReaderMode && !_isFabOpen) ? 0.3 : 1.0, // 阅读模式下半透明
         child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.end,
@@ -862,44 +1036,50 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
               const SizedBox(height: 12),
               _buildFabItem(
                 icon: Icons.bookmark_add,
-                label: "保存进度",
-                onTap: _saveBookmark,
+                label: "保存进度", // 改个名
+                onTap: () {
+                  _toggleFab(); // 先关菜单
+                  _showSaveBookmarkDialog(); // 弹窗选楼层
+                },
               ),
               const SizedBox(height: 12),
               _buildFabItem(
-                icon: _isFavorited ? Icons.star : Icons.star_border,
-                label: _isFavorited ? "取消收藏" : "收藏本帖",
-                color: _isFavorited ? Colors.yellow : null,
-                onTap: _handleFavorite,
+                icon: _isNovelMode ? Icons.auto_stories : Icons.menu_book,
+                label: _isNovelMode ? "退出小说" : "小说模式", // 【核心功能入口】
+                color: _isNovelMode ? Colors.purpleAccent : null,
+                onTap: _toggleNovelMode,
               ),
               const SizedBox(height: 12),
+              if (!_isNovelMode) ...[
+                // 小说模式下不显示这些多余按钮
+                _buildFabItem(
+                  icon: _isOnlyLandlord ? Icons.people : Icons.person,
+                  label: _isOnlyLandlord ? "看全部" : "只看楼主",
+                  color: _isOnlyLandlord ? Colors.orange : null,
+                  onTap: _toggleOnlyLandlord,
+                ),
+                const SizedBox(height: 12),
+                _buildFabItem(
+                  icon: _isReaderMode ? Icons.view_list : Icons.article,
+                  label: _isReaderMode ? "列表" : "纯净阅读",
+                  onTap: _toggleReaderMode,
+                ),
+                const SizedBox(height: 12),
+              ],
               if (_isReaderMode) ...[
                 _buildFabItem(
                   icon: Icons.settings,
-                  label: "阅读设置",
+                  label: "设置",
                   onTap: _showDisplaySettings,
                 ),
                 const SizedBox(height: 12),
               ],
-              _buildFabItem(
-                icon: _isOnlyLandlord ? Icons.people : Icons.person,
-                label: _isOnlyLandlord ? "看全部" : "只看楼主",
-                color: _isOnlyLandlord ? Colors.orange : null,
-                onTap: _toggleOnlyLandlord,
-              ),
-              const SizedBox(height: 12),
-              _buildFabItem(
-                icon: _isReaderMode ? Icons.view_list : Icons.article,
-                label: _isReaderMode ? "列表" : "阅读",
-                onTap: _toggleReaderMode,
-              ),
-              const SizedBox(height: 12),
             ],
             FloatingActionButton(
               heroTag: "main_fab",
               onPressed: _toggleFab,
               backgroundColor: _isReaderMode
-                  ? Colors.brown.shade300
+                  ? Colors.grey.withOpacity(0.8)
                   : Theme.of(context).colorScheme.primaryContainer,
               child: AnimatedIcon(
                 icon: AnimatedIcons.menu_close,
@@ -1074,25 +1254,67 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
                 ),
               ],
             ),
+            // ... 在 _buildPostCard 方法里 ...
             const SizedBox(height: 12),
             SelectionArea(
               child: HtmlWidget(
                 post.contentHtml,
                 textStyle: const TextStyle(fontSize: 16, height: 1.6),
+
+                // 【修复版】样式构建器
+                customStylesBuilder: (element) {
+                  bool isDarkMode =
+                      Theme.of(context).brightness == Brightness.dark;
+
+                  // 1. 处理引用块 (Discuz 的回复框)
+                  if (element.localName == 'blockquote' ||
+                      element.classes.contains('quote')) {
+                    if (isDarkMode) {
+                      // 暗黑模式：深灰底 + 白字
+                      return {
+                        'background-color': '#303030',
+                        'color': '#E0E0E0',
+                        'border-left': '3px solid #777',
+                        'padding': '10px',
+                        'margin': '5px 0',
+                        'display': 'block', // 强制块级显示
+                      };
+                    } else {
+                      // 日间模式：浅灰底 + 黑字
+                      return {
+                        'background-color': '#F5F5F5',
+                        'color': '#333333',
+                        'border-left': '3px solid #DDD',
+                        'padding': '10px',
+                        'margin': '5px 0',
+                        'display': 'block',
+                      };
+                    }
+                  }
+
+                  // 2. 【关键修复】处理暗黑模式下，作者写死的颜色看不见的问题
+                  // 我们检查 style 属性字符串，而不是不存在的 .styles 对象
+                  if (isDarkMode && element.attributes.containsKey('style')) {
+                    String style = element.attributes['style']!;
+                    // 如果包含了 color 设置（比如作者设了黑色），在暗黑模式下强制反转或者清除
+                    if (style.contains('color:')) {
+                      // 这里简单粗暴一点：如果是暗黑模式，且不是引用块，
+                      // 我们可以强制清除背景色，并将字体设为浅色，防止黑底黑字
+                      return {
+                        'color': '#CCCCCC', // 强制浅灰色字
+                        'background-color': 'transparent', // 清除背景
+                      };
+                    }
+                  }
+
+                  return null;
+                },
+
                 customWidgetBuilder: (element) {
                   if (element.localName == 'img') {
                     String src = element.attributes['src'] ?? '';
                     if (src.isNotEmpty) return _buildClickableImage(src);
                   }
-                  return null;
-                },
-                customStylesBuilder: (element) {
-                  if (element.localName == 'blockquote')
-                    return {
-                      'background-color': '#F5F5F5',
-                      'border-left': '3px solid #DDD',
-                      'padding': '8px',
-                    };
                   return null;
                 },
                 onTapUrl: (url) async {
@@ -1101,6 +1323,7 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
                 },
               ),
             ),
+            // ...
           ],
         ),
       ),
@@ -1108,7 +1331,7 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
   }
 
   Widget _buildReaderMode() {
-    if (_posts.isEmpty) return const Center(child: Text("暂无内容"));
+    if (_posts.isEmpty) return const Center(child: Text("加载中..."));
 
     bool showPrevBtn = _minPage > 1;
     int count = _posts.length + 1 + (showPrevBtn ? 1 : 0);
@@ -1136,15 +1359,32 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               if (postIndex > 0)
-                Divider(height: 40, color: _readerTextColor.withOpacity(0.1)),
-              Text(
-                "${post.floor} ${post.author}",
-                style: TextStyle(
-                  color: _readerTextColor.withOpacity(0.4),
-                  fontSize: 12,
-                ),
+                Divider(height: 60, color: _readerTextColor.withOpacity(0.1)),
+
+              // 极简信息栏
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text(
+                    post.floor,
+                    style: TextStyle(
+                      color: _readerTextColor.withOpacity(0.4),
+                      fontSize: 12,
+                    ),
+                  ),
+                  if (_isNovelMode)
+                    Text(
+                      "第 ${_maxPage} 页", // 小说模式显示页码进度
+                      style: TextStyle(
+                        color: _readerTextColor.withOpacity(0.4),
+                        fontSize: 12,
+                      ),
+                    ),
+                ],
               ),
-              const SizedBox(height: 10),
+
+              const SizedBox(height: 20),
+
               HtmlWidget(
                 post.contentHtml,
                 textStyle: TextStyle(
@@ -1153,6 +1393,60 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
                   color: _readerTextColor,
                   fontFamily: "Serif",
                 ),
+
+                // 【修复点】正确的样式清洗逻辑
+                customStylesBuilder: (element) {
+                  // 仅在阅读模式下启用
+                  if (_isReaderMode) {
+                    // 1. 处理 <font color="..."> 这种老式标签
+                    if (element.localName == 'font' ||
+                        element.attributes.containsKey('style')) {
+                      return {
+                        'color': _readerTextColor.toCssColor(),
+                        'background-color': 'transparent',
+                      };
+                    }
+
+                    // 2. 处理 style="..." 属性 (element.attributes 是 Map)
+                    if (element.attributes.containsKey('style')) {
+                      String style = element.attributes['style']!;
+                      // 如果 style 字符串里包含 color 或 background
+                      if (style.contains('color') ||
+                          style.contains('background')) {
+                        return {
+                          'color': _readerTextColor.toCssColor(),
+                          'background-color': 'transparent',
+                        };
+                      }
+                    }
+                  }
+
+                  // 2. 【核心修复】处理引用块
+                  if (element.localName == 'blockquote' ||
+                      element.classes.contains('quote')) {
+                    // 阅读模式下，我们根据背景色深浅来决定引用块颜色
+                    // 如果背景很暗（夜间模式），引用块就用深色
+                    if (_readerBgColor.computeLuminance() < 0.5) {
+                      return {
+                        'background-color': 'rgba(255, 255, 255, 0.1)', // 半透明白
+                        'color': '#E0E0E0',
+                        'border-left': '3px solid #777',
+                        'padding': '10px',
+                      };
+                    } else {
+                      // 亮色背景（羊皮纸/白昼），引用块用浅色
+                      return {
+                        'background-color': 'rgba(0, 0, 0, 0.05)', // 半透明黑
+                        'color': '#333333',
+                        'border-left': '3px solid #999',
+                        'padding': '10px',
+                      };
+                    }
+                  }
+
+                  return null;
+                },
+
                 customWidgetBuilder: (element) {
                   if (element.localName == 'img') {
                     String src = element.attributes['src'] ?? '';
@@ -1160,6 +1454,7 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
                   }
                   return null;
                 },
+
                 onTapUrl: (url) async {
                   await _launchURL(url);
                   return true;
@@ -1168,6 +1463,123 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
             ],
           );
         },
+      ),
+    );
+  }
+}
+
+extension ColorToCss on Color {
+  String toCssColor() {
+    return 'rgba($red, $green, $blue, $opacity)';
+  }
+}
+
+// ==========================================
+// 新增：独立的重试图片组件
+// ==========================================
+class RetryableImage extends StatefulWidget {
+  final String imageUrl;
+  final BaseCacheManager cacheManager;
+  final Map<String, String> headers;
+  final Function(String) onTap;
+
+  const RetryableImage({
+    super.key,
+    required this.imageUrl,
+    required this.cacheManager,
+    required this.headers,
+    required this.onTap,
+  });
+
+  @override
+  State<RetryableImage> createState() => _RetryableImageState();
+}
+
+class _RetryableImageState extends State<RetryableImage> {
+  int _retryCount = 0; // 重试计数器
+
+  @override
+  Widget build(BuildContext context) {
+    // 技巧：每次重试，给 URL 加一个不同的参数，骗过缓存系统
+    // 如果 URL 本身有 ? 就加 &t=，否则加 ?t=
+    String finalUrl = widget.imageUrl;
+    if (_retryCount > 0) {
+      final separator = finalUrl.contains('?') ? '&' : '?';
+      finalUrl = "$finalUrl${separator}retry=$_retryCount";
+    }
+
+    return GestureDetector(
+      onTap: () => widget.onTap(widget.imageUrl), // 点击预览时传原图URL
+      child: Container(
+        margin: const EdgeInsets.symmetric(vertical: 8),
+        child: CachedNetworkImage(
+          // 关键：给 Key 加上计数器，强制组件重建
+          key: ValueKey("${widget.imageUrl}_$_retryCount"),
+          imageUrl: finalUrl,
+          cacheManager: widget.cacheManager,
+          httpHeaders: widget.headers,
+          fit: BoxFit.contain,
+
+          // 加载中
+          placeholder: (context, url) => Container(
+            height: 200,
+            width: double.infinity,
+            color: Theme.of(context).colorScheme.surfaceContainerHighest,
+            alignment: Alignment.center,
+            child: const SizedBox(
+              width: 30,
+              height: 30,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            ),
+          ),
+
+          // 加载失败
+          errorWidget: (context, url, error) {
+            return InkWell(
+              onTap: () async {
+                // 1. 清理旧缓存
+                await widget.cacheManager.removeFile(widget.imageUrl);
+                // 2. 增加计数器，触发重绘
+                setState(() {
+                  _retryCount++;
+                });
+                // 3. 提示
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text("正在尝试重新建立连接..."),
+                      duration: Duration(milliseconds: 500),
+                    ),
+                  );
+                }
+              },
+              child: Container(
+                height: 120,
+                width: double.infinity,
+                color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    const Icon(
+                      Icons.broken_image,
+                      color: Colors.grey,
+                      size: 30,
+                    ),
+                    const SizedBox(height: 8),
+                    const Text(
+                      "图片加载失败",
+                      style: TextStyle(fontSize: 12, color: Colors.grey),
+                    ),
+                    Text(
+                      "点击此处强制刷新 (第$_retryCount次)",
+                      style: const TextStyle(fontSize: 11, color: Colors.blue),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        ),
       ),
     );
   }

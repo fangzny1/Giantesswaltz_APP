@@ -8,19 +8,29 @@ import 'thread_list_page.dart';
 import 'search_page.dart';
 import 'favorite_page.dart';
 import 'bookmark_page.dart';
+import 'package:flutter_cache_manager/flutter_cache_manager.dart';
+import 'user_detail_page.dart'; // 用于跳转
+import 'dart:io';
 
 // 全局状态
 final ValueNotifier<String> currentUser = ValueNotifier("未登录");
+// 【新增】当前用户的 UID (用于跳转帖子列表)
+final ValueNotifier<String> currentUserUid = ValueNotifier("");
+// 【新增】当前用户的头像 URL
+final ValueNotifier<String> currentUserAvatar = ValueNotifier("");
 // 全局主题状态
 final ValueNotifier<ThemeMode> currentTheme = ValueNotifier(ThemeMode.system);
 final GlobalKey<_ForumHomePageState> forumKey = GlobalKey();
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  HttpOverrides.global = _MyHttpOverrides();
   final prefs = await SharedPreferences.getInstance();
 
   currentUser.value = prefs.getString('username') ?? "未登录";
-
+  // 【新增】加载本地存储的 UID 和 头像
+  currentUserUid.value = prefs.getString('uid') ?? "";
+  currentUserAvatar.value = prefs.getString('avatar') ?? "";
   String? themeStr = prefs.getString('theme_mode');
   if (themeStr == 'dark')
     currentTheme.value = ThemeMode.dark;
@@ -28,6 +38,17 @@ void main() async {
     currentTheme.value = ThemeMode.light;
 
   runApp(const MyApp());
+}
+
+// 【新增】定义一个 HttpOverrides 类
+class _MyHttpOverrides extends HttpOverrides {
+  @override
+  HttpClient createHttpClient(SecurityContext? context) {
+    return super.createHttpClient(context)
+      ..badCertificateCallback =
+          (X509Certificate cert, String host, int port) =>
+              true; // 允许自签名证书，减少 SSL 报错
+  }
 }
 
 class MyApp extends StatelessWidget {
@@ -187,28 +208,44 @@ class _ForumHomePageState extends State<ForumHomePage> {
 
       var variables = data['Variables'];
       String newName = variables['member_username'].toString();
+      String newUid = variables['member_uid'].toString();
+
       if (newName.isNotEmpty && newName != currentUser.value) {
+        final prefs = await SharedPreferences.getInstance();
+
+        // 1. 更新用户名
         currentUser.value = newName;
-        (await SharedPreferences.getInstance()).setString('username', newName);
-      }
+        await prefs.setString('username', newName);
 
-      List<dynamic> catJsonList = variables['catlist'] ?? [];
-      List<Category> tempCats = catJsonList
-          .map((e) => Category.fromJson(e))
-          .toList();
-      List<dynamic> forumJsonList = variables['forumlist'] ?? [];
-      Map<String, Forum> tempForumMap = {};
-      for (var f in forumJsonList) {
-        var forum = Forum.fromJson(f);
-        tempForumMap[forum.fid] = forum;
-      }
+        // 2. 【新增】更新 UID 和 头像
+        if (newUid.isNotEmpty && newUid != "0") {
+          currentUserUid.value = newUid;
+          await prefs.setString('uid', newUid);
 
-      if (mounted) {
-        setState(() {
-          _categories = tempCats;
-          _forumsMap = tempForumMap;
-          _isLoading = false;
-        });
+          // Discuz 标准头像接口: uc_server/avatar.php?uid=XXX&size=middle
+          String avatarUrl =
+              "https://www.giantessnight.com/gnforum2012/uc_server/avatar.php?uid=$newUid&size=middle";
+          currentUserAvatar.value = avatarUrl;
+          await prefs.setString('avatar', avatarUrl);
+        }
+        List<dynamic> catJsonList = variables['catlist'] ?? [];
+        List<Category> tempCats = catJsonList
+            .map((e) => Category.fromJson(e))
+            .toList();
+        List<dynamic> forumJsonList = variables['forumlist'] ?? [];
+        Map<String, Forum> tempForumMap = {};
+        for (var f in forumJsonList) {
+          var forum = Forum.fromJson(f);
+          tempForumMap[forum.fid] = forum;
+        }
+
+        if (mounted) {
+          setState(() {
+            _categories = tempCats;
+            _forumsMap = tempForumMap;
+            _isLoading = false;
+          });
+        }
       }
     } catch (e) {
       if (mounted)
@@ -366,6 +403,26 @@ class ProfilePage extends StatelessWidget {
     }
   }
 
+  // 【新增】跳转到我的帖子
+  void _jumpToMyPosts(BuildContext context) {
+    if (currentUserUid.value.isNotEmpty && currentUserUid.value != "0") {
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (context) => UserDetailPage(
+            uid: currentUserUid.value,
+            username: currentUser.value,
+            avatarUrl: currentUserAvatar.value,
+          ),
+        ),
+      );
+    } else {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text("请先登录")));
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -389,29 +446,96 @@ class ProfilePage extends StatelessWidget {
           const SizedBox(width: 8),
         ],
       ),
+      // 监听用户名变化，触发重绘
       body: ValueListenableBuilder<String>(
         valueListenable: currentUser,
         builder: (context, username, child) {
           bool isLogin = username != "未登录";
+
           return ListView(
             children: [
               const SizedBox(height: 40),
+
+              // === 头像区域 ===
               Center(
-                child: CircleAvatar(
-                  radius: 45,
-                  child: Icon(Icons.person, size: 50),
-                ),
-              ),
-              const SizedBox(height: 16),
-              Center(
-                child: Text(
-                  username,
-                  style: const TextStyle(
-                    fontSize: 22,
-                    fontWeight: FontWeight.bold,
+                child: GestureDetector(
+                  // 点击头像跳转
+                  onTap: isLogin ? () => _jumpToMyPosts(context) : null,
+                  child: Stack(
+                    children: [
+                      // 使用 ValueListenableBuilder 监听头像变化
+                      ValueListenableBuilder<String>(
+                        valueListenable: currentUserAvatar,
+                        builder: (context, avatarUrl, _) {
+                          return CircleAvatar(
+                            radius: 45,
+                            backgroundColor: Theme.of(
+                              context,
+                            ).colorScheme.primaryContainer,
+                            backgroundImage: (isLogin && avatarUrl.isNotEmpty)
+                                ? NetworkImage(avatarUrl)
+                                : null,
+                            child: (!isLogin || avatarUrl.isEmpty)
+                                ? const Icon(Icons.person, size: 50)
+                                : null,
+                          );
+                        },
+                      ),
+                      // 如果已登录，显示一个小角标提示可以点击
+                      if (isLogin)
+                        Positioned(
+                          right: 0,
+                          bottom: 0,
+                          child: Container(
+                            padding: const EdgeInsets.all(4),
+                            decoration: BoxDecoration(
+                              color: Theme.of(context).colorScheme.primary,
+                              shape: BoxShape.circle,
+                            ),
+                            child: const Icon(
+                              Icons.edit_note,
+                              size: 16,
+                              color: Colors.white,
+                            ),
+                          ),
+                        ),
+                    ],
                   ),
                 ),
               ),
+
+              const SizedBox(height: 16),
+
+              // === 用户名区域 ===
+              Center(
+                child: InkWell(
+                  onTap: isLogin ? () => _jumpToMyPosts(context) : null,
+                  borderRadius: BorderRadius.circular(8),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 4,
+                    ),
+                    child: Column(
+                      children: [
+                        Text(
+                          username,
+                          style: const TextStyle(
+                            fontSize: 22,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        if (isLogin)
+                          const Text(
+                            "点击查看我的发布",
+                            style: TextStyle(fontSize: 10, color: Colors.grey),
+                          ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+
               const SizedBox(height: 8),
               if (isLogin)
                 Center(
@@ -431,7 +555,10 @@ class ProfilePage extends StatelessWidget {
                     ),
                   ),
                 ),
+
               const SizedBox(height: 30),
+
+              // ... 下面的菜单项 (书签、收藏等) 保持不变 ...
               ListTile(
                 leading: const Icon(
                   Icons.bookmark_border,
@@ -453,7 +580,27 @@ class ProfilePage extends StatelessWidget {
                   MaterialPageRoute(builder: (context) => const FavoritePage()),
                 ),
               ),
+              // 上次加的清除缓存
+              ListTile(
+                leading: const Icon(
+                  Icons.cleaning_services_outlined,
+                  color: Colors.blueGrey,
+                ),
+                title: const Text("清除缓存"),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () async {
+                  await WebViewController().clearCache();
+                  await DefaultCacheManager().emptyCache();
+                  if (context.mounted) {
+                    ScaffoldMessenger.of(
+                      context,
+                    ).showSnackBar(const SnackBar(content: Text("🧹 缓存已清理")));
+                  }
+                },
+              ),
+
               const Divider(),
+
               if (!isLogin)
                 ListTile(
                   leading: const Icon(Icons.login),
@@ -474,6 +621,7 @@ class ProfilePage extends StatelessWidget {
                     }
                   },
                 ),
+
               if (isLogin)
                 ListTile(
                   leading: const Icon(Icons.logout, color: Colors.red),
@@ -483,8 +631,15 @@ class ProfilePage extends StatelessWidget {
                   ),
                   onTap: () async {
                     await WebViewCookieManager().clearCookies();
-                    (await SharedPreferences.getInstance()).remove('username');
+                    final prefs = await SharedPreferences.getInstance();
+                    // 【新增】清理所有用户信息
+                    prefs.remove('username');
+                    prefs.remove('uid');
+                    prefs.remove('avatar');
+
                     currentUser.value = "未登录";
+                    currentUserUid.value = "";
+                    currentUserAvatar.value = "";
                   },
                 ),
             ],

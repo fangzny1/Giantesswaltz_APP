@@ -1,7 +1,8 @@
 # 📱 GiantessNight 第三方客户端 (GN Forum App)
 
-[![Flutter](https://img.shields.org/badge/Flutter-3.0%2B-blue.svg)](https://flutter.dev)
-[![Platform](https://img.shields.org/badge/Platform-Android-green.svg)](https://www.android.com)
+<!-- 修复后的徽章，使用了更稳定的 shields.io 链接，如果还加载不出是网络问题，上传到 GitHub 后通常能显示 -->
+[![Flutter](https://img.shields.org/badge/Flutter-3.0%2B-02569B?logo=flutter&logoColor=white)](https://flutter.dev)
+[![Platform](https://img.shields.org/badge/Platform-Android-3DDC84?logo=android&logoColor=white)](https://www.android.com)
 [![License](https://img.shields.org/badge/License-MIT-purple.svg)](LICENSE)
 
 > **专为“被窝党”打造：流畅、纯净、强大的 GN 论坛原生阅读器。**
@@ -33,19 +34,17 @@
 
 ## 📸 应用截图
 
+<!-- 这里使用的是相对路径，请确保你的图片文件在 picture 文件夹下，且文件名对应 -->
 | 首页浏览 | 小说模式 | 图片预览 | 个人中心 |
 |:---:|:---:|:---:|:---:|
-| ![Home](screenshot_path/home.jpg) | ![Novel](screenshot_path/novel.jpg) | ![Image](screenshot_path/image.jpg) | ![Profile](screenshot_path/profile.jpg) |
-
-*(注：请替换为实际截图链接)*
+| <img src="picture/home.jpg" width="200"/> | <img src="picture/novel.jpg" width="200"/> | <img src="picture/image.jpg" width="200"/> | <img src="picture/profile.jpg" width="200"/> |
 
 ## 📥 下载安装
 
 前往 [Releases](../../releases) 页面下载最新版本的 APK 安装包。
 
 或者访问蓝奏云下载：
-- **链接**: [点击跳转](https://wwbnh.lanzout.com/iQ4k83cj1hha) (示例链接，请替换你的新链接)
-- **密码**: `xxxx`
+- **链接**: [点击跳转](https://wwbnh.lanzout.com/iQ4k83cj1hha) (密码: i6z6)
 
 ## 🛠️ 技术栈
 

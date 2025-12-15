@@ -742,12 +742,19 @@ class ProfilePage extends StatelessWidget {
                 title: const Text("清除缓存"),
                 trailing: const Icon(Icons.chevron_right),
                 onTap: () async {
+                  // 1. 清理 WebView 缓存
                   await WebViewController().clearCache();
+
+                  // 2. 【核心修复】清理我们自定义的全局图片缓存
+                  await globalImageCache.emptyCache();
+
+                  // 3. (可选) 清理默认缓存，防止有漏网之鱼
                   await DefaultCacheManager().emptyCache();
+
                   if (context.mounted) {
-                    ScaffoldMessenger.of(
-                      context,
-                    ).showSnackBar(const SnackBar(content: Text("🧹 缓存已清理")));
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text("🧹 缓存已彻底清理（含图片/网页）")),
+                    );
                   }
                 },
               ),

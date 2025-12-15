@@ -103,8 +103,10 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
   );
 
   @override
+  @override
   void initState() {
     super.initState();
+    // 1. 初始化页码：非常关键，要信赖传入的 initialPage
     _minPage = widget.initialPage;
     _maxPage = widget.initialPage;
     _targetPage = widget.initialPage;
@@ -117,25 +119,50 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
       parent: _fabAnimationController,
       curve: Curves.easeInOut,
     );
-    _loadLocalCookie();
-    _loadSettings(); // 【新增】加载背景色设置
+
+    _loadSettings();
+
+    // 2. 初始化模式
     if (widget.initialNovelMode) {
       _isNovelMode = true;
       _isOnlyLandlord = true;
       _isReaderMode = true;
       SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
 
-      // 【关键】如果有传入楼主ID，直接赋值！
-      // 这样 _loadPage 发送请求时就会带上 &authorid=xxx，服务器就能返回正确的页码
+      // 3. 楼主ID注入
       if (widget.initialAuthorId != null &&
           widget.initialAuthorId!.isNotEmpty) {
         _landlordUid = widget.initialAuthorId;
       }
     }
 
+    _loadLocalCookie();
     _initWebView();
-    _initFavCheck();
+    // scrollListener 保持不变
     _scrollController.addListener(_onScroll);
+  }
+
+  // 修改加载逻辑
+  void _loadPage(int page) {
+    _targetPage = page;
+
+    // 【核心修复】URL 拼接逻辑
+    // 确保 page 参数必须有，而且如果只看楼主，必须带 authorid
+    String url =
+        '${_baseUrl}forum.php?mod=viewthread&tid=${widget.tid}&mobile=no';
+
+    if (_isOnlyLandlord && _landlordUid != null) {
+      url += '&authorid=$_landlordUid';
+    }
+
+    url += '&page=$page'; // page 参数一定要放在最后，或者是追加在后面
+
+    print("🚀 加载帖子(第$page页): $url");
+
+    _hiddenController.loadRequest(
+      Uri.parse(url),
+      headers: {'Cookie': _userCookies, 'User-Agent': kUserAgent},
+    );
   }
 
   Future<void> _loadLocalCookie() async {
@@ -242,22 +269,6 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
       );
     _favCheckController.loadRequest(
       Uri.parse('${_baseUrl}home.php?mod=space&do=favorite&view=me&mobile=no'),
-    );
-  }
-
-  void _loadPage(int page) {
-    _targetPage = page;
-    String url =
-        '${_baseUrl}forum.php?mod=viewthread&tid=${widget.tid}&extra=page%3D1&page=$page&mobile=no';
-    if (_isOnlyLandlord && _landlordUid != null)
-      url += '&authorid=$_landlordUid';
-    print("🚀 加载帖子: 第 $page 页");
-    _hiddenController.loadRequest(
-      Uri.parse(url),
-      headers: {
-        'Cookie': _userCookies, // 带上！
-        'User-Agent': kUserAgent,
-      },
     );
   }
 
@@ -802,43 +813,52 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
   // 【核心升级】使用 CachedNetworkImage + 弱网点击重试
   Widget _buildClickableImage(String url) {
     if (url.isEmpty) return const SizedBox();
-
+    // ... (URL 补全逻辑保持不变)
     String fullUrl = url;
     if (!fullUrl.startsWith('http')) {
+      // ... 省略 URL 补全代码，保持你原来的 ...
       String base = _baseUrl.endsWith('/') ? _baseUrl : "$_baseUrl/";
       String path = fullUrl.startsWith('/') ? fullUrl.substring(1) : fullUrl;
       fullUrl = base + path;
     }
 
-    // 使用我们新写的 State 组件
-    return RetryableImage(
-      imageUrl: fullUrl,
-      cacheManager: customCacheManager,
-      headers: {
-        'Cookie': _userCookies,
-        'User-Agent': kUserAgent,
-        'Referer': _baseUrl,
-        'Accept':
-            'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
-      },
-      // 点击预览逻辑
-      onTap: (previewUrl) {
-        // 跳转到我们之前写的 ImagePreviewPage
-        // 注意：这里要引入 image_preview_page.dart
-        Navigator.push(
-          context,
-          MaterialPageRoute(
-            builder: (context) => ImagePreviewPage(
-              imageUrl: previewUrl,
-              headers: {
-                'Cookie': _userCookies,
-                'User-Agent': kUserAgent,
-                'Referer': _baseUrl,
-              },
+    return GestureDetector(
+      onTap: () => _launchURL(fullUrl),
+      child: Container(
+        margin: const EdgeInsets.symmetric(vertical: 8),
+        child: CachedNetworkImage(
+          imageUrl: fullUrl,
+          cacheManager: globalImageCache, // 【修改】使用全局缓存变量
+          // ... (Headers 和 其他逻辑保持不变) ...
+          httpHeaders: {
+            'Cookie': _userCookies,
+            'User-Agent': kUserAgent,
+            'Referer': _baseUrl,
+            'Accept':
+                'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+          },
+          fit: BoxFit.contain,
+          // ... placeholder 和 errorWidget 保持不变 ...
+          // 为了节省篇幅，这里 errorWidget 里的 removeFile 也要改成:
+          // await globalImageCache.removeFile(url);
+          placeholder: (context, url) => Container(
+            height: 200,
+            width: double.infinity,
+            color: Theme.of(context).colorScheme.surfaceContainerHighest,
+            child: const Center(child: CircularProgressIndicator()),
+          ),
+          errorWidget: (context, url, error) => InkWell(
+            onTap: () async {
+              await globalImageCache.removeFile(url); // 【修改】
+              if (mounted) setState(() {});
+            },
+            child: const SizedBox(
+              height: 100,
+              child: Center(child: Icon(Icons.refresh)),
             ),
           ),
-        );
-      },
+        ),
+      ),
     );
   }
 
@@ -1029,7 +1049,7 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
       right: 16,
       bottom: 32,
       child: Opacity(
-        opacity: (_isReaderMode && !_isFabOpen) ? 0.3 : 1.0, // 阅读模式下半透明
+        opacity: (_isReaderMode && !_isFabOpen) ? 0.3 : 1.0,
         child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.end,
@@ -1042,6 +1062,8 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
                   setState(() {
                     _isLoading = true;
                     _posts.clear();
+                    // 刷新时重置为第一页，或者保持当前页？
+                    // 建议重置，防止逻辑混乱
                     _targetPage = 1;
                     _minPage = 1;
                     _maxPage = 1;
@@ -1051,24 +1073,38 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
                 },
               ),
               const SizedBox(height: 12),
+
+              // === 手动书签 ===
               _buildFabItem(
                 icon: Icons.bookmark_add,
-                label: "保存进度", // 改个名
+                label: "保存进度",
                 onTap: () {
-                  _toggleFab(); // 先关菜单
-                  _showSaveBookmarkDialog(); // 弹窗选楼层
+                  _toggleFab();
+                  _showSaveBookmarkDialog();
                 },
               ),
               const SizedBox(height: 12),
+
+              // === 【核心修复】找回消失的收藏按钮 ===
+              _buildFabItem(
+                icon: _isFavorited ? Icons.star : Icons.star_border,
+                label: _isFavorited ? "取消收藏" : "收藏本帖",
+                color: _isFavorited ? Colors.yellow : null,
+                onTap: _handleFavorite,
+              ),
+              const SizedBox(height: 12),
+
+              // ===================================
               _buildFabItem(
                 icon: _isNovelMode ? Icons.auto_stories : Icons.menu_book,
-                label: _isNovelMode ? "退出小说" : "小说模式", // 【核心功能入口】
+                label: _isNovelMode ? "退出小说" : "小说模式",
                 color: _isNovelMode ? Colors.purpleAccent : null,
                 onTap: _toggleNovelMode,
               ),
               const SizedBox(height: 12),
+
+              // 只有非小说模式才显示“只看楼主”和“纯净阅读”
               if (!_isNovelMode) ...[
-                // 小说模式下不显示这些多余按钮
                 _buildFabItem(
                   icon: _isOnlyLandlord ? Icons.people : Icons.person,
                   label: _isOnlyLandlord ? "看全部" : "只看楼主",
@@ -1083,6 +1119,7 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
                 ),
                 const SizedBox(height: 12),
               ],
+
               if (_isReaderMode) ...[
                 _buildFabItem(
                   icon: Icons.settings,
@@ -1096,7 +1133,7 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
               heroTag: "main_fab",
               onPressed: _toggleFab,
               backgroundColor: _isReaderMode
-                  ? Colors.grey.withOpacity(0.8)
+                  ? Colors.brown.shade300
                   : Theme.of(context).colorScheme.primaryContainer,
               child: AnimatedIcon(
                 icon: AnimatedIcons.menu_close,

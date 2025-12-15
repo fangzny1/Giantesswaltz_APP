@@ -1,4 +1,5 @@
 // lib/forum_model.dart
+import 'package:flutter_cache_manager/flutter_cache_manager.dart';
 
 class Category {
   final String fid;
@@ -137,3 +138,16 @@ class BookmarkItem {
     );
   }
 }
+// lib/forum_model.dart 的最底部
+
+// 【核心修复】定义一个全局单例的缓存管理器
+// 这样我们在 ThreadDetailPage 里用它存图，在 ProfilePage 里也能调用它清缓存
+final globalImageCache = CacheManager(
+  Config(
+    'gn_forum_imageCache_v2', // 换个名字，避免和旧的冲突
+    stalePeriod: const Duration(days: 7),
+    maxNrOfCacheObjects: 1000,
+    repo: JsonCacheInfoRepository(databaseName: 'gn_forum_imageCache_v2'),
+    fileService: HttpFileService(),
+  ),
+);

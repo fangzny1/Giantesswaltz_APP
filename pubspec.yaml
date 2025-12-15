@@ -50,6 +50,7 @@ dependencies:
   gal: ^2.3.0      
   permission_handler: ^11.0.1
   image_picker: ^1.2.1
+  scroll_to_index: ^3.0.1
 dev_dependencies:
   flutter_test:
     sdk: flutter

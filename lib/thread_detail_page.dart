@@ -9,11 +9,11 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:cached_network_image/cached_network_image.dart'; // 建议引入这个库
 import 'package:flutter_cache_manager/flutter_cache_manager.dart';
-import 'package:permission_handler/permission_handler.dart'; // 用于跳转系统设置
-import 'package:flutter_cache_manager/flutter_cache_manager.dart'; // 用于清理图片
+import 'package:scroll_to_index/scroll_to_index.dart'; // 引入库
 import 'login_page.dart';
 import 'user_detail_page.dart';
 import 'forum_model.dart';
+import 'cache_helper.dart'; // 引入缓存助手
 
 class PostItem {
   final String pid;
@@ -44,6 +44,7 @@ class ThreadDetailPage extends StatefulWidget {
   final bool initialNovelMode;
   final String? initialAuthorId;
   final String? initialTargetFloor;
+  final String? initialTargetPid;
   const ThreadDetailPage({
     super.key,
     required this.tid,
@@ -52,6 +53,7 @@ class ThreadDetailPage extends StatefulWidget {
     this.initialNovelMode = false,
     this.initialAuthorId,
     this.initialTargetFloor,
+    this.initialTargetPid,
   });
 
   @override
@@ -62,7 +64,8 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
     with SingleTickerProviderStateMixin {
   WebViewController? _hiddenController;
   WebViewController? _favCheckController;
-  final ScrollController _scrollController = ScrollController();
+  // 使用 AutoScrollController 替换原生的 ScrollController
+  late AutoScrollController _scrollController;
 
   List<PostItem> _posts = [];
 
@@ -94,15 +97,8 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
   String? _landlordUid;
   final String _baseUrl = "https://www.giantessnight.com/gnforum2012/";
   String _userCookies = "";
-
-  // 自定义缓存管理器（保存7天，最多500张图）
-  final customCacheManager = CacheManager(
-    Config(
-      'gn_forum_imageCache',
-      stalePeriod: const Duration(days: 7),
-      maxNrOfCacheObjects: 500,
-    ),
-  );
+  final Map<String, GlobalKey> _floorKeys = {};
+  final Map<String, GlobalKey> _pidKeys = {};
 
   @override
   @override
@@ -112,6 +108,14 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
     _minPage = widget.initialPage;
     _maxPage = widget.initialPage;
     _targetPage = widget.initialPage;
+
+    // 初始化 AutoScrollController
+    _scrollController = AutoScrollController(
+      viewportBoundaryGetter: () =>
+          Rect.fromLTRB(0, 0, 0, MediaQuery.of(context).padding.bottom),
+      axis: Axis.vertical,
+      suggestedRowHeight: 200, // 估算高度
+    );
 
     _fabAnimationController = AnimationController(
       vsync: this,
@@ -341,6 +345,8 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
 
         // 重置列表，重新加载只看楼主的数据
         _posts.clear();
+        _pidKeys.clear();
+        _floorKeys.clear();
         _minPage = 1;
         _maxPage = 1;
         _targetPage = 1;
@@ -354,6 +360,8 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
 
         // 重新加载全部回复
         _posts.clear();
+        _pidKeys.clear();
+        _floorKeys.clear();
         _minPage = 1;
         _maxPage = 1;
         _targetPage = 1;
@@ -495,12 +503,19 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
                     ),
                     trailing: const Icon(Icons.bookmark_add_outlined),
                     onTap: () {
-                      // 【核心逻辑】保存选中的这一楼
-                      // 我们假设每一页有 10 楼（Discuz 默认），反推页码
-                      // 但为了稳妥，我们直接保存当前加载到的最大页码 _maxPage
-                      // 或者，如果你希望保存这个楼层所在的具体位置，需要后端支持，这里我们先保存 _maxPage
-                      // 这样下次进来，至少能保证这一楼是加载出来的
-                      _saveBookmarkWithFloor(post.floor, _maxPage);
+                      // 解析楼层号并反推页码（Discuz 默认每页10楼）
+                      int pageToSave = _maxPage;
+                      final m = RegExp(r'(\\d+)').firstMatch(post.floor);
+                      if (m != null) {
+                        int floorNum = int.tryParse(m.group(1)!) ?? 0;
+                        if (floorNum > 0)
+                          pageToSave = ((floorNum - 1) ~/ 10) + 1;
+                      }
+                      _saveBookmarkWithFloor(
+                        post.floor,
+                        pageToSave,
+                        pid: post.pid,
+                      );
                       Navigator.pop(context);
                     },
                   );
@@ -513,7 +528,11 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
     );
   }
 
-  Future<void> _saveBookmarkWithFloor(String floorName, int pageToSave) async {
+  Future<void> _saveBookmarkWithFloor(
+    String floorName,
+    int pageToSave, {
+    String? pid,
+  }) async {
     final prefs = await SharedPreferences.getInstance();
     String? jsonStr = prefs.getString('local_bookmarks');
     List<dynamic> jsonList = [];
@@ -532,6 +551,8 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
       savedTime:
           "${DateTime.now().toString().substring(5, 16)} · 读至 $floorName",
       isNovelMode: _isNovelMode,
+      targetPid: pid,
+      targetFloor: floorName,
     );
 
     jsonList.removeWhere((e) => e['tid'] == widget.tid);
@@ -588,8 +609,9 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
       _isOnlyLandlord = !_isOnlyLandlord;
       // 如果手动切换只看楼主，退出小说模式状态（逻辑上解耦）
       if (!_isOnlyLandlord) _isNovelMode = false;
-
       _posts.clear();
+      _pidKeys.clear();
+      _floorKeys.clear();
       _minPage = 1;
       _maxPage = 1;
       _hasMore = true;
@@ -850,6 +872,11 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
           _isLoadingMore = false;
           _isLoadingPrev = false;
         });
+        // 渲染完成后定位到目标楼层
+        if (widget.initialTargetFloor != null ||
+            widget.initialTargetPid != null) {
+          _scrollToTargetFloor();
+        }
       }
     } catch (e) {
       if (mounted)
@@ -858,43 +885,72 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
           _isLoadingMore = false;
           _isLoadingPrev = false;
         });
-      // 【新增】自动滚动逻辑
-      if (widget.initialTargetFloor != null) {
-        _scrollToTargetFloor();
-      }
+      // 解析异常时不再尝试自动定位
     }
   }
 
-  // 简单的滚动定位
-  void _scrollToTargetFloor() {
-    if (widget.initialTargetFloor == null || _posts.isEmpty) return;
+  // 滚动的重试逻辑 (现在使用 scroll_to_index)
+  Future<void> _scrollToTargetFloor() async {
+    if (_posts.isEmpty) return;
 
-    // 1. 找到目标楼层在列表中的索引
+    // 找到目标索引
     int targetIndex = -1;
-    for (int i = 0; i < _posts.length; i++) {
-      if (_posts[i].floor == widget.initialTargetFloor) {
-        targetIndex = i;
-        break;
-      }
+    String logMsg = "";
+
+    // 1. 优先尝试 PID 定位
+    if (widget.initialTargetPid != null) {
+      targetIndex = _posts.indexWhere((p) => p.pid == widget.initialTargetPid);
+      logMsg = "按PID定位: ${widget.initialTargetPid}";
+    }
+
+    // 2. 降级尝试楼层号定位
+    if (targetIndex == -1 && widget.initialTargetFloor != null) {
+      targetIndex = _posts.indexWhere(
+        (p) => p.floor == widget.initialTargetFloor,
+      );
+      logMsg = "按楼层定位: ${widget.initialTargetFloor}";
     }
 
     if (targetIndex != -1) {
-      // 2. 延迟一点点，等渲染完成
-      Future.delayed(const Duration(milliseconds: 500), () {
-        if (_scrollController.hasClients) {
-          // 3. 估算高度滚动 (假设平均一楼 300 高度，虽然不准但能接近)
-          // 或者如果只想让用户知道，我们可以弹个提示
-          // _scrollController.jumpTo(targetIndex * 300.0);
+      print("🚀 $logMsg -> Index: $targetIndex");
 
-          // 更好的体验：弹窗提示用户
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text("上次读到：${widget.initialTargetFloor}，已为您定位页面"),
-              duration: const Duration(seconds: 2),
-            ),
-          );
-        }
-      });
+      // 稍微延迟一下等待列表构建
+      await Future.delayed(const Duration(milliseconds: 500));
+      if (!mounted) return;
+
+      // 考虑 Header (如果有“加载上一页”按钮，索引要+1)
+      int listIndex = targetIndex;
+      if (_minPage > 1) {
+        listIndex += 1; // 头部有一个加载按钮
+      }
+      // 这里的 listIndex 其实是 ListView 的 children 索引
+      // 但是 AutoScrollTag 是按 index 绑定的，我们需要确保 Tag 的 index 和这里一致
+      // 下面构建列表时，我会把 index 设为 post 在 _posts 中的 index，所以这里直接用 targetIndex 即可
+
+      await _scrollController.scrollToIndex(
+        targetIndex,
+        preferPosition: AutoScrollPosition.begin,
+        duration: const Duration(milliseconds: 800),
+      );
+
+      // 二次确认 (防止图片加载挤压)
+      await Future.delayed(const Duration(milliseconds: 1000));
+      if (!mounted) return;
+      await _scrollController.scrollToIndex(
+        targetIndex,
+        preferPosition: AutoScrollPosition.begin,
+        duration: const Duration(milliseconds: 400),
+      );
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text("已定位到上次阅读位置"),
+          duration: const Duration(milliseconds: 1000),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } else {
+      print("⚠️ 未找到目标楼层/PID");
     }
   }
 
@@ -922,6 +978,7 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
                 'User-Agent': kUserAgent,
                 'Referer': _baseUrl,
               },
+              cacheManager: globalImageCache, // 【修改】传递全局缓存管理器
             ),
           ),
         );
@@ -982,6 +1039,240 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
     } catch (e) {}
   }
 
+  // ==========================================
+  // 缓存管理功能
+  // ==========================================
+  void _showCacheManagementDialog() async {
+    // 1. 先计算当前大小
+    String cacheSizeStr = "计算中...";
+    String debugInfo = "";
+    String cachePath = "";
+    bool isClearing = false;
+
+    // 显示加载中的弹窗，等计算完了再更新内容
+    showDialog(
+      context: context,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setState) {
+            // 异步加载大小 (仅在初始化时)
+            if (cacheSizeStr == "计算中..." && !isClearing) {
+              CacheHelper.getCachePath().then((p) {
+                if (context.mounted) setState(() => cachePath = p);
+              });
+              CacheHelper.getTotalCacheSize().then((bytes) {
+                if (context.mounted) {
+                  setState(() {
+                    cacheSizeStr = CacheHelper.formatSize(bytes);
+                  });
+                }
+              });
+            }
+
+            return AlertDialog(
+              title: const Text("缓存管理"),
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      "如果是为了节省空间，建议定期清理图片缓存。\n文章缓存（WebView）清理后需要重新加载网页资源。",
+                      style: TextStyle(fontSize: 13),
+                    ),
+                    const SizedBox(height: 15),
+
+                    if (cachePath.isNotEmpty)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 10),
+                        child: SelectableText(
+                          "缓存路径: $cachePath",
+                          style: const TextStyle(
+                            fontSize: 10,
+                            color: Colors.grey,
+                          ),
+                        ),
+                      ),
+
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: Theme.of(
+                          context,
+                        ).colorScheme.surfaceContainerHighest,
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Column(
+                        children: [
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              const Text("当前图片缓存占用:"),
+                              isClearing
+                                  ? const SizedBox(
+                                      width: 16,
+                                      height: 16,
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                      ),
+                                    )
+                                  : Text(
+                                      cacheSizeStr,
+                                      style: const TextStyle(
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
+                            ],
+                          ),
+                          if (debugInfo.isNotEmpty) ...[
+                            const Divider(),
+                            Text(
+                              debugInfo,
+                              style: const TextStyle(
+                                fontSize: 10,
+                                color: Colors.grey,
+                              ),
+                            ),
+                          ],
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      leading: const Icon(
+                        Icons.delete_forever,
+                        color: Colors.red,
+                      ),
+                      title: const Text("清理图片缓存 (强力)"),
+                      subtitle: const Text("删除所有已下载的帖子图片"),
+                      onTap: isClearing
+                          ? null
+                          : () async {
+                              setState(() {
+                                isClearing = true;
+                              });
+                              // 不关闭弹窗，直接清理
+                              await _clearImageCache(showLoading: false);
+
+                              // 重新计算大小
+                              int bytes = await CacheHelper.getTotalCacheSize();
+                              if (context.mounted) {
+                                setState(() {
+                                  isClearing = false;
+                                  cacheSizeStr = CacheHelper.formatSize(bytes);
+                                });
+                              }
+                            },
+                    ),
+                    ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      leading: const Icon(Icons.web, color: Colors.orange),
+                      title: const Text("清理网页缓存"),
+                      subtitle: const Text("删除网页Cookie、浏览记录等"),
+                      onTap: () async {
+                        Navigator.pop(context);
+                        _clearWebViewCache();
+                      },
+                    ),
+                    const SizedBox(height: 10),
+                    // 调试按钮 (显眼一点)
+                    SizedBox(
+                      width: double.infinity,
+                      child: OutlinedButton.icon(
+                        icon: const Icon(Icons.bug_report, size: 16),
+                        label: const Text("输出调试信息 (开发者用)"),
+                        onPressed: () async {
+                          setState(() => debugInfo = "正在生成调试信息...");
+                          String info = await CacheHelper.debugAnalyze();
+                          print(info); // 打印到控制台
+                          if (context.mounted) {
+                            setState(() {
+                              debugInfo = "已输出调试信息到控制台，请查看日志";
+                            });
+                          }
+                        },
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: const Text("关闭"),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Future<void> _clearImageCache({bool showLoading = true}) async {
+    if (showLoading) {
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (c) => const Center(child: CircularProgressIndicator()),
+      );
+    }
+
+    try {
+      // 1. 清理内存缓存 (Flutter ImageCache)
+      PaintingBinding.instance.imageCache.clear();
+      PaintingBinding.instance.imageCache.clearLiveImages();
+
+      // 2. 使用 Helper 进行强力清理
+      await CacheHelper.clearAllCaches();
+
+      if (mounted) {
+        if (showLoading) Navigator.pop(context); // Close loading
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text("✅ 图片缓存已彻底清理 (含内存/磁盘)")));
+      }
+    } catch (e) {
+      if (mounted) {
+        if (showLoading) Navigator.pop(context); // Close loading
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text("❌ 清理失败: $e")));
+      }
+    }
+  }
+
+  Future<void> _clearWebViewCache() async {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (c) => const Center(child: CircularProgressIndicator()),
+    );
+
+    try {
+      if (_hiddenController != null) {
+        await _hiddenController!.clearCache();
+        // 不清理 Cookie 以保持登录状态，除非用户特别要求
+        // await _hiddenController!.clearLocalStorage();
+      }
+
+      if (mounted) {
+        Navigator.pop(context); // Close loading
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text("✅ 网页缓存已清理")));
+      }
+    } catch (e) {
+      if (mounted) {
+        Navigator.pop(context);
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text("❌ 清理失败: $e")));
+      }
+    }
+  }
+
   void _showDisplaySettings() {
     showModalBottomSheet(
       context: context,
@@ -990,7 +1281,7 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
           builder: (context, setSheetState) {
             return Container(
               padding: const EdgeInsets.all(20),
-              height: 250,
+              height: 320,
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
@@ -1039,6 +1330,18 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
                         "夜间",
                       ),
                     ],
+                  ),
+                  const SizedBox(height: 20),
+                  SizedBox(
+                    width: double.infinity,
+                    child: OutlinedButton.icon(
+                      icon: const Icon(Icons.cleaning_services),
+                      label: const Text("缓存管理 (清理空间)"),
+                      onPressed: () {
+                        Navigator.pop(context);
+                        _showCacheManagementDialog();
+                      },
+                    ),
                   ),
                 ],
               ),
@@ -1108,11 +1411,11 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
       backgroundColor: bgColor,
       body: Stack(
         children: [
-          NestedScrollView(
+          CustomScrollView(
             controller: _scrollController,
-            headerSliverBuilder: (context, innerBoxIsScrolled) {
-              if (_isReaderMode) return [];
-              return [
+            cacheExtent: 20000,
+            slivers: [
+              if (!_isReaderMode)
                 SliverAppBar(
                   floating: false,
                   pinned: false,
@@ -1132,9 +1435,9 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
                     color: _isReaderMode ? _readerTextColor : null,
                   ),
                 ),
-              ];
-            },
-            body: _isReaderMode ? _buildReaderMode() : _buildNativeList(),
+
+              if (_isReaderMode) _buildReaderSliver() else _buildNativeSliver(),
+            ],
           ),
 
           _buildFabMenu(),
@@ -1177,6 +1480,8 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
                   setState(() {
                     _isLoading = true;
                     _posts.clear();
+                    _pidKeys.clear();
+                    _floorKeys.clear();
                     // 刷新时重置为第一页，或者保持当前页？
                     // 建议重置，防止逻辑混乱
                     _targetPage = 1;
@@ -1305,37 +1610,44 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
     );
   }
 
-  Widget _buildNativeList() {
-    if (_isLoading && _posts.isEmpty)
-      return const Center(child: CircularProgressIndicator());
+  Widget _buildNativeSliver() {
+    if (_isLoading && _posts.isEmpty) {
+      return const SliverFillRemaining(
+        child: Center(child: CircularProgressIndicator()),
+      );
+    }
 
     bool showPrevBtn = _minPage > 1;
-    int count = _posts.length + 1 + (showPrevBtn ? 1 : 0);
 
-    return ListView.separated(
+    List<Widget> children = [];
+
+    if (showPrevBtn) {
+      children.add(
+        Padding(
+          padding: const EdgeInsets.all(8.0),
+          child: Center(
+            child: _isLoadingPrev
+                ? const CircularProgressIndicator()
+                : TextButton.icon(
+                    icon: const Icon(Icons.arrow_upward),
+                    label: Text("加载上一页 (第 $_minPage 页之前)"),
+                    onPressed: _loadPrev,
+                  ),
+          ),
+        ),
+      );
+    }
+
+    for (var post in _posts) {
+      children.add(_buildPostCard(post));
+      children.add(const SizedBox(height: 8));
+    }
+
+    children.add(_buildFooter());
+
+    return SliverPadding(
       padding: const EdgeInsets.only(bottom: 100),
-      itemCount: count,
-      separatorBuilder: (ctx, i) => const SizedBox(height: 8),
-      itemBuilder: (context, index) {
-        if (showPrevBtn && index == 0) {
-          return Padding(
-            padding: const EdgeInsets.all(8.0),
-            child: Center(
-              child: _isLoadingPrev
-                  ? const CircularProgressIndicator()
-                  : TextButton.icon(
-                      icon: const Icon(Icons.arrow_upward),
-                      label: Text("加载上一页 (第 $_minPage 页之前)"),
-                      onPressed: _loadPrev,
-                    ),
-            ),
-          );
-        }
-        if (index == count - 1) return _buildFooter();
-
-        int postIndex = showPrevBtn ? index - 1 : index;
-        return _buildPostCard(_posts[postIndex]);
-      },
+      sliver: SliverList(delegate: SliverChildListDelegate(children)),
     );
   }
 
@@ -1354,294 +1666,330 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
   }
 
   Widget _buildPostCard(PostItem post) {
+    // 获取当前 post 的索引，用于 AutoScrollTag
+    int index = _posts.indexOf(post);
+
+    final GlobalKey anchorKey = _pidKeys.putIfAbsent(
+      post.pid,
+      () => GlobalKey(),
+    );
+    _floorKeys[post.floor] = anchorKey;
     final isLandlord = post.authorId == _landlordUid;
-    return Card(
-      margin: const EdgeInsets.symmetric(horizontal: 0, vertical: 0),
-      elevation: 0,
-      color: Theme.of(context).colorScheme.surface,
-      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.zero),
-      child: Padding(
-        padding: const EdgeInsets.all(16.0),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
+
+    // 使用 AutoScrollTag 包裹
+    return AutoScrollTag(
+      key: ValueKey(index),
+      controller: _scrollController,
+      index: index,
+      child: Container(
+        key: anchorKey,
+        child: Card(
+          margin: const EdgeInsets.symmetric(horizontal: 0, vertical: 0),
+          elevation: 0,
+          color: Theme.of(context).colorScheme.surface,
+          shape: const RoundedRectangleBorder(borderRadius: BorderRadius.zero),
+          child: Padding(
+            padding: const EdgeInsets.all(16.0),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                GestureDetector(
-                  onTap: () => _jumpToUser(post),
-                  child: CircleAvatar(
-                    radius: 18,
-                    backgroundColor: Colors.grey.shade200,
-                    backgroundImage: post.avatarUrl.isNotEmpty
-                        ? NetworkImage(post.avatarUrl)
-                        : null,
-                    child: post.avatarUrl.isEmpty
-                        ? const Icon(Icons.person, color: Colors.grey)
-                        : null,
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
+                Row(
+                  children: [
+                    GestureDetector(
+                      onTap: () => _jumpToUser(post),
+                      child: CircleAvatar(
+                        radius: 18,
+                        backgroundColor: Colors.grey.shade200,
+                        backgroundImage: post.avatarUrl.isNotEmpty
+                            ? NetworkImage(post.avatarUrl)
+                            : null,
+                        child: post.avatarUrl.isEmpty
+                            ? const Icon(Icons.person, color: Colors.grey)
+                            : null,
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          InkWell(
-                            onTap: () => _jumpToUser(post),
-                            child: Text(
-                              post.author,
-                              style: const TextStyle(
-                                fontWeight: FontWeight.bold,
-                                fontSize: 14,
-                              ),
-                            ),
-                          ),
-                          if (isLandlord) ...[
-                            const SizedBox(width: 6),
-                            Container(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 4,
-                                vertical: 1,
-                              ),
-                              decoration: BoxDecoration(
-                                color: Colors.blue.shade50,
-                                borderRadius: BorderRadius.circular(4),
-                              ),
-                              child: const Text(
-                                "楼主",
-                                style: TextStyle(
-                                  fontSize: 10,
-                                  color: Colors.blue,
-                                  fontWeight: FontWeight.bold,
+                          Row(
+                            children: [
+                              InkWell(
+                                onTap: () => _jumpToUser(post),
+                                child: Text(
+                                  post.author,
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 14,
+                                  ),
                                 ),
                               ),
+                              if (isLandlord) ...[
+                                const SizedBox(width: 6),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 4,
+                                    vertical: 1,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: Colors.blue.shade50,
+                                    borderRadius: BorderRadius.circular(4),
+                                  ),
+                                  child: const Text(
+                                    "楼主",
+                                    style: TextStyle(
+                                      fontSize: 10,
+                                      color: Colors.blue,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ],
+                          ),
+                          Text(
+                            "${post.floor} · ${post.time}",
+                            style: TextStyle(
+                              fontSize: 10,
+                              color: Colors.grey.shade500,
                             ),
-                          ],
+                          ),
                         ],
                       ),
-                      Text(
-                        "${post.floor} · ${post.time}",
-                        style: TextStyle(
-                          fontSize: 10,
-                          color: Colors.grey.shade500,
-                        ),
-                      ),
-                    ],
+                    ),
+                  ],
+                ),
+                // ... 在 _buildPostCard 方法里 ...
+                const SizedBox(height: 12),
+                SelectionArea(
+                  child: HtmlWidget(
+                    post.contentHtml,
+                    textStyle: const TextStyle(fontSize: 16, height: 1.6),
+
+                    // 【修复版】样式构建器
+                    customStylesBuilder: (element) {
+                      bool isDarkMode =
+                          Theme.of(context).brightness == Brightness.dark;
+
+                      // 1. 处理引用块 (Discuz 的回复框)
+                      if (element.localName == 'blockquote' ||
+                          element.classes.contains('quote')) {
+                        if (isDarkMode) {
+                          // 暗黑模式：深灰底 + 白字
+                          return {
+                            'background-color': '#303030',
+                            'color': '#E0E0E0',
+                            'border-left': '3px solid #777',
+                            'padding': '10px',
+                            'margin': '5px 0',
+                            'display': 'block', // 强制块级显示
+                          };
+                        } else {
+                          // 日间模式：浅灰底 + 黑字
+                          return {
+                            'background-color': '#F5F5F5',
+                            'color': '#333333',
+                            'border-left': '3px solid #DDD',
+                            'padding': '10px',
+                            'margin': '5px 0',
+                            'display': 'block',
+                          };
+                        }
+                      }
+
+                      // 2. 【关键修复】处理暗黑模式下，作者写死的颜色看不见的问题
+                      // 我们检查 style 属性字符串，而不是不存在的 .styles 对象
+                      if (isDarkMode &&
+                          element.attributes.containsKey('style')) {
+                        String style = element.attributes['style']!;
+                        // 如果包含了 color 设置（比如作者设了黑色），在暗黑模式下强制反转或者清除
+                        if (style.contains('color:')) {
+                          // 这里简单粗暴一点：如果是暗黑模式，且不是引用块，
+                          // 我们可以强制清除背景色，并将字体设为浅色，防止黑底黑字
+                          return {
+                            'color': '#CCCCCC', // 强制浅灰色字
+                            'background-color': 'transparent', // 清除背景
+                          };
+                        }
+                      }
+
+                      return null;
+                    },
+
+                    customWidgetBuilder: (element) {
+                      if (element.localName == 'img') {
+                        String src = element.attributes['src'] ?? '';
+                        if (src.isNotEmpty) return _buildClickableImage(src);
+                      }
+                      return null;
+                    },
+                    onTapUrl: (url) async {
+                      await _launchURL(url);
+                      return true;
+                    },
                   ),
                 ),
+                // ...
               ],
             ),
-            // ... 在 _buildPostCard 方法里 ...
-            const SizedBox(height: 12),
-            SelectionArea(
-              child: HtmlWidget(
-                post.contentHtml,
-                textStyle: const TextStyle(fontSize: 16, height: 1.6),
-
-                // 【修复版】样式构建器
-                customStylesBuilder: (element) {
-                  bool isDarkMode =
-                      Theme.of(context).brightness == Brightness.dark;
-
-                  // 1. 处理引用块 (Discuz 的回复框)
-                  if (element.localName == 'blockquote' ||
-                      element.classes.contains('quote')) {
-                    if (isDarkMode) {
-                      // 暗黑模式：深灰底 + 白字
-                      return {
-                        'background-color': '#303030',
-                        'color': '#E0E0E0',
-                        'border-left': '3px solid #777',
-                        'padding': '10px',
-                        'margin': '5px 0',
-                        'display': 'block', // 强制块级显示
-                      };
-                    } else {
-                      // 日间模式：浅灰底 + 黑字
-                      return {
-                        'background-color': '#F5F5F5',
-                        'color': '#333333',
-                        'border-left': '3px solid #DDD',
-                        'padding': '10px',
-                        'margin': '5px 0',
-                        'display': 'block',
-                      };
-                    }
-                  }
-
-                  // 2. 【关键修复】处理暗黑模式下，作者写死的颜色看不见的问题
-                  // 我们检查 style 属性字符串，而不是不存在的 .styles 对象
-                  if (isDarkMode && element.attributes.containsKey('style')) {
-                    String style = element.attributes['style']!;
-                    // 如果包含了 color 设置（比如作者设了黑色），在暗黑模式下强制反转或者清除
-                    if (style.contains('color:')) {
-                      // 这里简单粗暴一点：如果是暗黑模式，且不是引用块，
-                      // 我们可以强制清除背景色，并将字体设为浅色，防止黑底黑字
-                      return {
-                        'color': '#CCCCCC', // 强制浅灰色字
-                        'background-color': 'transparent', // 清除背景
-                      };
-                    }
-                  }
-
-                  return null;
-                },
-
-                customWidgetBuilder: (element) {
-                  if (element.localName == 'img') {
-                    String src = element.attributes['src'] ?? '';
-                    if (src.isNotEmpty) return _buildClickableImage(src);
-                  }
-                  return null;
-                },
-                onTapUrl: (url) async {
-                  await _launchURL(url);
-                  return true;
-                },
-              ),
-            ),
-            // ...
-          ],
+          ),
         ),
       ),
     );
   }
 
-  Widget _buildReaderMode() {
-    if (_posts.isEmpty) return const Center(child: Text("加载中..."));
+  Widget _buildReaderSliver() {
+    if (_posts.isEmpty) {
+      return const SliverFillRemaining(child: Center(child: Text("加载中...")));
+    }
 
     bool showPrevBtn = _minPage > 1;
-    int count = _posts.length + 1 + (showPrevBtn ? 1 : 0);
 
-    return Container(
-      color: _readerBgColor,
-      child: ListView.builder(
-        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 20),
-        itemCount: count,
-        itemBuilder: (context, index) {
-          if (showPrevBtn && index == 0) {
-            return Center(
-              child: TextButton(
-                onPressed: _loadPrev,
-                child: const Text("加载上一页"),
-              ),
-            );
-          }
-          if (index == count - 1) return _buildFooter();
+    List<Widget> children = [];
 
-          int postIndex = showPrevBtn ? index - 1 : index;
-          final post = _posts[postIndex];
+    if (showPrevBtn) {
+      children.add(
+        Center(
+          child: TextButton(onPressed: _loadPrev, child: const Text("加载上一页")),
+        ),
+      );
+    }
 
-          return Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              if (postIndex > 0)
-                Divider(height: 60, color: _readerTextColor.withOpacity(0.1)),
+    for (int i = 0; i < _posts.length; i++) {
+      final post = _posts[i];
+      // 注册 Key，用于自动定位
+      final GlobalKey anchorKey = _pidKeys.putIfAbsent(
+        post.pid,
+        () => GlobalKey(),
+      );
+      _floorKeys[post.floor] = anchorKey;
 
-              // 极简信息栏
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Text(
-                    post.floor,
-                    style: TextStyle(
-                      color: _readerTextColor.withOpacity(0.4),
-                      fontSize: 12,
-                    ),
-                  ),
-                  if (_isNovelMode)
+      children.add(
+        AutoScrollTag(
+          key: ValueKey(i),
+          controller: _scrollController,
+          index: i,
+          child: Container(
+            key: anchorKey,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (i > 0)
+                  Divider(height: 60, color: _readerTextColor.withOpacity(0.1)),
+
+                // 极简信息栏
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
                     Text(
-                      "第 ${_maxPage} 页", // 小说模式显示页码进度
+                      post.floor,
                       style: TextStyle(
                         color: _readerTextColor.withOpacity(0.4),
                         fontSize: 12,
                       ),
                     ),
-                ],
-              ),
-
-              const SizedBox(height: 20),
-
-              HtmlWidget(
-                post.contentHtml,
-                textStyle: TextStyle(
-                  fontSize: _fontSize,
-                  height: 1.8,
-                  color: _readerTextColor,
-                  fontFamily: "Serif",
+                    if (_isNovelMode)
+                      Text(
+                        "第 ${_maxPage} 页", // 小说模式显示页码进度
+                        style: TextStyle(
+                          color: _readerTextColor.withOpacity(0.4),
+                          fontSize: 12,
+                        ),
+                      ),
+                  ],
                 ),
 
-                // 【修复点】正确的样式清洗逻辑
-                customStylesBuilder: (element) {
-                  // 仅在阅读模式下启用
-                  if (_isReaderMode) {
-                    // 1. 处理 <font color="..."> 这种老式标签
-                    if (element.localName == 'font' ||
-                        element.attributes.containsKey('style')) {
-                      return {
-                        'color': _readerTextColor.toCssColor(),
-                        'background-color': 'transparent',
-                      };
-                    }
+                const SizedBox(height: 20),
 
-                    // 2. 处理 style="..." 属性 (element.attributes 是 Map)
-                    if (element.attributes.containsKey('style')) {
-                      String style = element.attributes['style']!;
-                      // 如果 style 字符串里包含 color 或 background
-                      if (style.contains('color') ||
-                          style.contains('background')) {
+                HtmlWidget(
+                  post.contentHtml,
+                  textStyle: TextStyle(
+                    fontSize: _fontSize,
+                    height: 1.8,
+                    color: _readerTextColor,
+                    fontFamily: "Serif",
+                  ),
+
+                  // 【修复点】正确的样式清洗逻辑
+                  customStylesBuilder: (element) {
+                    // 仅在阅读模式下启用
+                    if (_isReaderMode) {
+                      // 1. 处理 <font color="..."> 这种老式标签
+                      if (element.localName == 'font' ||
+                          element.attributes.containsKey('style')) {
                         return {
                           'color': _readerTextColor.toCssColor(),
                           'background-color': 'transparent',
                         };
                       }
+
+                      // 2. 处理 style="..." 属性 (element.attributes 是 Map)
+                      if (element.attributes.containsKey('style')) {
+                        String style = element.attributes['style']!;
+                        // 如果 style 字符串里包含 color 或 background
+                        if (style.contains('color') ||
+                            style.contains('background')) {
+                          return {
+                            'color': _readerTextColor.toCssColor(),
+                            'background-color': 'transparent',
+                          };
+                        }
+                      }
                     }
-                  }
 
-                  // 2. 【核心修复】处理引用块
-                  if (element.localName == 'blockquote' ||
-                      element.classes.contains('quote')) {
-                    // 阅读模式下，我们根据背景色深浅来决定引用块颜色
-                    // 如果背景很暗（夜间模式），引用块就用深色
-                    if (_readerBgColor.computeLuminance() < 0.5) {
-                      return {
-                        'background-color': 'rgba(255, 255, 255, 0.1)', // 半透明白
-                        'color': '#E0E0E0',
-                        'border-left': '3px solid #777',
-                        'padding': '10px',
-                      };
-                    } else {
-                      // 亮色背景（羊皮纸/白昼），引用块用浅色
-                      return {
-                        'background-color': 'rgba(0, 0, 0, 0.05)', // 半透明黑
-                        'color': '#333333',
-                        'border-left': '3px solid #999',
-                        'padding': '10px',
-                      };
+                    // 2. 【核心修复】处理引用块
+                    if (element.localName == 'blockquote' ||
+                        element.classes.contains('quote')) {
+                      // 阅读模式下，我们根据背景色深浅来决定引用块颜色
+                      // 如果背景很暗（夜间模式），引用块就用深色
+                      if (_readerBgColor.computeLuminance() < 0.5) {
+                        return {
+                          'background-color':
+                              'rgba(255, 255, 255, 0.1)', // 半透明白
+                          'color': '#E0E0E0',
+                          'border-left': '3px solid #777',
+                          'padding': '10px',
+                        };
+                      } else {
+                        // 亮色背景（羊皮纸/白昼），引用块用浅色
+                        return {
+                          'background-color': 'rgba(0, 0, 0, 0.05)', // 半透明黑
+                          'color': '#333333',
+                          'border-left': '3px solid #999',
+                          'padding': '10px',
+                        };
+                      }
                     }
-                  }
 
-                  return null;
-                },
+                    return null;
+                  },
 
-                customWidgetBuilder: (element) {
-                  if (element.localName == 'img') {
-                    String src = element.attributes['src'] ?? '';
-                    if (src.isNotEmpty) return _buildClickableImage(src);
-                  }
-                  return null;
-                },
+                  customWidgetBuilder: (element) {
+                    if (element.localName == 'img') {
+                      String src = element.attributes['src'] ?? '';
+                      if (src.isNotEmpty) return _buildClickableImage(src);
+                    }
+                    return null;
+                  },
 
-                onTapUrl: (url) async {
-                  await _launchURL(url);
-                  return true;
-                },
-              ),
-            ],
-          );
-        },
-      ),
+                  onTapUrl: (url) async {
+                    await _launchURL(url);
+                    return true;
+                  },
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
+    children.add(_buildFooter());
+
+    return SliverPadding(
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 20),
+      sliver: SliverList(delegate: SliverChildListDelegate(children)),
     );
   }
 }

@@ -165,7 +165,8 @@ class _BookmarkPageState extends State<BookmarkPage> {
                                       initialNovelMode: item.isNovelMode,
                                       initialAuthorId: item.authorId,
                                       initialTargetFloor:
-                                          targetFloor, // 【新增】传进去
+                                          item.targetFloor ?? targetFloor,
+                                      initialTargetPid: item.targetPid,
                                     ),
                                   ),
                                 );

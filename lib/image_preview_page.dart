@@ -4,15 +4,18 @@ import 'package:photo_view/photo_view.dart';
 import 'package:dio/dio.dart';
 import 'package:gal/gal.dart'; // 【改动1】引入新库
 import 'package:cached_network_image/cached_network_image.dart';
+import 'package:flutter_cache_manager/flutter_cache_manager.dart';
 
 class ImagePreviewPage extends StatefulWidget {
   final String imageUrl;
   final Map<String, String> headers;
+  final BaseCacheManager? cacheManager;
 
   const ImagePreviewPage({
     super.key,
     required this.imageUrl,
     required this.headers,
+    this.cacheManager,
   });
 
   @override
@@ -97,9 +100,15 @@ class _ImagePreviewPageState extends State<ImagePreviewPage> {
         imageProvider: CachedNetworkImageProvider(
           widget.imageUrl,
           headers: widget.headers,
+          cacheManager: widget.cacheManager,
         ),
-        loadingBuilder: (context, event) =>
-            const Center(child: CircularProgressIndicator(color: Colors.white)),
+        loadingBuilder: (context, event) => Center(
+          child: CircularProgressIndicator(
+            value: event == null
+                ? null
+                : event.cumulativeBytesLoaded / (event.expectedTotalBytes ?? 1),
+          ),
+        ),
         errorBuilder: (context, error, stackTrace) => const Center(
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,

@@ -105,6 +105,8 @@ class BookmarkItem {
   final int page;
   final String savedTime;
   final bool isNovelMode;
+  final String? targetPid;
+  final String? targetFloor;
 
   BookmarkItem({
     required this.tid,
@@ -114,6 +116,8 @@ class BookmarkItem {
     required this.page,
     required this.savedTime,
     this.isNovelMode = false,
+    this.targetPid,
+    this.targetFloor,
   });
 
   Map<String, dynamic> toJson() => {
@@ -124,6 +128,8 @@ class BookmarkItem {
     'page': page,
     'savedTime': savedTime,
     'isNovelMode': isNovelMode,
+    'targetPid': targetPid,
+    'targetFloor': targetFloor,
   };
 
   factory BookmarkItem.fromJson(Map<String, dynamic> json) {
@@ -135,6 +141,8 @@ class BookmarkItem {
       page: json['page'] ?? 1,
       savedTime: json['savedTime'] ?? "",
       isNovelMode: json['isNovelMode'] ?? false,
+      targetPid: json['targetPid'],
+      targetFloor: json['targetFloor'],
     );
   }
 }

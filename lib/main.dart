@@ -8,13 +8,13 @@ import 'thread_list_page.dart';
 import 'search_page.dart';
 import 'favorite_page.dart';
 import 'bookmark_page.dart';
-import 'package:flutter_cache_manager/flutter_cache_manager.dart';
 import 'user_detail_page.dart'; // 用于跳转
 import 'dart:io';
-import 'package:permission_handler/permission_handler.dart'; // 用于跳转系统设置
 import 'package:url_launcher/url_launcher.dart';
 
 import 'package:image_picker/image_picker.dart';
+import 'package:cached_network_image/cached_network_image.dart'; // 引入缓存图片库
+import 'cache_helper.dart'; // 引入缓存助手
 
 // 全局状态
 final ValueNotifier<String> currentUser = ValueNotifier("未登录");
@@ -206,7 +206,7 @@ class _ForumHomePageState extends State<ForumHomePage> {
   List<Category> _categories = [];
   Map<String, Forum> _forumsMap = {};
   bool _isLoading = true;
-  late final WebViewController _hiddenController;
+  WebViewController? _hiddenController;
 
   @override
   void initState() {
@@ -275,7 +275,7 @@ class _ForumHomePageState extends State<ForumHomePage> {
       print("🍪 Cookie 已强力注入 WebView 系统！");
     }
 
-    _hiddenController = WebViewController()
+    final controller = WebViewController()
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
       ..setUserAgent(kUserAgent)
       ..setNavigationDelegate(
@@ -289,7 +289,7 @@ class _ForumHomePageState extends State<ForumHomePage> {
               print("🔥 Session 激活成功，开始请求 API...");
               final String timestamp = DateTime.now().millisecondsSinceEpoch
                   .toString();
-              _hiddenController.loadRequest(
+              _hiddenController?.loadRequest(
                 Uri.parse(
                   'https://www.giantessnight.com/gnforum2012/api/mobile/index.php?version=4&module=forumindex&t=$timestamp',
                 ),
@@ -298,6 +298,12 @@ class _ForumHomePageState extends State<ForumHomePage> {
           },
         ),
       );
+
+    if (mounted) {
+      setState(() {
+        _hiddenController = controller;
+      });
+    }
 
     // 3. 开始加载 (带上 Header 双重保险)
     _fetchData();
@@ -315,7 +321,7 @@ class _ForumHomePageState extends State<ForumHomePage> {
     // 【新增】每次刷新前清理 WebView 缓存，确保 Cookie 状态重置
     // 这样能解决"第一次行第二次不行"的问题
     try {
-      await _hiddenController.clearCache();
+      await _hiddenController?.clearCache();
     } catch (e) {
       // 忽略清理失败
     }
@@ -323,7 +329,7 @@ class _ForumHomePageState extends State<ForumHomePage> {
     print("🔄 开始预热 Session (身份统一: 手机版)...");
 
     // 预热使用 mobile=2，与登录态保持一致
-    _hiddenController.loadRequest(
+    _hiddenController?.loadRequest(
       Uri.parse('https://www.giantessnight.com/gnforum2012/forum.php?mobile=2'),
     );
   }
@@ -332,9 +338,10 @@ class _ForumHomePageState extends State<ForumHomePage> {
   // 3. 核心解析逻辑 (修复了重复定义和解析兼容性)
   // ==========================================
   Future<void> _parsePageContent() async {
+    if (_hiddenController == null) return;
     try {
       final String content =
-          await _hiddenController.runJavaScriptReturningResult(
+          await _hiddenController!.runJavaScriptReturningResult(
                 "document.body.innerText",
               )
               as String;
@@ -513,7 +520,9 @@ class _ForumHomePageState extends State<ForumHomePage> {
         SizedBox(
           height: 0,
           width: 0,
-          child: WebViewWidget(controller: _hiddenController),
+          child: _hiddenController != null
+              ? WebViewWidget(controller: _hiddenController!)
+              : const SizedBox(),
         ),
       ],
     );
@@ -664,70 +673,208 @@ class _ProfilePageState extends State<ProfilePage> {
   // 【新增】显示清理缓存选项弹窗
   // 【修正版】显示清理缓存选项弹窗
   void _showClearCacheDialog(BuildContext context) {
+    // 1. 先计算当前大小
+    String cacheSizeStr = "计算中...";
+    String cachePath = "";
+    bool isClearing = false;
+
     showDialog(
       context: context,
-      builder: (ctx) {
-        return AlertDialog(
-          title: const Text("清除缓存"),
-          content: const Text(
-            "图片缓存通常占用了大部分空间。\n\n"
-            "• 清理图片：释放空间，保留登录状态 (推荐)\n"
-            "• 系统清理：跳转至设置，可选择清除全部数据",
-            style: TextStyle(fontSize: 14),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(ctx),
-              child: const Text("取消", style: TextStyle(color: Colors.grey)),
-            ),
-            // 选项 1：跳转系统设置
-            TextButton(
-              onPressed: () {
-                // 这里调用 permission_handler 库的方法
-                openAppSettings();
-                Navigator.pop(ctx);
-              },
-              child: const Text("系统设置"),
-            ),
-            // 选项 2：只清理图片 (最常用)
-            FilledButton(
-              onPressed: () async {
-                Navigator.pop(ctx); // 先关弹窗
-
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(
-                    content: Text("正在清理图片缓存..."),
-                    duration: Duration(
-                      milliseconds: 500,
-                    ), // 【修复】duration 是 SnackBar 的参数，放在 Text 外面
-                  ),
-                );
-
-                try {
-                  // 1. 清理全局自定义图片缓存 (需确保引入了 forum_model.dart)
-                  await globalImageCache.emptyCache();
-                  // 2. 清理默认图片缓存
-                  await DefaultCacheManager().emptyCache();
-
-                  // 注意：这里我们故意 不调用 WebViewController().clearCache()
-                  // 也不调用 WebViewCookieManager().clearCookies()
-                  // 这样既不会闪退，也不会掉登录
-
-                  if (context.mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text("✨ 图片缓存已释放，登录状态保留")),
-                    );
-                  }
-                } catch (e) {
-                  print("清理失败: $e");
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setState) {
+            // 异步加载大小 (仅在初始化时)
+            if (cacheSizeStr == "计算中..." && !isClearing) {
+              CacheHelper.getCachePath().then((p) {
+                if (context.mounted) setState(() => cachePath = p);
+              });
+              CacheHelper.getTotalCacheSize().then((bytes) {
+                if (context.mounted) {
+                  setState(() {
+                    cacheSizeStr = CacheHelper.formatSize(bytes);
+                  });
                 }
-              },
-              child: const Text("清理图片"),
-            ),
-          ],
+              });
+            }
+
+            return AlertDialog(
+              title: const Text("缓存管理"),
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      "如果是为了节省空间，建议定期清理图片缓存。\n文章缓存（WebView）清理后需要重新加载网页资源。",
+                      style: TextStyle(fontSize: 13),
+                    ),
+                    const SizedBox(height: 15),
+
+                    if (cachePath.isNotEmpty)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 10),
+                        child: SelectableText(
+                          "缓存路径: $cachePath",
+                          style: const TextStyle(
+                            fontSize: 10,
+                            color: Colors.grey,
+                          ),
+                        ),
+                      ),
+
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: Theme.of(
+                          context,
+                        ).colorScheme.surfaceContainerHighest,
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Column(
+                        children: [
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              const Text("当前图片缓存占用:"),
+                              isClearing
+                                  ? const SizedBox(
+                                      width: 16,
+                                      height: 16,
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                      ),
+                                    )
+                                  : Text(
+                                      cacheSizeStr,
+                                      style: const TextStyle(
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      leading: const Icon(
+                        Icons.delete_forever,
+                        color: Colors.red,
+                      ),
+                      title: const Text("清理图片缓存 (强力)"),
+                      subtitle: const Text("删除所有已下载的帖子图片"),
+                      onTap: isClearing
+                          ? null
+                          : () async {
+                              setState(() {
+                                isClearing = true;
+                              });
+                              // 不关闭弹窗，直接清理
+                              await _clearImageCache(showLoading: false);
+
+                              // 重新计算大小
+                              int bytes = await CacheHelper.getTotalCacheSize();
+                              if (context.mounted) {
+                                setState(() {
+                                  isClearing = false;
+                                  cacheSizeStr = CacheHelper.formatSize(bytes);
+                                });
+                              }
+                            },
+                    ),
+                    ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      leading: const Icon(Icons.web, color: Colors.orange),
+                      title: const Text("清理网页缓存"),
+                      subtitle: const Text("删除网页Cookie、浏览记录等"),
+                      onTap: () async {
+                        Navigator.pop(context);
+                        _clearWebViewCache();
+                      },
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: const Text("关闭"),
+                ),
+              ],
+            );
+          },
         );
       },
     );
+  }
+
+  Future<void> _clearImageCache({bool showLoading = true}) async {
+    if (showLoading) {
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (c) => const Center(child: CircularProgressIndicator()),
+      );
+    }
+
+    try {
+      // 1. 先尝试清理 WebView 缓存 (释放文件锁)
+      // 这是关键步骤，防止文件被占用导致删不掉
+      try {
+        await WebViewController().clearCache();
+      } catch (e) {
+        print("WebView clearCache 失败 (非致命): $e");
+      }
+
+      // 2. 清理内存缓存 (Flutter ImageCache)
+      PaintingBinding.instance.imageCache.clear();
+      PaintingBinding.instance.imageCache.clearLiveImages();
+
+      // 3. 使用 Helper 进行强力清理 (文件级删除)
+      await CacheHelper.clearAllCaches();
+
+      if (mounted) {
+        if (showLoading) Navigator.pop(context); // Close loading
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text("✅ 缓存已彻底清理 (图片+网页)")));
+      }
+    } catch (e) {
+      if (mounted) {
+        if (showLoading) Navigator.pop(context); // Close loading
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text("❌ 清理失败: $e")));
+      }
+    }
+  }
+
+  Future<void> _clearWebViewCache() async {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (c) => const Center(child: CircularProgressIndicator()),
+    );
+
+    try {
+      // 创建临时控制器清理缓存
+      await WebViewController().clearCache();
+
+      if (mounted) {
+        Navigator.pop(context); // Close loading
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text("✅ 网页缓存已清理")));
+      }
+    } catch (e) {
+      if (mounted) {
+        Navigator.pop(context);
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text("❌ 清理失败: $e")));
+      }
+    }
   }
 
   // 【新增】跳转到我的帖子
@@ -880,7 +1027,7 @@ class _ProfilePageState extends State<ProfilePage> {
                               context,
                             ).colorScheme.primaryContainer,
                             backgroundImage: (isLogin && avatarUrl.isNotEmpty)
-                                ? NetworkImage(avatarUrl)
+                                ? CachedNetworkImageProvider(avatarUrl)
                                 : null,
                             child: (!isLogin || avatarUrl.isEmpty)
                                 ? const Icon(Icons.person, size: 50)

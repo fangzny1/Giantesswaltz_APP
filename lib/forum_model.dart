@@ -1,4 +1,5 @@
 // lib/forum_model.dart
+
 class Category {
   final String fid;
   final String name;
@@ -7,10 +8,16 @@ class Category {
   Category({required this.fid, required this.name, required this.forumIds});
 
   factory Category.fromJson(Map<String, dynamic> json) {
+    // Discuz 的 forums 字段有时候是 List，有时候是 null
+    List<String> fids = [];
+    if (json['forums'] != null && json['forums'] is List) {
+      fids = List<String>.from(json['forums']);
+    }
+
     return Category(
       fid: json['fid']?.toString() ?? '',
-      name: json['name'] ?? '',
-      forumIds: json['forums'] != null ? List<String>.from(json['forums']) : [],
+      name: json['name']?.toString() ?? '', // 强制转 String，防止 null
+      forumIds: fids,
     );
   }
 }
@@ -35,10 +42,10 @@ class Forum {
   factory Forum.fromJson(Map<String, dynamic> json) {
     return Forum(
       fid: json['fid']?.toString() ?? '',
-      name: json['name'] ?? '',
-      threads: json['threads']?.toString() ?? '0',
+      name: json['name']?.toString() ?? '',
+      threads: json['threads']?.toString() ?? '0', // 即使是 int 也能转 string
       posts: json['posts']?.toString() ?? '0',
-      description: json['description'] ?? '',
+      description: json['description']?.toString() ?? '',
       todayposts: json['todayposts']?.toString() ?? '0',
     );
   }
@@ -64,8 +71,8 @@ class Thread {
   factory Thread.fromJson(Map<String, dynamic> json) {
     return Thread(
       tid: json['tid']?.toString() ?? '',
-      subject: json['subject'] ?? '无标题',
-      author: json['author'] ?? '匿名',
+      subject: json['subject']?.toString() ?? '无标题',
+      author: json['author']?.toString() ?? '匿名',
       replies: json['replies']?.toString() ?? '0',
       views: json['views']?.toString() ?? '0',
       readperm: json['readperm']?.toString() ?? '0',
@@ -73,13 +80,12 @@ class Thread {
   }
 }
 
-// 帖子详情里的每一楼（包括楼主和回复）
 class PostInfo {
   final String pid;
   final String author;
   final String avatarUrl;
   final String time;
-  final String contentHtml; // 正文 HTML 内容
+  final String contentHtml;
 
   PostInfo({
     required this.pid,
@@ -89,16 +95,16 @@ class PostInfo {
     required this.contentHtml,
   });
 }
-// ... (保留 Category, Forum, Thread, PostInfo)
 
 class BookmarkItem {
   final String tid;
   final String subject;
   final String author;
-  final int page; // 看到第几页了
-  final String savedTime; // 保存时间
-  final String authorId; // 【新增】保存楼主UID
+  final String authorId;
+  final int page;
+  final String savedTime;
   final bool isNovelMode;
+
   BookmarkItem({
     required this.tid,
     required this.subject,
@@ -109,26 +115,25 @@ class BookmarkItem {
     this.isNovelMode = false,
   });
 
-  // 转 JSON 存本地
   Map<String, dynamic> toJson() => {
     'tid': tid,
     'subject': subject,
     'author': author,
+    'authorId': authorId,
     'page': page,
-
     'savedTime': savedTime,
     'isNovelMode': isNovelMode,
   };
 
   factory BookmarkItem.fromJson(Map<String, dynamic> json) {
     return BookmarkItem(
-      tid: json['tid'],
-      subject: json['subject'],
-      author: json['author'],
-      authorId: json['authorId'] ?? "", // 【新增】兼容旧数据
+      tid: json['tid'] ?? "",
+      subject: json['subject'] ?? "",
+      author: json['author'] ?? "",
+      authorId: json['authorId'] ?? "",
       page: json['page'] ?? 1,
-      savedTime: json['savedTime'],
-      isNovelMode: json['isNovelMode'] ?? false, // 读取状态，兼容旧数据
+      savedTime: json['savedTime'] ?? "",
+      isNovelMode: json['isNovelMode'] ?? false,
     );
   }
 }

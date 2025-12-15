@@ -151,63 +151,138 @@ class _ForumHomePageState extends State<ForumHomePage> {
     _fetchData();
   }
 
-  void _initHiddenWebView() {
+  // 在 _ForumHomePageState 类中
+
+  Future<void> _initHiddenWebView() async {
+    // 1. 读取本地 Cookie
+    final prefs = await SharedPreferences.getInstance();
+    final String savedCookie = prefs.getString('saved_cookie_string') ?? "";
+
+    // 2. 【核心修复】在创建 Controller 之前，先把 Cookie 塞进系统管理器
+    //  这样 WebView 所有的请求（包括图片、AJAX、重定向）都会自动带上 Cookie
+    if (savedCookie.isNotEmpty) {
+      final cookieMgr = WebViewCookieManager();
+      // 简单粗暴：把整个字符串作为 Cookie 注入
+      // 注意：Discuz 需要域名匹配，我们设为主域名
+      await cookieMgr.setCookie(
+        WebViewCookie(
+          name: 'cookie_import', // 名字不重要，重要的是 value
+          value: 'imported', // 占位
+          domain: 'giantessnight.com',
+        ),
+      );
+
+      // 更高级的注入：解析原始字符串（这一步能极大提高稳定性）
+      // 原始 Cookie 格式通常是 "name=value; name2=value2"
+      List<String> rawCookies = savedCookie.split(';');
+      for (var c in rawCookies) {
+        if (c.contains('=')) {
+          var parts = c.split('=');
+          var key = parts[0].trim();
+          var value = parts.sublist(1).join('=').trim();
+          if (key.isNotEmpty) {
+            try {
+              await cookieMgr.setCookie(
+                WebViewCookie(
+                  name: key,
+                  value: value,
+                  domain: 'giantessnight.com', // 关键！必须是这个域名
+                ),
+              );
+              await cookieMgr.setCookie(
+                WebViewCookie(
+                  name: key,
+                  value: value,
+                  domain: 'www.giantessnight.com', //以此类推，www也加一份
+                ),
+              );
+            } catch (e) {
+              // 忽略个别格式错误的 cookie
+            }
+          }
+        }
+      }
+      print("🍪 Cookie 已强力注入 WebView 系统！");
+    }
+
     _hiddenController = WebViewController()
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
-      ..setUserAgent(kUserAgent) // 必须和登录页一致
+      ..setUserAgent(kUserAgent)
       ..setNavigationDelegate(
         NavigationDelegate(
           onPageFinished: (url) {
-            print("🌐 页面加载完毕: $url");
-
-            // 1. 如果加载的是 API 接口，尝试解析数据
             if (url.contains('module=forumindex')) {
               _parsePageContent();
             }
-            // 2. 【新增】如果加载的是普通网页（预热完成），立刻发起 API 请求
+            // 只要加载的是 forum.php (不管后面参数是啥)，都视为预热成功
             else if (url.contains('forum.php')) {
-              print("🔥 Session 预热成功，开始请求数据 API...");
+              print("🔥 Session 激活成功，开始请求 API...");
+              final String timestamp = DateTime.now().millisecondsSinceEpoch
+                  .toString();
               _hiddenController.loadRequest(
                 Uri.parse(
-                  'https://www.giantessnight.com/gnforum2012/api/mobile/index.php?version=4&module=forumindex',
+                  'https://www.giantessnight.com/gnforum2012/api/mobile/index.php?version=4&module=forumindex&t=$timestamp',
                 ),
               );
-            }
-          },
-          // 增加错误处理
-          onWebResourceError: (error) {
-            print("❌ WebView 错误: ${error.description}");
-            if (mounted) {
-              setState(() {
-                _isLoading = false;
-                // 这里可以给 _categories 加一个假的错误数据提示用户刷新
-              });
             }
           },
         ),
       );
 
-    // 初始化时直接开始
+    // 3. 开始加载 (带上 Header 双重保险)
     _fetchData();
   }
 
+  // 新增一个带 Cookie 的加载方法
+  // 在 _ForumHomePageState 类中
+
+  // 统一的加载方法
+  // 在 _ForumHomePageState 类中
+
+  // ==========================================
+  // 1. 强制刷新并带 Cookie 请求的方法
+  // ==========================================
+  Future<void> _fetchDataWithCookie(String cookie) async {
+    if (!mounted) return;
+    setState(() {
+      _isLoading = true;
+    });
+
+    // 【核心修复】请求前强制清除 WebView 缓存
+    await _hiddenController.clearCache();
+
+    final String timestamp = DateTime.now().millisecondsSinceEpoch.toString();
+    final String apiUrl =
+        'https://www.giantessnight.com/gnforum2012/api/mobile/index.php?version=4&module=forumindex&t=$timestamp';
+
+    print("🚀 [强制刷新] 请求主页数据: $apiUrl");
+
+    _hiddenController.loadRequest(
+      Uri.parse(apiUrl),
+      headers: {'Cookie': cookie, 'User-Agent': kUserAgent},
+    );
+  }
+
+  // ==========================================
+  // 2. 初始预热方法
+  // ==========================================
   void _fetchData() {
     if (!mounted) return;
     setState(() {
       _isLoading = true;
     });
 
-    // 【核心修改】不直接请求 API，而是先请求一个普通的论坛页面
-    // 这样做是为了通过 WAF (防火墙) 的检查，激活 Session
-    // 等这个页面加载完 (onPageFinished)，我们再去请求 JSON API
-    print("🔄 开始预热 Session...");
+    print("🔄 开始预热 Session (身份统一: 手机版)...");
+
+    // 预热使用 mobile=2，与登录态保持一致
     _hiddenController.loadRequest(
-      Uri.parse(
-        'https://www.giantessnight.com/gnforum2012/forum.php?mobile=no',
-      ),
+      Uri.parse('https://www.giantessnight.com/gnforum2012/forum.php?mobile=2'),
     );
   }
 
+  // ==========================================
+  // 3. 核心解析逻辑 (修复了重复定义和解析兼容性)
+  // ==========================================
   Future<void> _parsePageContent() async {
     try {
       final String content =
@@ -215,19 +290,23 @@ class _ForumHomePageState extends State<ForumHomePage> {
                 "document.body.innerText",
               )
               as String;
+
+      // 清洗数据
       String jsonString = content;
       if (jsonString.startsWith('"') && jsonString.endsWith('"')) {
         jsonString = jsonString.substring(1, jsonString.length - 1);
         jsonString = jsonString.replaceAll('\\"', '"').replaceAll('\\\\', '\\');
       }
 
-      var data = jsonDecode(jsonString);
+      print(
+        "📄 服务器返回原始内容: ${jsonString.length > 100 ? jsonString.substring(0, 100) + '...' : jsonString}",
+      );
 
-      if (data['Variables'] == null) {
-        if (currentUser.value != "未登录") {
-          currentUser.value = "未登录";
-          (await SharedPreferences.getInstance()).remove('username');
-        }
+      var data;
+      try {
+        data = jsonDecode(jsonString);
+      } catch (e) {
+        print("❌ JSON 格式错误，服务器返回的可能不是数据");
         if (mounted)
           setState(() {
             _isLoading = false;
@@ -235,48 +314,93 @@ class _ForumHomePageState extends State<ForumHomePage> {
         return;
       }
 
+      // 处理 to_login 错误 (Cookie 失效)
+      if (data['error'] == 'to_login' ||
+          (data['Message'] != null &&
+              data['Message']['messageval'] == 'to_login')) {
+        print("⚠️ 检测到 Cookie 失效或需要登录");
+        // 这里可以选择清理本地缓存，或者只是停止加载
+        if (mounted)
+          setState(() {
+            _isLoading = false;
+          });
+        return;
+      }
+
+      if (data['Variables'] == null) {
+        print("⚠️ 数据解析异常: 缺少 Variables 字段");
+        if (mounted)
+          setState(() {
+            _isLoading = false;
+          });
+        return;
+      }
+
+      // === 开始解析 Variables ===
       var variables = data['Variables'];
+
+      // 1. 更新用户信息
       String newName = variables['member_username'].toString();
       String newUid = variables['member_uid'].toString();
 
       if (newName.isNotEmpty && newName != currentUser.value) {
         final prefs = await SharedPreferences.getInstance();
-
-        // 1. 更新用户名
         currentUser.value = newName;
         await prefs.setString('username', newName);
 
-        // 2. 【新增】更新 UID 和 头像
         if (newUid.isNotEmpty && newUid != "0") {
           currentUserUid.value = newUid;
           await prefs.setString('uid', newUid);
-
-          // Discuz 标准头像接口: uc_server/avatar.php?uid=XXX&size=middle
           String avatarUrl =
               "https://www.giantessnight.com/gnforum2012/uc_server/avatar.php?uid=$newUid&size=middle";
           currentUserAvatar.value = avatarUrl;
           await prefs.setString('avatar', avatarUrl);
         }
-        List<dynamic> catJsonList = variables['catlist'] ?? [];
-        List<Category> tempCats = catJsonList
-            .map((e) => Category.fromJson(e))
-            .toList();
-        List<dynamic> forumJsonList = variables['forumlist'] ?? [];
-        Map<String, Forum> tempForumMap = {};
-        for (var f in forumJsonList) {
-          var forum = Forum.fromJson(f);
-          tempForumMap[forum.fid] = forum;
-        }
+      }
 
-        if (mounted) {
-          setState(() {
-            _categories = tempCats;
-            _forumsMap = tempForumMap;
-            _isLoading = false;
+      // 2. 解析分区 (catlist) - 兼容 List 和 Map
+      List<Category> tempCats = [];
+      var rawCatList = variables['catlist'];
+
+      if (rawCatList != null) {
+        if (rawCatList is List) {
+          tempCats = rawCatList.map((e) => Category.fromJson(e)).toList();
+        } else if (rawCatList is Map) {
+          rawCatList.forEach((k, v) {
+            tempCats.add(Category.fromJson(v));
           });
         }
       }
+
+      // 3. 解析板块 (forumlist) - 兼容 List 和 Map
+      Map<String, Forum> tempForumMap = {};
+      var rawForumList = variables['forumlist'];
+
+      if (rawForumList != null) {
+        if (rawForumList is List) {
+          for (var f in rawForumList) {
+            var forum = Forum.fromJson(f);
+            tempForumMap[forum.fid] = forum;
+          }
+        } else if (rawForumList is Map) {
+          rawForumList.forEach((k, v) {
+            var forum = Forum.fromJson(v);
+            tempForumMap[forum.fid] = forum;
+          });
+        }
+      }
+
+      print("✅ 解析成功: 获取到 ${tempCats.length} 个分区, ${tempForumMap.length} 个板块");
+
+      if (mounted) {
+        setState(() {
+          _categories = tempCats;
+          _forumsMap = tempForumMap;
+          _isLoading = false;
+        });
+      }
     } catch (e) {
+      print("❌ 解析过程报错: $e");
       if (mounted)
         setState(() {
           _isLoading = false;

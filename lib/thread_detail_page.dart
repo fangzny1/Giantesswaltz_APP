@@ -117,7 +117,7 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
       parent: _fabAnimationController,
       curve: Curves.easeInOut,
     );
-
+    _loadLocalCookie();
     _loadSettings(); // 【新增】加载背景色设置
     if (widget.initialNovelMode) {
       _isNovelMode = true;
@@ -132,9 +132,20 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
         _landlordUid = widget.initialAuthorId;
       }
     }
+
     _initWebView();
     _initFavCheck();
     _scrollController.addListener(_onScroll);
+  }
+
+  Future<void> _loadLocalCookie() async {
+    final prefs = await SharedPreferences.getInstance();
+    final String saved = prefs.getString('saved_cookie_string') ?? "";
+    if (mounted) {
+      setState(() {
+        _userCookies = saved; // 赋值给全局变量，供图片加载使用
+      });
+    }
   }
 
   // 加载用户之前的阅读偏好
@@ -241,7 +252,13 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
     if (_isOnlyLandlord && _landlordUid != null)
       url += '&authorid=$_landlordUid';
     print("🚀 加载帖子: 第 $page 页");
-    _hiddenController.loadRequest(Uri.parse(url));
+    _hiddenController.loadRequest(
+      Uri.parse(url),
+      headers: {
+        'Cookie': _userCookies, // 带上！
+        'User-Agent': kUserAgent,
+      },
+    );
   }
 
   void _loadNext() {

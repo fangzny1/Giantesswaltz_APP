@@ -49,6 +49,20 @@ void main() async {
   else if (themeStr == 'light')
     currentTheme.value = ThemeMode.light;
 
+  // 【新增】自动清理缓存逻辑
+  bool clearImage = prefs.getBool('auto_clear_image_cache') ?? false;
+  bool clearText = prefs.getBool('auto_clear_text_cache') ?? false;
+
+  if (clearImage || clearText) {
+    // 不阻塞主线程启动，但开始执行清理
+    CacheHelper.clearAllCaches(
+      clearFiles: clearImage,
+      clearHtml: clearText,
+    ).then((_) {
+      print("🚀 [Main] 启动自动清理完成");
+    });
+  }
+
   runApp(const MyApp());
 }
 
@@ -672,18 +686,24 @@ class _ProfilePageState extends State<ProfilePage> {
 
   // 【新增】显示清理缓存选项弹窗
   // 【修正版】显示清理缓存选项弹窗
-  void _showClearCacheDialog(BuildContext context) {
+  void _showClearCacheDialog(BuildContext context) async {
     // 1. 先计算当前大小
     String cacheSizeStr = "计算中...";
+    String debugInfo = "";
     String cachePath = "";
     bool isClearing = false;
 
+    // 自动清理设置状态
+    bool? autoClearImage;
+    bool? autoClearText;
+
+    // 显示加载中的弹窗，等计算完了再更新内容
     showDialog(
       context: context,
       builder: (context) {
         return StatefulBuilder(
           builder: (context, setState) {
-            // 异步加载大小 (仅在初始化时)
+            // 异步加载大小和设置 (仅在初始化时)
             if (cacheSizeStr == "计算中..." && !isClearing) {
               CacheHelper.getCachePath().then((p) {
                 if (context.mounted) setState(() => cachePath = p);
@@ -692,6 +712,16 @@ class _ProfilePageState extends State<ProfilePage> {
                 if (context.mounted) {
                   setState(() {
                     cacheSizeStr = CacheHelper.formatSize(bytes);
+                  });
+                }
+              });
+              SharedPreferences.getInstance().then((prefs) {
+                if (context.mounted) {
+                  setState(() {
+                    autoClearImage =
+                        prefs.getBool('auto_clear_image_cache') ?? false;
+                    autoClearText =
+                        prefs.getBool('auto_clear_text_cache') ?? false;
                   });
                 }
               });
@@ -709,6 +739,33 @@ class _ProfilePageState extends State<ProfilePage> {
                       style: TextStyle(fontSize: 13),
                     ),
                     const SizedBox(height: 15),
+
+                    // 自动清理开关
+                    if (autoClearImage != null)
+                      SwitchListTile(
+                        contentPadding: EdgeInsets.zero,
+                        title: const Text("退出后自动清理图片"),
+                        subtitle: const Text("下次启动App时生效"),
+                        value: autoClearImage!,
+                        onChanged: (val) async {
+                          setState(() => autoClearImage = val);
+                          final prefs = await SharedPreferences.getInstance();
+                          await prefs.setBool('auto_clear_image_cache', val);
+                        },
+                      ),
+                    if (autoClearText != null)
+                      SwitchListTile(
+                        contentPadding: EdgeInsets.zero,
+                        title: const Text("退出后自动清理文本"),
+                        subtitle: const Text("下次启动App时生效"),
+                        value: autoClearText!,
+                        onChanged: (val) async {
+                          setState(() => autoClearText = val);
+                          final prefs = await SharedPreferences.getInstance();
+                          await prefs.setBool('auto_clear_text_cache', val);
+                        },
+                      ),
+                    const Divider(),
 
                     if (cachePath.isNotEmpty)
                       Padding(
@@ -735,7 +792,7 @@ class _ProfilePageState extends State<ProfilePage> {
                           Row(
                             mainAxisAlignment: MainAxisAlignment.spaceBetween,
                             children: [
-                              const Text("当前图片缓存占用:"),
+                              const Text("当前缓存占用:"),
                               isClearing
                                   ? const SizedBox(
                                       width: 16,
@@ -786,13 +843,14 @@ class _ProfilePageState extends State<ProfilePage> {
                     ListTile(
                       contentPadding: EdgeInsets.zero,
                       leading: const Icon(Icons.web, color: Colors.orange),
-                      title: const Text("清理网页缓存"),
-                      subtitle: const Text("删除网页Cookie、浏览记录等"),
+                      title: const Text("清理网页与文本缓存"),
+                      subtitle: const Text("删除网页Cookie、帖子文本等"),
                       onTap: () async {
                         Navigator.pop(context);
                         _clearWebViewCache();
                       },
                     ),
+                    const SizedBox(height: 10),
                   ],
                 ),
               ),
@@ -820,7 +878,6 @@ class _ProfilePageState extends State<ProfilePage> {
 
     try {
       // 1. 先尝试清理 WebView 缓存 (释放文件锁)
-      // 这是关键步骤，防止文件被占用导致删不掉
       try {
         await WebViewController().clearCache();
       } catch (e) {
@@ -831,14 +888,14 @@ class _ProfilePageState extends State<ProfilePage> {
       PaintingBinding.instance.imageCache.clear();
       PaintingBinding.instance.imageCache.clearLiveImages();
 
-      // 3. 使用 Helper 进行强力清理 (文件级删除)
-      await CacheHelper.clearAllCaches();
+      // 3. 使用 Helper 进行强力清理 (仅清理文件，保留文本)
+      await CacheHelper.clearAllCaches(clearFiles: true, clearHtml: false);
 
       if (mounted) {
         if (showLoading) Navigator.pop(context); // Close loading
         ScaffoldMessenger.of(
           context,
-        ).showSnackBar(const SnackBar(content: Text("✅ 缓存已彻底清理 (图片+网页)")));
+        ).showSnackBar(const SnackBar(content: Text("✅ 图片缓存已彻底清理 (含内存/磁盘)")));
       }
     } catch (e) {
       if (mounted) {
@@ -861,11 +918,14 @@ class _ProfilePageState extends State<ProfilePage> {
       // 创建临时控制器清理缓存
       await WebViewController().clearCache();
 
+      // 【新增】同时清理 SharedPreferences 中的帖子文本缓存
+      await CacheHelper.clearHtmlCache();
+
       if (mounted) {
         Navigator.pop(context); // Close loading
         ScaffoldMessenger.of(
           context,
-        ).showSnackBar(const SnackBar(content: Text("✅ 网页缓存已清理")));
+        ).showSnackBar(const SnackBar(content: Text("✅ 网页与文本缓存已清理")));
       }
     } catch (e) {
       if (mounted) {

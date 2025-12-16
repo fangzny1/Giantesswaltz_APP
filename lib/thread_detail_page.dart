@@ -7,6 +7,7 @@ import 'package:html/parser.dart' as html_parser;
 import 'package:flutter_widget_from_html/flutter_widget_from_html.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:dio/dio.dart'; // Add Dio
 import 'package:cached_network_image/cached_network_image.dart'; // 建议引入这个库
 import 'package:flutter_cache_manager/flutter_cache_manager.dart';
 import 'package:scroll_to_index/scroll_to_index.dart'; // 引入库
@@ -14,6 +15,7 @@ import 'login_page.dart';
 import 'user_detail_page.dart';
 import 'forum_model.dart';
 import 'cache_helper.dart'; // 引入缓存助手
+import 'reply_native_page.dart'; // 引入原生回复页面
 
 class PostItem {
   final String pid;
@@ -95,6 +97,11 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
   int _targetPage = 1;
 
   String? _landlordUid;
+  String? _fid; // 板块ID
+  String? _formhash; // 表单哈希，用于回复
+  String? _posttime;
+  int _postMinChars = 0;
+  int _postMaxChars = 0;
   final String _baseUrl = "https://www.giantessnight.com/gnforum2012/";
   String _userCookies = "";
   final Map<String, GlobalKey> _floorKeys = {};
@@ -151,7 +158,7 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
   }
 
   // 修改加载逻辑
-  void _loadPage(int page) {
+  void _loadPage(int page) async {
     _targetPage = page;
 
     // 构造 URL
@@ -162,14 +169,66 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
     }
     url += '&page=$page';
 
-    print("🚀 加载帖子: 第 $page 页");
+    // 1. 尝试读取缓存 (极速加载)
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final cacheKey =
+          'thread_cache_${widget.tid}_${page}_${_isOnlyLandlord ? "landlord" : "all"}';
+      final cachedHtml = prefs.getString(cacheKey);
 
-    // 【关键】使用 ?. 操作符，如果 controller 还没初始化就不执行
-    // 配合 headers 注入 Cookie
-    _hiddenController?.loadRequest(
-      Uri.parse(url),
-      headers: {'Cookie': _userCookies, 'User-Agent': kUserAgent},
-    );
+      if (cachedHtml != null && cachedHtml.isNotEmpty) {
+        // 如果有缓存，立即解析并显示 (优化首屏速度)
+        if (mounted) {
+          _parseHtmlData(cachedHtml);
+        }
+      }
+    } catch (e) {
+      // 忽略缓存读取错误
+    }
+
+    // 2. 尝试使用 Dio 请求 (跳过 WebView 渲染，速度快且节省流量)
+    bool useWebViewFallback = true;
+    try {
+      final dio = Dio();
+      dio.options.headers['Cookie'] = _userCookies;
+      dio.options.headers['User-Agent'] = kUserAgent;
+      // 设置超时
+      dio.options.connectTimeout = const Duration(seconds: 10);
+      dio.options.receiveTimeout = const Duration(seconds: 15);
+
+      // 请求 HTML
+      final response = await dio.get<String>(url);
+
+      if (response.statusCode == 200 && response.data != null) {
+        String html = response.data!;
+        // 简单校验是否是有效的帖子页面
+        if (html.contains('id="postlist"') || html.contains('class="pl"')) {
+          // 更新缓存
+          final prefs = await SharedPreferences.getInstance();
+          final cacheKey =
+              'thread_cache_${widget.tid}_${page}_${_isOnlyLandlord ? "landlord" : "all"}';
+          await prefs.setString(cacheKey, html);
+
+          // 解析数据
+          if (mounted) {
+            _parseHtmlData(html);
+          }
+          useWebViewFallback = false; // 成功拿到数据，不需要 WebView
+        }
+      }
+    } catch (e) {
+      print("Dio request failed or blocked: $e. Fallback to WebView.");
+    }
+
+    // 3. 降级方案：使用 WebView (处理 Cloudflare、复杂 JS 或 Dio 失败的情况)
+    if (useWebViewFallback && mounted) {
+      // 【关键】使用 ?. 操作符，如果 controller 还没初始化就不执行
+      // 配合 headers 注入 Cookie
+      _hiddenController?.loadRequest(
+        Uri.parse(url),
+        headers: {'Cookie': _userCookies, 'User-Agent': kUserAgent},
+      );
+    }
   }
 
   Future<void> _loadLocalCookie() async {
@@ -250,7 +309,7 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
               });
             }
           } catch (e) {
-            print("Cookie 同步失败: $e");
+            // Cookie 同步失败
           }
           _parseHtmlData();
         },
@@ -566,37 +625,7 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
     }
   }
 
-  Future<void> _saveBookmark() async {
-    final prefs = await SharedPreferences.getInstance();
-    String? jsonStr = prefs.getString('local_bookmarks');
-    List<dynamic> jsonList = [];
-    if (jsonStr != null && jsonStr.startsWith("["))
-      jsonList = jsonDecode(jsonStr);
-
-    // 【优化】书签标题加上模式标识
-    String subjectSuffix = _isNovelMode ? " (小说模式)" : "";
-
-    final newMark = BookmarkItem(
-      tid: widget.tid,
-      subject: widget.subject,
-      author: _posts.isNotEmpty ? _posts.first.author : "未知",
-      authorId: _landlordUid ?? "",
-      page: _maxPage,
-      savedTime: DateTime.now().toString().substring(0, 16),
-      isNovelMode: _isNovelMode,
-    );
-
-    jsonList.removeWhere((e) => e['tid'] == widget.tid);
-    jsonList.insert(0, newMark.toJson());
-    await prefs.setString('local_bookmarks', jsonEncode(jsonList));
-
-    if (mounted) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text("进度已保存")));
-    }
-    _toggleFab();
-  }
+  // _saveBookmark unused
 
   void _toggleOnlyLandlord() {
     if (_landlordUid == null) {
@@ -663,21 +692,93 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
         });
       }
     } catch (e) {
-      print("收藏解析出错: $e");
+      // 收藏解析出错
     }
   }
 
   // === 核心解析逻辑 ===
-  Future<void> _parseHtmlData() async {
-    if (_hiddenController == null) return;
+  Future<void> _parseHtmlData([String? inputHtml]) async {
+    // 允许传入 HTML 字符串（来自 Dio 或 Cache），或者从 WebView 提取
+    if (inputHtml == null && _hiddenController == null) return;
     try {
-      final String rawHtml =
-          await _hiddenController!.runJavaScriptReturningResult(
-                "document.documentElement.outerHTML",
-              )
-              as String;
+      String rawHtml;
+      if (inputHtml != null) {
+        rawHtml = inputHtml;
+      } else {
+        final result = await _hiddenController!.runJavaScriptReturningResult(
+          "document.documentElement.outerHTML",
+        );
+        rawHtml = result as String;
+        // WebView 返回的是 JSON 字符串 (带双引号)，需要反序列化
+        if (rawHtml.startsWith('"') && rawHtml.endsWith('"')) {
+          rawHtml = jsonDecode(rawHtml);
+        }
+      }
+
+      // 【新增】统一缓存保存逻辑
+      // 只有当页面看起来像是正常的帖子页面时才保存
+      if (rawHtml.contains('id="postlist"') || rawHtml.contains('class="pl"')) {
+        try {
+          final prefs = await SharedPreferences.getInstance();
+          final cacheKey =
+              'thread_cache_${widget.tid}_${_targetPage}_${_isOnlyLandlord ? "landlord" : "all"}';
+          await prefs.setString(cacheKey, rawHtml);
+        } catch (e) {
+          // 缓存保存失败忽略
+        }
+      }
+
       String cleanHtml = _cleanHtml(rawHtml);
       var document = html_parser.parse(cleanHtml);
+
+      // 解析 fid
+      if (_fid == null) {
+        var fidMatch = RegExp(r'fid=(\d+)').firstMatch(cleanHtml);
+        if (fidMatch != null) {
+          _fid = fidMatch.group(1);
+        }
+      }
+
+      // 解析 formhash
+      if (_formhash == null) {
+        // 尝试从 input 标签提取
+        var hashMatch = RegExp(
+          r'name="formhash" value="([^"]+)"',
+        ).firstMatch(cleanHtml);
+        if (hashMatch != null) {
+          _formhash = hashMatch.group(1);
+        } else {
+          // 尝试从 URL 参数提取
+          hashMatch = RegExp(r'formhash=([a-zA-Z0-9]+)').firstMatch(cleanHtml);
+          if (hashMatch != null) {
+            _formhash = hashMatch.group(1);
+          }
+        }
+      }
+
+      // 解析 posttime
+      if (_posttime == null) {
+        var timeMatch = RegExp(
+          r'id="posttime" value="(\d+)"',
+        ).firstMatch(cleanHtml);
+        if (timeMatch != null) {
+          _posttime = timeMatch.group(1);
+        }
+      }
+
+      // Extract min/max chars
+      var minCharsMatch = RegExp(
+        r"var postminchars = parseInt\('(\d+)'\);",
+      ).firstMatch(cleanHtml);
+      if (minCharsMatch != null) {
+        _postMinChars = int.tryParse(minCharsMatch.group(1)!) ?? 0;
+      }
+      var maxCharsMatch = RegExp(
+        r"var postmaxchars = parseInt\('(\d+)'\);",
+      ).firstMatch(cleanHtml);
+      if (maxCharsMatch != null) {
+        _postMaxChars = int.tryParse(maxCharsMatch.group(1)!) ?? 0;
+      }
 
       // 1. 建立 AID -> 静态 URL 映射
       Map<String, String> aidToStaticUrl = {};
@@ -895,12 +996,10 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
 
     // 找到目标索引
     int targetIndex = -1;
-    String logMsg = "";
 
     // 1. 优先尝试 PID 定位
     if (widget.initialTargetPid != null) {
       targetIndex = _posts.indexWhere((p) => p.pid == widget.initialTargetPid);
-      logMsg = "按PID定位: ${widget.initialTargetPid}";
     }
 
     // 2. 降级尝试楼层号定位
@@ -908,21 +1007,13 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
       targetIndex = _posts.indexWhere(
         (p) => p.floor == widget.initialTargetFloor,
       );
-      logMsg = "按楼层定位: ${widget.initialTargetFloor}";
     }
 
     if (targetIndex != -1) {
-      print("🚀 $logMsg -> Index: $targetIndex");
-
       // 稍微延迟一下等待列表构建
       await Future.delayed(const Duration(milliseconds: 500));
       if (!mounted) return;
 
-      // 考虑 Header (如果有“加载上一页”按钮，索引要+1)
-      int listIndex = targetIndex;
-      if (_minPage > 1) {
-        listIndex += 1; // 头部有一个加载按钮
-      }
       // 这里的 listIndex 其实是 ListView 的 children 索引
       // 但是 AutoScrollTag 是按 index 绑定的，我们需要确保 Tag 的 index 和这里一致
       // 下面构建列表时，我会把 index 设为 post 在 _posts 中的 index，所以这里直接用 targetIndex 即可
@@ -942,6 +1033,8 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
         duration: const Duration(milliseconds: 400),
       );
 
+      if (!mounted) return;
+
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text("已定位到上次阅读位置"),
@@ -950,7 +1043,7 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
         ),
       );
     } else {
-      print("⚠️ 未找到目标楼层/PID");
+      // 未找到目标楼层/PID
     }
   }
 
@@ -1039,240 +1132,6 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
     } catch (e) {}
   }
 
-  // ==========================================
-  // 缓存管理功能
-  // ==========================================
-  void _showCacheManagementDialog() async {
-    // 1. 先计算当前大小
-    String cacheSizeStr = "计算中...";
-    String debugInfo = "";
-    String cachePath = "";
-    bool isClearing = false;
-
-    // 显示加载中的弹窗，等计算完了再更新内容
-    showDialog(
-      context: context,
-      builder: (context) {
-        return StatefulBuilder(
-          builder: (context, setState) {
-            // 异步加载大小 (仅在初始化时)
-            if (cacheSizeStr == "计算中..." && !isClearing) {
-              CacheHelper.getCachePath().then((p) {
-                if (context.mounted) setState(() => cachePath = p);
-              });
-              CacheHelper.getTotalCacheSize().then((bytes) {
-                if (context.mounted) {
-                  setState(() {
-                    cacheSizeStr = CacheHelper.formatSize(bytes);
-                  });
-                }
-              });
-            }
-
-            return AlertDialog(
-              title: const Text("缓存管理"),
-              content: SingleChildScrollView(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text(
-                      "如果是为了节省空间，建议定期清理图片缓存。\n文章缓存（WebView）清理后需要重新加载网页资源。",
-                      style: TextStyle(fontSize: 13),
-                    ),
-                    const SizedBox(height: 15),
-
-                    if (cachePath.isNotEmpty)
-                      Padding(
-                        padding: const EdgeInsets.only(bottom: 10),
-                        child: SelectableText(
-                          "缓存路径: $cachePath",
-                          style: const TextStyle(
-                            fontSize: 10,
-                            color: Colors.grey,
-                          ),
-                        ),
-                      ),
-
-                    Container(
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        color: Theme.of(
-                          context,
-                        ).colorScheme.surfaceContainerHighest,
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      child: Column(
-                        children: [
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            children: [
-                              const Text("当前图片缓存占用:"),
-                              isClearing
-                                  ? const SizedBox(
-                                      width: 16,
-                                      height: 16,
-                                      child: CircularProgressIndicator(
-                                        strokeWidth: 2,
-                                      ),
-                                    )
-                                  : Text(
-                                      cacheSizeStr,
-                                      style: const TextStyle(
-                                        fontWeight: FontWeight.bold,
-                                      ),
-                                    ),
-                            ],
-                          ),
-                          if (debugInfo.isNotEmpty) ...[
-                            const Divider(),
-                            Text(
-                              debugInfo,
-                              style: const TextStyle(
-                                fontSize: 10,
-                                color: Colors.grey,
-                              ),
-                            ),
-                          ],
-                        ],
-                      ),
-                    ),
-                    const SizedBox(height: 10),
-                    ListTile(
-                      contentPadding: EdgeInsets.zero,
-                      leading: const Icon(
-                        Icons.delete_forever,
-                        color: Colors.red,
-                      ),
-                      title: const Text("清理图片缓存 (强力)"),
-                      subtitle: const Text("删除所有已下载的帖子图片"),
-                      onTap: isClearing
-                          ? null
-                          : () async {
-                              setState(() {
-                                isClearing = true;
-                              });
-                              // 不关闭弹窗，直接清理
-                              await _clearImageCache(showLoading: false);
-
-                              // 重新计算大小
-                              int bytes = await CacheHelper.getTotalCacheSize();
-                              if (context.mounted) {
-                                setState(() {
-                                  isClearing = false;
-                                  cacheSizeStr = CacheHelper.formatSize(bytes);
-                                });
-                              }
-                            },
-                    ),
-                    ListTile(
-                      contentPadding: EdgeInsets.zero,
-                      leading: const Icon(Icons.web, color: Colors.orange),
-                      title: const Text("清理网页缓存"),
-                      subtitle: const Text("删除网页Cookie、浏览记录等"),
-                      onTap: () async {
-                        Navigator.pop(context);
-                        _clearWebViewCache();
-                      },
-                    ),
-                    const SizedBox(height: 10),
-                    // 调试按钮 (显眼一点)
-                    SizedBox(
-                      width: double.infinity,
-                      child: OutlinedButton.icon(
-                        icon: const Icon(Icons.bug_report, size: 16),
-                        label: const Text("输出调试信息 (开发者用)"),
-                        onPressed: () async {
-                          setState(() => debugInfo = "正在生成调试信息...");
-                          String info = await CacheHelper.debugAnalyze();
-                          print(info); // 打印到控制台
-                          if (context.mounted) {
-                            setState(() {
-                              debugInfo = "已输出调试信息到控制台，请查看日志";
-                            });
-                          }
-                        },
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.pop(context),
-                  child: const Text("关闭"),
-                ),
-              ],
-            );
-          },
-        );
-      },
-    );
-  }
-
-  Future<void> _clearImageCache({bool showLoading = true}) async {
-    if (showLoading) {
-      showDialog(
-        context: context,
-        barrierDismissible: false,
-        builder: (c) => const Center(child: CircularProgressIndicator()),
-      );
-    }
-
-    try {
-      // 1. 清理内存缓存 (Flutter ImageCache)
-      PaintingBinding.instance.imageCache.clear();
-      PaintingBinding.instance.imageCache.clearLiveImages();
-
-      // 2. 使用 Helper 进行强力清理
-      await CacheHelper.clearAllCaches();
-
-      if (mounted) {
-        if (showLoading) Navigator.pop(context); // Close loading
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(const SnackBar(content: Text("✅ 图片缓存已彻底清理 (含内存/磁盘)")));
-      }
-    } catch (e) {
-      if (mounted) {
-        if (showLoading) Navigator.pop(context); // Close loading
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text("❌ 清理失败: $e")));
-      }
-    }
-  }
-
-  Future<void> _clearWebViewCache() async {
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (c) => const Center(child: CircularProgressIndicator()),
-    );
-
-    try {
-      if (_hiddenController != null) {
-        await _hiddenController!.clearCache();
-        // 不清理 Cookie 以保持登录状态，除非用户特别要求
-        // await _hiddenController!.clearLocalStorage();
-      }
-
-      if (mounted) {
-        Navigator.pop(context); // Close loading
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(const SnackBar(content: Text("✅ 网页缓存已清理")));
-      }
-    } catch (e) {
-      if (mounted) {
-        Navigator.pop(context);
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text("❌ 清理失败: $e")));
-      }
-    }
-  }
-
   void _showDisplaySettings() {
     showModalBottomSheet(
       context: context,
@@ -1332,17 +1191,6 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
                     ],
                   ),
                   const SizedBox(height: 20),
-                  SizedBox(
-                    width: double.infinity,
-                    child: OutlinedButton.icon(
-                      icon: const Icon(Icons.cleaning_services),
-                      label: const Text("缓存管理 (清理空间)"),
-                      onPressed: () {
-                        Navigator.pop(context);
-                        _showCacheManagementDialog();
-                      },
-                    ),
-                  ),
                 ],
               ),
             );
@@ -1665,6 +1513,52 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
     );
   }
 
+  void _onReply(String? pid) {
+    if (_fid == null) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text("正在加载板块信息，请稍候...")));
+      return;
+    }
+
+    if (_formhash == null) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text("缺少安全令牌(formhash)，请刷新页面重试")));
+      return;
+    }
+
+    // 原生回复页面
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => ReplyNativePage(
+          tid: widget.tid,
+          fid: _fid!,
+          pid: pid,
+          formhash: _formhash!,
+          posttime: _posttime,
+          minChars: _postMinChars,
+          maxChars: _postMaxChars,
+          baseUrl: _baseUrl,
+          userCookies: _userCookies,
+        ),
+      ),
+    ).then((success) {
+      if (success == true) {
+        // 刷新页面
+        if (_targetPage == _maxPage) {
+          _loadPage(_maxPage);
+        } else {
+          // 如果不在最后一页，询问是否跳转？或者直接跳转到最后一页
+          // 这里简单处理：刷新当前页，因为新回复可能在后面
+          // 或者直接加载最后一页
+          _loadPage(_maxPage);
+        }
+      }
+    });
+  }
+
   Widget _buildPostCard(PostItem post) {
     // 获取当前 post 的索引，用于 AutoScrollTag
     int index = _posts.indexOf(post);
@@ -1757,6 +1651,13 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
                           ),
                         ],
                       ),
+                    ),
+                    // 回复按钮
+                    IconButton(
+                      icon: const Icon(Icons.reply, size: 20),
+                      onPressed: () => _onReply(post.pid),
+                      color: Colors.grey,
+                      tooltip: "回复此楼",
                     ),
                   ],
                 ),
@@ -2060,7 +1961,7 @@ class _RetryableImageState extends State<RetryableImage> {
           ),
 
           // 加载失败
-          errorWidget: (context, url, error) {
+          errorWidget: (ctx, url, error) {
             return InkWell(
               onTap: () async {
                 // 1. 清理旧缓存

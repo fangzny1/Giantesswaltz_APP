@@ -2,6 +2,7 @@ import 'dart:io';
 import 'package:flutter_cache_manager/flutter_cache_manager.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as p;
+import 'package:shared_preferences/shared_preferences.dart'; // Add this
 import '../forum_model.dart'; // 为了访问 globalImageCache
 
 class CacheHelper {
@@ -14,6 +15,7 @@ class CacheHelper {
   static Future<int> getTotalCacheSize() async {
     int total = 0;
     try {
+      // 1. 计算文件缓存
       final tempDir = await getTemporaryDirectory();
       print("🔍 [CacheHelper] 正在扫描缓存目录: ${tempDir.path}");
 
@@ -42,6 +44,23 @@ class CacheHelper {
         }
       }
 
+      // 2. 估算 SharedPreferences 帖子缓存大小 (近似值)
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        final keys = prefs.getKeys();
+        for (String key in keys) {
+          if (key.startsWith('thread_cache_')) {
+            String? content = prefs.getString(key);
+            if (content != null) {
+              // Dart String 是 UTF-16，每个字符占 2 字节 (简化估算)
+              total += content.length * 2;
+            }
+          }
+        }
+      } catch (e) {
+        // 忽略
+      }
+
       print("📊 [CacheHelper] 扫描完成，总大小: ${formatSize(total)}");
     } catch (e) {
       print("❌ [CacheHelper] 计算大小出错: $e");
@@ -63,64 +82,94 @@ class CacheHelper {
   }
 
   // 强力清理
-  static Future<void> clearAllCaches() async {
-    print("🧹 [CacheHelper] 开始强力清理...");
+  static Future<void> clearAllCaches({
+    bool clearFiles = true,
+    bool clearHtml = true,
+  }) async {
+    print("🧹 [CacheHelper] 开始强力清理 (Files: $clearFiles, HTML: $clearHtml)...");
     try {
-      // 1. 调用库的标准清理 (优雅清理)
-      try {
-        await DefaultCacheManager().emptyCache();
-        await globalImageCache.emptyCache();
-      } catch (e) {
-        print("  ⚠️ 库方法清理失败 (非致命): $e");
+      if (clearFiles) {
+        // 1. 调用库的标准清理 (优雅清理)
+        try {
+          await DefaultCacheManager().emptyCache();
+          await globalImageCache.emptyCache();
+        } catch (e) {
+          print("  ⚠️ 库方法清理失败 (非致命): $e");
+        }
+
+        // 2. 暴力清理目录
+        final tempDir = await getTemporaryDirectory();
+        if (await tempDir.exists()) {
+          // 专门针对 WebView 目录进行处理 (不区分大小写)
+          final webViewDir = Directory(p.join(tempDir.path, 'WebView'));
+          if (await webViewDir.exists()) {
+            print("  🗑️ 发现 WebView 目录，尝试强制删除: ${webViewDir.path}");
+            try {
+              await webViewDir.delete(recursive: true);
+              print("    ✅ WebView 目录删除成功");
+            } catch (e) {
+              print("    ❌ WebView 目录删除失败: $e");
+            }
+          }
+
+          await for (var entity in tempDir.list(followLinks: false)) {
+            // 跳过 lib 文件夹 (防止误删 Flutter 核心文件，虽然通常不在 temp)
+            // 但为了安全，我们只删除我们认识的或者看起来像缓存的
+            // 实际上 temp 目录下的东西理论上都可以删
+            if (entity is Directory) {
+              String name = p.basename(entity.path);
+              String lowerName = name.toLowerCase();
+              // 匹配常见的缓存目录名
+              if (lowerName.contains('cache') ||
+                  lowerName.contains('img') ||
+                  lowerName.contains('web') ||
+                  lowerName == 'webview') {
+                // 显式添加 webview
+                print("  🗑️ 删除目录: $name");
+                try {
+                  await entity.delete(recursive: true);
+                } catch (e) {
+                  print("    ❌ 删除失败: $e");
+                }
+              }
+            } else if (entity is File) {
+              try {
+                await entity.delete();
+              } catch (e) {}
+            }
+          }
+        }
       }
 
-      // 2. 暴力清理目录
-      final tempDir = await getTemporaryDirectory();
-      if (await tempDir.exists()) {
-        // 专门针对 WebView 目录进行处理 (不区分大小写)
-        final webViewDir = Directory(p.join(tempDir.path, 'WebView'));
-        if (await webViewDir.exists()) {
-          print("  🗑️ 发现 WebView 目录，尝试强制删除: ${webViewDir.path}");
-          try {
-            await webViewDir.delete(recursive: true);
-            print("    ✅ WebView 目录删除成功");
-          } catch (e) {
-            print("    ❌ WebView 目录删除失败: $e");
-          }
-        }
-
-        await for (var entity in tempDir.list(followLinks: false)) {
-          // 跳过 lib 文件夹 (防止误删 Flutter 核心文件，虽然通常不在 temp)
-          // 但为了安全，我们只删除我们认识的或者看起来像缓存的
-          // 实际上 temp 目录下的东西理论上都可以删
-          if (entity is Directory) {
-            String name = p.basename(entity.path);
-            String lowerName = name.toLowerCase();
-            // 匹配常见的缓存目录名
-            if (lowerName.contains('cache') ||
-                lowerName.contains('img') ||
-                lowerName.contains('web') ||
-                lowerName == 'webview') {
-              // 显式添加 webview
-              print("  🗑️ 删除目录: $name");
-              try {
-                await entity.delete(recursive: true);
-              } catch (e) {
-                print("    ❌ 删除失败: $e");
-              }
-            }
-          } else if (entity is File) {
-            try {
-              await entity.delete();
-            } catch (e) {}
-          }
-        }
+      // 3. 清理 SharedPreferences 中的帖子缓存
+      if (clearHtml) {
+        await clearHtmlCache();
       }
 
       print("✅ [CacheHelper] 清理完成");
     } catch (e) {
       print("❌ [CacheHelper] 强力清理致命错误: $e");
       rethrow;
+    }
+  }
+
+  // 单独清理 HTML 缓存
+  static Future<int> clearHtmlCache() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final keys = prefs.getKeys();
+      int count = 0;
+      for (String key in keys) {
+        if (key.startsWith('thread_cache_')) {
+          await prefs.remove(key);
+          count++;
+        }
+      }
+      print("  🧹 已清除 $count 条帖子缓存记录");
+      return count;
+    } catch (e) {
+      print("  ⚠️ 帖子缓存清理失败: $e");
+      return 0;
     }
   }
 

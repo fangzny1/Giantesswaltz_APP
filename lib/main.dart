@@ -15,6 +15,8 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:cached_network_image/cached_network_image.dart'; // 引入缓存图片库
 import 'cache_helper.dart'; // 引入缓存助手
+import 'package:flutter_cache_manager/flutter_cache_manager.dart'; // 引入缓存管理
+import 'package:permission_handler/permission_handler.dart'; // 引入权限管理
 
 // 全局状态
 final ValueNotifier<String> currentUser = ValueNotifier("未登录");
@@ -684,12 +686,10 @@ class _ProfilePageState extends State<ProfilePage> {
     }
   }
 
-  // 【新增】显示清理缓存选项弹窗
   // 【修正版】显示清理缓存选项弹窗
   void _showClearCacheDialog(BuildContext context) async {
     // 1. 先计算当前大小
     String cacheSizeStr = "计算中...";
-    String debugInfo = "";
     String cachePath = "";
     bool isClearing = false;
 

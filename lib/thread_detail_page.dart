@@ -1,5 +1,7 @@
 import 'dart:convert';
+import 'package:flutter/foundation.dart'; // For compute
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart'; // Add this for ScrollDirection
 import 'package:flutter/services.dart';
 import 'package:flutter_giantessnight_1/image_preview_page.dart';
 import 'package:webview_flutter/webview_flutter.dart';
@@ -14,8 +16,276 @@ import 'package:scroll_to_index/scroll_to_index.dart'; // 引入库
 import 'login_page.dart';
 import 'user_detail_page.dart';
 import 'forum_model.dart';
-import 'cache_helper.dart'; // 引入缓存助手
 import 'reply_native_page.dart'; // 引入原生回复页面
+
+// Helper function for cleaning HTML (moved from class)
+String _cleanHtml(String raw) {
+  String clean = raw;
+  if (clean.startsWith('"')) clean = clean.substring(1, clean.length - 1);
+  clean = clean
+      .replaceAll('\\u003C', '<')
+      .replaceAll('\\"', '"')
+      .replaceAll('\\\\', '\\');
+  return clean;
+}
+
+class ParseResult {
+  final List<PostItem> posts;
+  final String? fid;
+  final String? formhash;
+  final String? posttime;
+  final int postMinChars;
+  final int postMaxChars;
+  final bool hasNextPage;
+  final String? landlordUid;
+  final int totalPages;
+
+  ParseResult({
+    required this.posts,
+    this.fid,
+    this.formhash,
+    this.posttime,
+    required this.postMinChars,
+    required this.postMaxChars,
+    required this.hasNextPage,
+    this.landlordUid,
+    required this.totalPages,
+  });
+}
+
+// Background parsing function
+Future<ParseResult> _parseHtmlBackground(Map<String, dynamic> params) async {
+  String rawHtml = params['rawHtml'];
+  String baseUrl = params['baseUrl'];
+  int targetPage = params['targetPage'];
+  bool postsIsEmpty = params['postsIsEmpty'];
+  String? landlordUid = params['landlordUid'];
+
+  String cleanHtml = _cleanHtml(rawHtml);
+  var document = html_parser.parse(cleanHtml);
+
+  String? fid;
+  var fidMatch = RegExp(r'fid=(\d+)').firstMatch(cleanHtml);
+  if (fidMatch != null) {
+    fid = fidMatch.group(1);
+  }
+
+  String? formhash;
+  var hashMatch = RegExp(
+    r'name="formhash" value="([^"]+)"',
+  ).firstMatch(cleanHtml);
+  if (hashMatch != null) {
+    formhash = hashMatch.group(1);
+  } else {
+    hashMatch = RegExp(r'formhash=([a-zA-Z0-9]+)').firstMatch(cleanHtml);
+    if (hashMatch != null) {
+      formhash = hashMatch.group(1);
+    }
+  }
+
+  String? posttime;
+  var timeMatch = RegExp(r'id="posttime" value="(\d+)"').firstMatch(cleanHtml);
+  if (timeMatch != null) {
+    posttime = timeMatch.group(1);
+  }
+
+  int postMinChars = 0;
+  var minCharsMatch = RegExp(
+    r"var postminchars = parseInt\('(\d+)'\);",
+  ).firstMatch(cleanHtml);
+  if (minCharsMatch != null) {
+    postMinChars = int.tryParse(minCharsMatch.group(1)!) ?? 0;
+  }
+
+  int postMaxChars = 0;
+  var maxCharsMatch = RegExp(
+    r"var postmaxchars = parseInt\('(\d+)'\);",
+  ).firstMatch(cleanHtml);
+  if (maxCharsMatch != null) {
+    postMaxChars = int.tryParse(maxCharsMatch.group(1)!) ?? 0;
+  }
+
+  Map<String, String> aidToStaticUrl = {};
+  var attachmentImgs = document.querySelectorAll('img[aid][zoomfile]');
+  for (var img in attachmentImgs) {
+    String? aid = img.attributes['aid'];
+    String? url = img.attributes['zoomfile'];
+    if (aid != null && url != null && url.contains("data/attachment")) {
+      aidToStaticUrl[aid] = url;
+    }
+  }
+  for (var img in attachmentImgs) {
+    String? aid = img.attributes['aid'];
+    String? url = img.attributes['file'];
+    if (aid != null && url != null && url.contains("data/attachment")) {
+      if (!aidToStaticUrl.containsKey(aid)) {
+        aidToStaticUrl[aid] = url;
+      }
+    }
+  }
+
+  List<PostItem> newPosts = [];
+  var postDivs = document.querySelectorAll('div[id^="post_"]');
+  int floorIndex = (targetPage - 1) * 10 + 1;
+
+  String? newLandlordUid = landlordUid;
+
+  for (var div in postDivs) {
+    try {
+      if (div.id.contains("new") || div.id.contains("rate")) continue;
+      String pid = div.id.split('_').last;
+
+      var authorNode =
+          div.querySelector('.authi .xw1') ?? div.querySelector('.authi a');
+      String author = authorNode?.text.trim() ?? "匿名";
+      String authorHref = authorNode?.attributes['href'] ?? "";
+      String authorId =
+          RegExp(r'uid=(\d+)').firstMatch(authorHref)?.group(1) ?? "";
+
+      if (newLandlordUid == null && postsIsEmpty && newPosts.isEmpty) {
+        newLandlordUid = authorId;
+      }
+
+      var avatarNode = div.querySelector('.avatar img');
+      String avatarUrl = avatarNode?.attributes['src'] ?? "";
+      if (avatarUrl.isNotEmpty && !avatarUrl.startsWith("http")) {
+        avatarUrl = "$baseUrl$avatarUrl";
+      }
+
+      var timeNode = div.querySelector('em[id^="authorposton"]');
+      String time = timeNode?.text.replaceAll("发表于 ", "").trim() ?? "";
+
+      var floorNode = div.querySelector('.pi strong a em');
+      String floorText = floorNode?.text ?? "${floorIndex++}楼";
+
+      var contentNode = div.querySelector('td.t_f');
+      String content = contentNode?.innerHtml ?? "";
+      var attachmentNode = div.querySelector('.pattl');
+      if (attachmentNode != null) {
+        content +=
+            "<br><div class='attachments'>${attachmentNode.innerHtml}</div>";
+      }
+
+      content = content.replaceAll(r'\n', '<br>');
+      content = content.replaceAll('<div class="mbn savephotop">', '<div>');
+
+      content = content.replaceAllMapped(RegExp(r'<img[^>]+>', dotAll: true), (
+        match,
+      ) {
+        String imgTag = match.group(0)!;
+        String? zoomUrl = RegExp(
+          r'zoomfile="([^"]+)"',
+        ).firstMatch(imgTag)?.group(1);
+        String? fileUrl = RegExp(
+          r'file="([^"]+)"',
+        ).firstMatch(imgTag)?.group(1);
+        String? srcUrl = RegExp(r'src="([^"]+)"').firstMatch(imgTag)?.group(1);
+
+        String? aidFromUrl;
+        RegExp aidReg = RegExp(r'aid=(\d+)');
+        if (fileUrl != null) aidFromUrl = aidReg.firstMatch(fileUrl)?.group(1);
+        if (aidFromUrl == null && srcUrl != null)
+          aidFromUrl = aidReg.firstMatch(srcUrl)?.group(1);
+
+        String bestUrl = "";
+
+        if (aidFromUrl != null && aidToStaticUrl.containsKey(aidFromUrl)) {
+          bestUrl = aidToStaticUrl[aidFromUrl]!;
+        } else if (zoomUrl != null && zoomUrl.contains("data/attachment")) {
+          bestUrl = zoomUrl;
+        } else if (fileUrl != null && fileUrl.contains("data/attachment")) {
+          bestUrl = fileUrl;
+        } else if (srcUrl != null && srcUrl.contains("data/attachment")) {
+          bestUrl = srcUrl;
+        } else if (fileUrl != null && fileUrl.isNotEmpty) {
+          bestUrl = fileUrl;
+        } else if (srcUrl != null && srcUrl.isNotEmpty) {
+          if (!srcUrl.contains("loading.gif") &&
+              !srcUrl.contains("none.gif") &&
+              !srcUrl.contains("common.gif")) {
+            bestUrl = srcUrl;
+          }
+        }
+
+        if (bestUrl.isNotEmpty) {
+          bestUrl = bestUrl.replaceAll('&amp;', '&');
+          if (bestUrl.contains("mod=image")) {
+            bestUrl = bestUrl.replaceAll(RegExp(r'&mobile=[0-9]+'), '');
+            bestUrl = bestUrl.replaceAll(RegExp(r'&mobile=yes'), '');
+            bestUrl = bestUrl.replaceAll(RegExp(r'&mobile=no'), '');
+            bestUrl = bestUrl.replaceAll('&type=fixnone', '');
+          }
+          if (!bestUrl.startsWith('http')) {
+            String base = baseUrl.endsWith('/') ? baseUrl : "$baseUrl/";
+            String path = bestUrl.startsWith('/')
+                ? bestUrl.substring(1)
+                : bestUrl;
+            bestUrl = base + path;
+          }
+          return '<img src="$bestUrl" style="max-width:100%; height:auto; display:block; margin: 8px 0;">';
+        }
+        return "";
+      });
+
+      content = content.replaceAll(
+        RegExp(r'<script.*?>.*?</script>', dotAll: true),
+        '',
+      );
+      content = content.replaceAll('ignore_js_op', 'div');
+
+      newPosts.add(
+        PostItem(
+          pid: pid,
+          author: author,
+          authorId: authorId,
+          avatarUrl: avatarUrl,
+          time: time,
+          contentHtml: content,
+          floor: floorText,
+          device: div.innerHtml.contains("来自手机") ? "手机端" : "",
+        ),
+      );
+    } catch (e) {
+      continue;
+    }
+  }
+
+  var nextBtn = document.querySelector('.pg .nxt');
+  bool hasNextPage = nextBtn != null;
+
+  // Parse total pages
+  int totalPages = 1;
+  var pgNode = document.querySelector('.pg');
+  if (pgNode != null) {
+    // Try to find the "last" link first (e.g., "... 50")
+    var lastNode = pgNode.querySelector('.last');
+    if (lastNode != null) {
+      String text = lastNode.text.replaceAll('... ', '').trim();
+      totalPages = int.tryParse(text) ?? 1;
+    } else {
+      // If no "last" class, iterate all numbers to find max
+      var links = pgNode.querySelectorAll('a, strong');
+      for (var link in links) {
+        int? p = int.tryParse(link.text.trim());
+        if (p != null && p > totalPages) {
+          totalPages = p;
+        }
+      }
+    }
+  }
+
+  return ParseResult(
+    posts: newPosts,
+    fid: fid,
+    formhash: formhash,
+    posttime: posttime,
+    postMinChars: postMinChars,
+    postMaxChars: postMaxChars,
+    hasNextPage: hasNextPage,
+    landlordUid: newLandlordUid,
+    totalPages: totalPages,
+  );
+}
 
 class PostItem {
   final String pid;
@@ -63,11 +333,13 @@ class ThreadDetailPage extends StatefulWidget {
 }
 
 class _ThreadDetailPageState extends State<ThreadDetailPage>
-    with SingleTickerProviderStateMixin {
+    with TickerProviderStateMixin {
   WebViewController? _hiddenController;
   WebViewController? _favCheckController;
   // 使用 AutoScrollController 替换原生的 ScrollController
   late AutoScrollController _scrollController;
+
+  bool _hasPerformedInitialJump = false; // Task 3
 
   List<PostItem> _posts = [];
 
@@ -107,6 +379,11 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
   final Map<String, GlobalKey> _floorKeys = {};
   final Map<String, GlobalKey> _pidKeys = {};
 
+  // Task 1 & 3: UI State
+  late AnimationController _hideController;
+  bool _isBarsVisible = true;
+  int _totalPages = 1;
+
   @override
   @override
   void initState() {
@@ -131,6 +408,13 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
     _fabAnimation = CurvedAnimation(
       parent: _fabAnimationController,
       curve: Curves.easeInOut,
+    );
+
+    // Task 3: Auto-Hide Controller
+    _hideController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 300),
+      value: 1.0, // Initially visible
     );
 
     _loadSettings();
@@ -269,14 +553,19 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     _scrollController.dispose();
     _fabAnimationController.dispose();
+    _hideController.dispose();
     super.dispose();
   }
 
   void _onScroll() {
+    if (!_scrollController.hasClients) return;
     if (_scrollController.position.pixels >=
         _scrollController.position.maxScrollExtent - 800) {
       // 稍微提前一点加载
-      _loadNext();
+      // 使用 addPostFrameCallback 避免在布局过程中调用 setState
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _loadNext();
+      });
     }
   }
 
@@ -395,39 +684,40 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
     setState(() {
       _isNovelMode = !_isNovelMode;
 
-      // 开启小说模式 = 开启只看楼主 + 开启阅读模式
+      // 1. 设置模式标记
       if (_isNovelMode) {
         _isOnlyLandlord = true;
         _isReaderMode = true;
-        // 沉浸式状态栏
         SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
 
-        // 重置列表，重新加载只看楼主的数据
-        _posts.clear();
-        _pidKeys.clear();
-        _floorKeys.clear();
+        // 【关键策略】开启小说模式时，通常用户想从头看楼主的故事
+        // 且为了避免"普通模式第50页 -> 楼主只有3页"导致的越界
+        // 我们强制重置回第 1 页
+        _targetPage = 1;
         _minPage = 1;
         _maxPage = 1;
-        _targetPage = 1;
-        _isLoading = true;
-        _loadPage(1);
       } else {
-        // 关闭小说模式，恢复普通模式
         _isOnlyLandlord = false;
         _isReaderMode = false;
         SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
-
-        // 重新加载全部回复
-        _posts.clear();
-        _pidKeys.clear();
-        _floorKeys.clear();
-        _minPage = 1;
-        _maxPage = 1;
-        _targetPage = 1;
-        _isLoading = true;
-        _loadPage(1);
+        // 关闭时，保留当前页码（尝试回到普通模式的对应页）
       }
-      _toggleFab();
+
+      // 2. 清空数据 & 重置总页数状态
+      _posts.clear();
+      _pidKeys.clear();
+      _floorKeys.clear();
+
+      // 【关键修复】重置总页数！
+      // 否则切换后进度条还会显示 "1/50"，实际上楼主可能只有 "1/3"
+      // 等数据加载完，解析器会更新成正确的总页数
+      _totalPages = 1;
+
+      _isLoading = true;
+
+      // 3. 关闭菜单并加载
+      if (_isFabOpen) _toggleFab();
+      _loadPage(_targetPage);
     });
   }
 
@@ -636,19 +926,30 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
     }
     setState(() {
       _isOnlyLandlord = !_isOnlyLandlord;
-      // 如果手动切换只看楼主，退出小说模式状态（逻辑上解耦）
+      // 如果手动关闭只看楼主，退出小说模式状态
       if (!_isOnlyLandlord) _isNovelMode = false;
+
+      // 1. 策略同上：开启只看楼主 -> 重置回第 1 页
+      if (_isOnlyLandlord) {
+        _targetPage = 1;
+        _minPage = 1;
+        _maxPage = 1;
+      }
+
+      // 2. 清空数据
       _posts.clear();
       _pidKeys.clear();
       _floorKeys.clear();
-      _minPage = 1;
-      _maxPage = 1;
-      _hasMore = true;
+
+      // 3. 【关键修复】重置总页数，防止进度条显示错误
+      _totalPages = 1;
+
       _isLoading = true;
-      _targetPage = 1;
       _toggleFab();
     });
-    _loadPage(1);
+
+    // 加载
+    _loadPage(_targetPage);
   }
 
   Future<void> _parseFavList() async {
@@ -728,258 +1029,86 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
         }
       }
 
-      String cleanHtml = _cleanHtml(rawHtml);
-      var document = html_parser.parse(cleanHtml);
+      // Task 2: Use compute for background parsing
+      final result = await compute(_parseHtmlBackground, {
+        'rawHtml': rawHtml,
+        'baseUrl': _baseUrl,
+        'targetPage': _targetPage,
+        'postsIsEmpty': _posts.isEmpty,
+        'landlordUid': _landlordUid,
+      });
 
-      // 解析 fid
-      if (_fid == null) {
-        var fidMatch = RegExp(r'fid=(\d+)').firstMatch(cleanHtml);
-        if (fidMatch != null) {
-          _fid = fidMatch.group(1);
-        }
+      if (!mounted) return;
+
+      // Task 4: Auto-load nearest valid page if current is empty
+      // If we are on a page that exceeds total pages (common when switching to Only Landlord),
+      // jump to the last available page.
+      if (result.posts.isEmpty &&
+          result.totalPages > 0 &&
+          _targetPage > result.totalPages) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text("当前页为空，自动跳转至第 ${result.totalPages} 页")),
+        );
+        _loadPage(result.totalPages);
+        return;
       }
 
-      // 解析 formhash
-      if (_formhash == null) {
-        // 尝试从 input 标签提取
-        var hashMatch = RegExp(
-          r'name="formhash" value="([^"]+)"',
-        ).firstMatch(cleanHtml);
-        if (hashMatch != null) {
-          _formhash = hashMatch.group(1);
+      setState(() {
+        // Update metadata
+        if (result.fid != null) _fid = result.fid;
+        if (result.formhash != null) _formhash = result.formhash;
+        if (result.posttime != null) _posttime = result.posttime;
+        _postMinChars = result.postMinChars;
+        _postMaxChars = result.postMaxChars;
+        if (_landlordUid == null && result.landlordUid != null) {
+          _landlordUid = result.landlordUid;
+        }
+
+        // Update total pages
+        if (result.totalPages > _totalPages) {
+          _totalPages = result.totalPages;
+        }
+
+        List<PostItem> newPosts = result.posts;
+
+        if (_targetPage == widget.initialPage && _posts.isEmpty) {
+          _posts = newPosts;
+        } else if (_targetPage < _minPage) {
+          _posts.insertAll(0, newPosts);
+          _minPage = _targetPage;
         } else {
-          // 尝试从 URL 参数提取
-          hashMatch = RegExp(r'formhash=([a-zA-Z0-9]+)').firstMatch(cleanHtml);
-          if (hashMatch != null) {
-            _formhash = hashMatch.group(1);
+          for (var p in newPosts) {
+            if (!_posts.any((old) => old.pid == p.pid)) _posts.add(p);
           }
+          if (newPosts.isNotEmpty) _maxPage = _targetPage;
         }
-      }
 
-      // 解析 posttime
-      if (_posttime == null) {
-        var timeMatch = RegExp(
-          r'id="posttime" value="(\d+)"',
-        ).firstMatch(cleanHtml);
-        if (timeMatch != null) {
-          _posttime = timeMatch.group(1);
+        // 【核心修复】更严格的到底判断逻辑
+        if (!result.hasNextPage) {
+          // 如果网页里没有“下一页”按钮，那肯定到底了
+          _hasMore = false;
+        } else if (_targetPage >= _maxPage && newPosts.isEmpty) {
+          // 如果请求了下一页，但没解析出数据，也算到底了
+          _hasMore = false;
+        } else if (newPosts.length < 5) {
+          // 如果这一页的数据少得可怜（通常 Discuz 一页 10-20 楼），大概率是最后一页
+          _hasMore = false;
+        } else {
+          // 否则才认为还有更多
+          _hasMore = true;
         }
-      }
+        _isLoading = false;
+        _isLoadingMore = false;
+        _isLoadingPrev = false;
+      });
 
-      // Extract min/max chars
-      var minCharsMatch = RegExp(
-        r"var postminchars = parseInt\('(\d+)'\);",
-      ).firstMatch(cleanHtml);
-      if (minCharsMatch != null) {
-        _postMinChars = int.tryParse(minCharsMatch.group(1)!) ?? 0;
-      }
-      var maxCharsMatch = RegExp(
-        r"var postmaxchars = parseInt\('(\d+)'\);",
-      ).firstMatch(cleanHtml);
-      if (maxCharsMatch != null) {
-        _postMaxChars = int.tryParse(maxCharsMatch.group(1)!) ?? 0;
-      }
-
-      // 1. 建立 AID -> 静态 URL 映射
-      Map<String, String> aidToStaticUrl = {};
-      var attachmentImgs = document.querySelectorAll('img[aid][zoomfile]');
-      for (var img in attachmentImgs) {
-        String? aid = img.attributes['aid'];
-        String? url = img.attributes['zoomfile'];
-        if (aid != null && url != null && url.contains("data/attachment")) {
-          aidToStaticUrl[aid] = url;
-        }
-      }
-      for (var img in attachmentImgs) {
-        String? aid = img.attributes['aid'];
-        String? url = img.attributes['file'];
-        if (aid != null && url != null && url.contains("data/attachment")) {
-          if (!aidToStaticUrl.containsKey(aid)) {
-            aidToStaticUrl[aid] = url;
-          }
-        }
-      }
-
-      List<PostItem> newPosts = [];
-      var postDivs = document.querySelectorAll('div[id^="post_"]');
-
-      int floorIndex = (_targetPage - 1) * 10 + 1;
-
-      for (var div in postDivs) {
-        try {
-          if (div.id.contains("new") || div.id.contains("rate")) continue;
-          String pid = div.id.split('_').last;
-
-          var authorNode =
-              div.querySelector('.authi .xw1') ?? div.querySelector('.authi a');
-          String author = authorNode?.text.trim() ?? "匿名";
-          String authorHref = authorNode?.attributes['href'] ?? "";
-          String authorId =
-              RegExp(r'uid=(\d+)').firstMatch(authorHref)?.group(1) ?? "";
-
-          if (_landlordUid == null && _posts.isEmpty) {
-            _landlordUid = authorId;
-          }
-
-          var avatarNode = div.querySelector('.avatar img');
-          String avatarUrl = avatarNode?.attributes['src'] ?? "";
-          if (avatarUrl.isNotEmpty && !avatarUrl.startsWith("http")) {
-            avatarUrl = "$_baseUrl$avatarUrl";
-          }
-
-          var timeNode = div.querySelector('em[id^="authorposton"]');
-          String time = timeNode?.text.replaceAll("发表于 ", "").trim() ?? "";
-
-          var floorNode = div.querySelector('.pi strong a em');
-          String floorText = floorNode?.text ?? "${floorIndex++}楼";
-
-          // === 修复：拼接 .pattl 附件区到正文 ===
-          var contentNode = div.querySelector('td.t_f');
-          String content = contentNode?.innerHtml ?? "";
-          var attachmentNode = div.querySelector('.pattl');
-          if (attachmentNode != null) {
-            content +=
-                "<br><div class='attachments'>${attachmentNode.innerHtml}</div>";
-          }
-          // =================================
-
-          // === 清洗内容 ===
-          content = content.replaceAll(r'\n', '<br>');
-          content = content.replaceAll('<div class="mbn savephotop">', '<div>');
-
-          // 智能替换图片
-          content = content.replaceAllMapped(
-            RegExp(r'<img[^>]+>', dotAll: true),
-            (match) {
-              String imgTag = match.group(0)!;
-              String? zoomUrl = RegExp(
-                r'zoomfile="([^"]+)"',
-              ).firstMatch(imgTag)?.group(1);
-              String? fileUrl = RegExp(
-                r'file="([^"]+)"',
-              ).firstMatch(imgTag)?.group(1);
-              String? srcUrl = RegExp(
-                r'src="([^"]+)"',
-              ).firstMatch(imgTag)?.group(1);
-
-              String? aidFromUrl;
-              RegExp aidReg = RegExp(r'aid=(\d+)');
-              if (fileUrl != null)
-                aidFromUrl = aidReg.firstMatch(fileUrl)?.group(1);
-              if (aidFromUrl == null && srcUrl != null)
-                aidFromUrl = aidReg.firstMatch(srcUrl)?.group(1);
-
-              String bestUrl = "";
-
-              if (aidFromUrl != null &&
-                  aidToStaticUrl.containsKey(aidFromUrl)) {
-                bestUrl = aidToStaticUrl[aidFromUrl]!;
-              } else if (zoomUrl != null &&
-                  zoomUrl.contains("data/attachment")) {
-                bestUrl = zoomUrl;
-              } else if (fileUrl != null &&
-                  fileUrl.contains("data/attachment")) {
-                bestUrl = fileUrl;
-              } else if (srcUrl != null && srcUrl.contains("data/attachment")) {
-                bestUrl = srcUrl;
-              } else if (fileUrl != null && fileUrl.isNotEmpty) {
-                bestUrl = fileUrl;
-              } else if (srcUrl != null && srcUrl.isNotEmpty) {
-                if (!srcUrl.contains("loading.gif") &&
-                    !srcUrl.contains("none.gif") &&
-                    !srcUrl.contains("common.gif")) {
-                  bestUrl = srcUrl;
-                }
-              }
-
-              if (bestUrl.isNotEmpty) {
-                bestUrl = bestUrl.replaceAll('&amp;', '&');
-                if (bestUrl.contains("mod=image")) {
-                  bestUrl = bestUrl.replaceAll(RegExp(r'&mobile=[0-9]+'), '');
-                  bestUrl = bestUrl.replaceAll(RegExp(r'&mobile=yes'), '');
-                  bestUrl = bestUrl.replaceAll(RegExp(r'&mobile=no'), '');
-                  bestUrl = bestUrl.replaceAll('&type=fixnone', '');
-                }
-                if (!bestUrl.startsWith('http')) {
-                  String base = _baseUrl.endsWith('/')
-                      ? _baseUrl
-                      : "$_baseUrl/";
-                  String path = bestUrl.startsWith('/')
-                      ? bestUrl.substring(1)
-                      : bestUrl;
-                  bestUrl = base + path;
-                }
-                return '<img src="$bestUrl" style="max-width:100%; height:auto; display:block; margin: 8px 0;">';
-              }
-              return "";
-            },
-          );
-
-          content = content.replaceAll(
-            RegExp(r'<script.*?>.*?</script>', dotAll: true),
-            '',
-          );
-          content = content.replaceAll('ignore_js_op', 'div');
-
-          newPosts.add(
-            PostItem(
-              pid: pid,
-              author: author,
-              authorId: authorId,
-              avatarUrl: avatarUrl,
-              time: time,
-              contentHtml: content,
-              floor: floorText,
-              device: div.innerHtml.contains("来自手机") ? "手机端" : "",
-            ),
-          );
-        } catch (e) {
-          continue;
-        }
-      }
-
-      var nextBtn = document.querySelector('.pg .nxt');
-      bool hasNextPage = nextBtn != null;
-
-      if (mounted) {
-        setState(() {
-          if (_targetPage == widget.initialPage && _posts.isEmpty) {
-            _posts = newPosts;
-          } else if (_targetPage < _minPage) {
-            _posts.insertAll(0, newPosts);
-            _minPage = _targetPage;
-          } else {
-            for (var p in newPosts) {
-              if (!_posts.any((old) => old.pid == p.pid)) _posts.add(p);
-            }
-            if (newPosts.isNotEmpty) _maxPage = _targetPage;
-          }
-
-          // 【核心修复】更严格的到底判断逻辑
-          if (!hasNextPage) {
-            // 如果网页里没有“下一页”按钮，那肯定到底了
-            _hasMore = false;
-          } else if (_targetPage >= _maxPage && newPosts.isEmpty) {
-            // 如果请求了下一页，但没解析出数据，也算到底了
-            _hasMore = false;
-          } else if (newPosts.length < 5) {
-            // 如果这一页的数据少得可怜（通常 Discuz 一页 10-20 楼），大概率是最后一页
-            _hasMore = false;
-          } else {
-            // 否则才认为还有更多
-            _hasMore = true;
-          }
-          _isLoading = false;
-          _isLoadingMore = false;
-          _isLoadingPrev = false;
-        });
-        // 渲染完成后定位到目标楼层
-        if (widget.initialTargetFloor != null ||
-            widget.initialTargetPid != null) {
-          _scrollToTargetFloor();
-        }
+      // 渲染完成后定位到目标楼层
+      if (widget.initialTargetFloor != null ||
+          widget.initialTargetPid != null) {
+        _scrollToTargetFloor();
       }
     } catch (e) {
+      print("Parse error: $e");
       if (mounted)
         setState(() {
           _isLoading = false;
@@ -993,6 +1122,7 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
   // 滚动的重试逻辑 (现在使用 scroll_to_index)
   Future<void> _scrollToTargetFloor() async {
     if (_posts.isEmpty) return;
+    if (_hasPerformedInitialJump) return; // Task 3: Prevent double jump
 
     // 找到目标索引
     int targetIndex = -1;
@@ -1035,6 +1165,8 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
 
       if (!mounted) return;
 
+      _hasPerformedInitialJump = true; // Task 3: Mark as done
+
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text("已定位到上次阅读位置"),
@@ -1043,74 +1175,50 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
         ),
       );
     } else {
-      // 未找到目标楼层/PID
+      // Task 3: Boundary Check
+      if (widget.initialTargetFloor != null && _hasMore && !_isLoadingMore) {
+        _loadNext();
+      }
     }
   }
 
   // 【核心升级】使用 CachedNetworkImage + 弱网点击重试
   Widget _buildClickableImage(String url) {
     if (url.isEmpty) return const SizedBox();
-    // ... (URL 补全逻辑保持不变)
     String fullUrl = url;
     if (!fullUrl.startsWith('http')) {
-      // ... 省略 URL 补全代码，保持你原来的 ...
       String base = _baseUrl.endsWith('/') ? _baseUrl : "$_baseUrl/";
       String path = fullUrl.startsWith('/') ? fullUrl.substring(1) : fullUrl;
       fullUrl = base + path;
     }
 
-    return GestureDetector(
-      onTap: () {
+    // 这里直接使用文件底部的 RetryableImage 组件
+    return RetryableImage(
+      imageUrl: fullUrl,
+      cacheManager: globalImageCache, // 确保这个变量在 forum_model.dart 里定义了
+      headers: {
+        'Cookie': _userCookies,
+        'User-Agent': kUserAgent,
+        'Referer': _baseUrl,
+        'Accept':
+            'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+      },
+      onTap: (previewUrl) {
         Navigator.push(
           context,
           MaterialPageRoute(
             builder: (context) => ImagePreviewPage(
-              imageUrl: fullUrl,
+              imageUrl: previewUrl,
               headers: {
                 'Cookie': _userCookies,
                 'User-Agent': kUserAgent,
                 'Referer': _baseUrl,
               },
-              cacheManager: globalImageCache, // 【修改】传递全局缓存管理器
+              // 如果 ImagePreviewPage 支持 cacheManager 参数最好传进去，不支持也没事
             ),
           ),
         );
       },
-      child: Container(
-        margin: const EdgeInsets.symmetric(vertical: 8),
-        child: CachedNetworkImage(
-          imageUrl: fullUrl,
-          cacheManager: globalImageCache, // 【修改】使用全局缓存变量
-          // ... (Headers 和 其他逻辑保持不变) ...
-          httpHeaders: {
-            'Cookie': _userCookies,
-            'User-Agent': kUserAgent,
-            'Referer': _baseUrl,
-            'Accept':
-                'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
-          },
-          fit: BoxFit.contain,
-          // ... placeholder 和 errorWidget 保持不变 ...
-          // 为了节省篇幅，这里 errorWidget 里的 removeFile 也要改成:
-          // await globalImageCache.removeFile(url);
-          placeholder: (context, url) => Container(
-            height: 200,
-            width: double.infinity,
-            color: Theme.of(context).colorScheme.surfaceContainerHighest,
-            child: const Center(child: CircularProgressIndicator()),
-          ),
-          errorWidget: (context, url, error) => InkWell(
-            onTap: () async {
-              await globalImageCache.removeFile(url); // 【修改】
-              if (mounted) setState(() {});
-            },
-            child: const SizedBox(
-              height: 100,
-              child: Center(child: Icon(Icons.refresh)),
-            ),
-          ),
-        ),
-      ),
     );
   }
 
@@ -1250,6 +1358,207 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
       );
   }
 
+  // Task 2: Page Jump Dialog
+  // Task 1 & 2: Bottom Control Bar & Dual Slider System
+  Widget _buildBottomControlBar() {
+    // 动画控制显示隐藏
+    return SlideTransition(
+      position: Tween<Offset>(
+        begin: const Offset(0, 1),
+        end: Offset.zero,
+      ).animate(_hideController),
+      child: Material(
+        elevation: 16,
+        color: Theme.of(context).colorScheme.surface,
+        child: Container(
+          padding: EdgeInsets.only(
+            bottom: MediaQuery.of(context).padding.bottom,
+          ),
+          height: 56 + MediaQuery.of(context).padding.bottom,
+          child: Row(
+            children: [
+              // 1. 菜单按钮 (控制左下角 FAB 菜单)
+              IconButton(
+                icon: Icon(_isFabOpen ? Icons.close : Icons.menu),
+                onPressed: _toggleFab, // 直接切换，逻辑更简单
+              ),
+
+              // 2. 进度滑块 (控制当前页面的上下滚动)
+              Expanded(
+                child: AnimatedBuilder(
+                  animation: _scrollController,
+                  builder: (context, child) {
+                    // 计算当前滚动百分比
+                    double maxScroll = _scrollController.hasClients
+                        ? _scrollController.position.maxScrollExtent
+                        : 1.0;
+                    double currentScroll = _scrollController.hasClients
+                        ? _scrollController.offset
+                        : 0.0;
+                    if (maxScroll <= 0) maxScroll = 1.0;
+                    double value = (currentScroll / maxScroll).clamp(0.0, 1.0);
+
+                    return Slider(
+                      value: value,
+                      onChanged: (val) {
+                        if (_scrollController.hasClients) {
+                          _scrollController.jumpTo(
+                            val * _scrollController.position.maxScrollExtent,
+                          );
+                        }
+                      },
+                      // 增加语义化标签
+                      label: "当前页进度 ${(value * 100).toInt()}%",
+                    );
+                  },
+                ),
+              ),
+
+              // 3. 页码按钮 (点击弹出跨页电梯)
+              InkWell(
+                onTap: _showPageJumpDialog, // 点击这里进行跨页跳转
+                borderRadius: BorderRadius.circular(8),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16.0,
+                    vertical: 8.0,
+                  ),
+                  child: Row(
+                    children: [
+                      const Icon(
+                        Icons.import_contacts,
+                        size: 16,
+                        color: Colors.grey,
+                      ),
+                      const SizedBox(width: 4),
+                      Text(
+                        "$_targetPage / $_totalPages", // 显示 第几页 / 共几页
+                        style: const TextStyle(fontWeight: FontWeight.bold),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  // Task 2 & 3: Page Jump Dialog with Pagination Fix
+  void _showPageJumpDialog() {
+    int dialogPage = _targetPage;
+
+    showModalBottomSheet(
+      context: context,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setStateDialog) {
+            return Container(
+              padding: const EdgeInsets.all(20),
+              height: 250, // 稍微高一点放得下
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.center,
+                children: [
+                  Text(
+                    "快速翻页",
+                    style: TextStyle(
+                      fontWeight: FontWeight.bold,
+                      color: Theme.of(context).primaryColor,
+                    ),
+                  ),
+                  const SizedBox(height: 20),
+
+                  // 页码滑块
+                  Row(
+                    children: [
+                      Text("1", style: TextStyle(color: Colors.grey)),
+                      Expanded(
+                        child: Slider(
+                          value: dialogPage.toDouble(),
+                          min: 1.0,
+                          max: _totalPages < 1 ? 1.0 : _totalPages.toDouble(),
+                          divisions: (_totalPages < 1) ? 1 : _totalPages,
+                          label: "第 $dialogPage 页",
+                          onChanged: (val) {
+                            setStateDialog(() {
+                              dialogPage = val.toInt();
+                            });
+                          },
+                        ),
+                      ),
+                      Text(
+                        "$_totalPages",
+                        style: TextStyle(color: Colors.grey),
+                      ),
+                    ],
+                  ),
+
+                  // 精确输入框和按钮
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                    children: [
+                      IconButton.filledTonal(
+                        icon: const Icon(Icons.remove),
+                        onPressed: dialogPage > 1
+                            ? () => setStateDialog(() => dialogPage--)
+                            : null,
+                      ),
+                      Text(
+                        "第 $dialogPage 页",
+                        style: const TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      IconButton.filledTonal(
+                        icon: const Icon(Icons.add),
+                        onPressed: dialogPage < _totalPages
+                            ? () => setStateDialog(() => dialogPage++)
+                            : null,
+                      ),
+                    ],
+                  ),
+
+                  const Spacer(),
+
+                  // 确认按钮
+                  SizedBox(
+                    width: double.infinity,
+                    child: FilledButton(
+                      onPressed: () {
+                        Navigator.pop(context);
+                        if (dialogPage != _targetPage) {
+                          // 执行跳转逻辑
+                          setState(() {
+                            _targetPage = dialogPage;
+                            _minPage = dialogPage;
+                            _maxPage = dialogPage;
+                            _posts.clear(); // 清空当前列表
+                            _pidKeys.clear();
+                            _floorKeys.clear();
+                            _isLoading = true;
+                          });
+                          // 滚回顶部
+                          if (_scrollController.hasClients)
+                            _scrollController.jumpTo(0);
+                          // 加载新数据
+                          _loadPage(dialogPage);
+                        }
+                      },
+                      child: const Text("跳转"),
+                    ),
+                  ),
+                ],
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     Color bgColor = Theme.of(context).colorScheme.surface;
@@ -1257,169 +1566,196 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
 
     return Scaffold(
       backgroundColor: bgColor,
-      body: Stack(
-        children: [
-          CustomScrollView(
-            controller: _scrollController,
-            cacheExtent: 20000,
-            slivers: [
-              if (!_isReaderMode)
-                SliverAppBar(
-                  floating: false,
-                  pinned: false,
-                  snap: false,
-                  title: Text(
-                    widget.subject,
-                    style: TextStyle(
-                      fontSize: 16,
-                      color: _isReaderMode ? _readerTextColor : null,
+      body: NotificationListener<UserScrollNotification>(
+        onNotification: (notification) {
+          if (notification.direction == ScrollDirection.reverse) {
+            if (_isBarsVisible) {
+              setState(() {
+                _isBarsVisible = false;
+                _hideController.reverse();
+              });
+            }
+          } else if (notification.direction == ScrollDirection.forward) {
+            if (!_isBarsVisible) {
+              setState(() {
+                _isBarsVisible = true;
+                _hideController.forward();
+              });
+            }
+          }
+          return true;
+        },
+        child: GestureDetector(
+          onTap: () {
+            setState(() {
+              _isBarsVisible = !_isBarsVisible;
+              if (_isBarsVisible)
+                _hideController.forward();
+              else
+                _hideController.reverse();
+            });
+          },
+          child: Stack(
+            children: [
+              CustomScrollView(
+                controller: _scrollController,
+                cacheExtent: 500.0,
+                slivers: [
+                  if (!_isReaderMode)
+                    SliverAppBar(
+                      floating: true,
+                      pinned: false,
+                      snap: true,
+                      title: Text(
+                        widget.subject,
+                        style: TextStyle(
+                          fontSize: 16,
+                          color: _isReaderMode ? _readerTextColor : null,
+                        ),
+                      ),
+                      centerTitle: false,
+                      elevation: 0,
+                      backgroundColor: bgColor,
+                      surfaceTintColor: Colors.transparent,
+                      iconTheme: IconThemeData(
+                        color: _isReaderMode ? _readerTextColor : null,
+                      ),
                     ),
-                  ),
-                  centerTitle: false,
-                  elevation: 0,
-                  backgroundColor: bgColor,
-                  surfaceTintColor: Colors.transparent,
-                  iconTheme: IconThemeData(
-                    color: _isReaderMode ? _readerTextColor : null,
+
+                  if (_isReaderMode)
+                    _buildReaderSliver()
+                  else
+                    _buildNativeSliver(),
+                ],
+              ),
+
+              // Bottom Control Bar
+              Positioned(
+                left: 0,
+                right: 0,
+                bottom: 0,
+                child: _buildBottomControlBar(),
+              ),
+
+              // Task 4: Scrim for Closing Menu
+              if (_isFabOpen)
+                Positioned.fill(
+                  child: GestureDetector(
+                    onTap: _toggleFab,
+                    child: Container(color: Colors.black54),
                   ),
                 ),
 
-              if (_isReaderMode) _buildReaderSliver() else _buildNativeSliver(),
+              _buildFabMenu(),
+
+              if (_hiddenController != null)
+                SizedBox(
+                  height: 0,
+                  width: 0,
+                  child: WebViewWidget(controller: _hiddenController!),
+                ),
+
+              if (_favCheckController != null)
+                SizedBox(
+                  height: 0,
+                  width: 0,
+                  child: WebViewWidget(controller: _favCheckController!),
+                ),
             ],
           ),
-
-          _buildFabMenu(),
-
-          // === 【核心修复】空值保护 ===
-          // 只有当 controller 不为空时，才渲染 WebViewWidget
-          if (_hiddenController != null)
-            SizedBox(
-              height: 0,
-              width: 0,
-              child: WebViewWidget(controller: _hiddenController!), // 加 ! 号
-            ),
-
-          if (_favCheckController != null)
-            SizedBox(
-              height: 0,
-              width: 0,
-              child: WebViewWidget(controller: _favCheckController!), // 加 ! 号
-            ),
-        ],
+        ),
       ),
     );
   }
 
   Widget _buildFabMenu() {
+    // Only show if open
+    if (!_isFabOpen) return const SizedBox();
+
     return Positioned(
       right: 16,
-      bottom: 32,
-      child: Opacity(
-        opacity: (_isReaderMode && !_isFabOpen) ? 0.3 : 1.0,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.end,
-          children: [
-            if (_isFabOpen) ...[
-              _buildFabItem(
-                icon: Icons.refresh,
-                label: "刷新",
-                onTap: () {
-                  setState(() {
-                    _isLoading = true;
-                    _posts.clear();
-                    _pidKeys.clear();
-                    _floorKeys.clear();
-                    // 刷新时重置为第一页，或者保持当前页？
-                    // 建议重置，防止逻辑混乱
-                    _targetPage = 1;
-                    _minPage = 1;
-                    _maxPage = 1;
-                  });
-                  _loadPage(1);
-                  _toggleFab();
-                },
-              ),
-              const SizedBox(height: 12),
+      bottom: 90, // Adjusted to sit above the bottom bar
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [
+          _buildFabItem(
+            icon: Icons.refresh,
+            label: "刷新",
+            onTap: () {
+              setState(() {
+                _isLoading = true;
+                _posts.clear();
+                _pidKeys.clear();
+                _floorKeys.clear();
+                _minPage = _targetPage; // Preserve page on refresh
+                _maxPage = _targetPage;
+              });
+              _loadPage(_targetPage);
+              _toggleFab();
+            },
+          ),
+          const SizedBox(height: 12),
 
-              // === 手动书签 ===
-              _buildFabItem(
-                icon: Icons.bookmark_add,
-                label: "保存进度",
-                onTap: () {
-                  _toggleFab();
-                  _showSaveBookmarkDialog();
-                },
-              ),
-              const SizedBox(height: 12),
+          // === 手动书签 ===
+          _buildFabItem(
+            icon: Icons.bookmark_add,
+            label: "保存进度",
+            onTap: () {
+              _toggleFab();
+              _showSaveBookmarkDialog();
+            },
+          ),
+          const SizedBox(height: 12),
 
-              // === 【核心修复】找回消失的收藏按钮 ===
-              _buildFabItem(
-                icon: _isFavorited ? Icons.star : Icons.star_border,
-                label: _isFavorited ? "取消收藏" : "收藏本帖",
-                color: _isFavorited
-                    ? (Theme.of(context).brightness == Brightness.dark
-                          ? Colors
-                                .yellow
-                                .shade700 // 暗黑模式下使用深一点的黄
-                          : Colors
-                                .yellow
-                                .shade200 // 亮色模式下使用淡一点的黄
-                                )
-                    : null, // 未收藏时颜色为默认（通常是灰色或主题色）
-                onTap: _handleFavorite,
-              ),
-              const SizedBox(height: 12),
+          // === 收藏 ===
+          _buildFabItem(
+            icon: _isFavorited ? Icons.star : Icons.star_border,
+            label: _isFavorited ? "取消收藏" : "收藏本帖",
+            color: _isFavorited
+                ? (Theme.of(context).brightness == Brightness.dark
+                      ? Colors.yellow.shade700
+                      : Colors.yellow.shade200)
+                : null,
+            onTap: _handleFavorite,
+          ),
+          const SizedBox(height: 12),
 
-              // ===================================
-              _buildFabItem(
-                icon: _isNovelMode ? Icons.auto_stories : Icons.menu_book,
-                label: _isNovelMode ? "退出小说" : "小说模式",
-                color: _isNovelMode ? Colors.purpleAccent : null,
-                onTap: _toggleNovelMode,
-              ),
-              const SizedBox(height: 12),
+          // ===================================
+          _buildFabItem(
+            icon: _isNovelMode ? Icons.auto_stories : Icons.menu_book,
+            label: _isNovelMode ? "退出小说" : "小说模式",
+            color: _isNovelMode ? Colors.purpleAccent : null,
+            onTap: _toggleNovelMode,
+          ),
+          const SizedBox(height: 12),
 
-              // 只有非小说模式才显示“只看楼主”和“纯净阅读”
-              if (!_isNovelMode) ...[
-                _buildFabItem(
-                  icon: _isOnlyLandlord ? Icons.people : Icons.person,
-                  label: _isOnlyLandlord ? "看全部" : "只看楼主",
-                  color: _isOnlyLandlord ? Colors.orange : null,
-                  onTap: _toggleOnlyLandlord,
-                ),
-                const SizedBox(height: 12),
-                _buildFabItem(
-                  icon: _isReaderMode ? Icons.view_list : Icons.article,
-                  label: _isReaderMode ? "列表" : "纯净阅读",
-                  onTap: _toggleReaderMode,
-                ),
-                const SizedBox(height: 12),
-              ],
-
-              if (_isReaderMode) ...[
-                _buildFabItem(
-                  icon: Icons.settings,
-                  label: "设置",
-                  onTap: _showDisplaySettings,
-                ),
-                const SizedBox(height: 12),
-              ],
-            ],
-            FloatingActionButton(
-              heroTag: "main_fab",
-              onPressed: _toggleFab,
-              backgroundColor: _isReaderMode
-                  ? Colors.brown.shade300
-                  : Theme.of(context).colorScheme.primaryContainer,
-              child: AnimatedIcon(
-                icon: AnimatedIcons.menu_close,
-                progress: _fabAnimation,
-                color: _isReaderMode ? Colors.white : null,
-              ),
+          // 只有非小说模式才显示“只看楼主”和“纯净阅读”
+          if (!_isNovelMode) ...[
+            _buildFabItem(
+              icon: _isOnlyLandlord ? Icons.people : Icons.person,
+              label: _isOnlyLandlord ? "看全部" : "只看楼主",
+              color: _isOnlyLandlord ? Colors.orange : null,
+              onTap: _toggleOnlyLandlord,
             ),
+            const SizedBox(height: 12),
+            _buildFabItem(
+              icon: _isReaderMode ? Icons.view_list : Icons.article,
+              label: _isReaderMode ? "列表" : "纯净阅读",
+              onTap: _toggleReaderMode,
+            ),
+            const SizedBox(height: 12),
           ],
-        ),
+
+          if (_isReaderMode) ...[
+            _buildFabItem(
+              icon: Icons.settings,
+              label: "设置",
+              onTap: _showDisplaySettings,
+            ),
+            const SizedBox(height: 12),
+          ],
+        ],
       ),
     );
   }

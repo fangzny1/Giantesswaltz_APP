@@ -38,8 +38,6 @@
 
 前往 [Releases](../../releases) 页面下载最新版本的 APK 安装包。
 
-或者访问蓝奏云下载：
-- **链接**: [点击跳转](https://wwbnh.lanzout.com/i0koO3dnhb6j) (密码:312x)
 
 ## 🛠️ 技术栈
 

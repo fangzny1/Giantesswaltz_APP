@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:giantesswaltz_app/offline_list_page.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:async';
@@ -17,6 +19,7 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:cached_network_image/cached_network_image.dart'; // 引入缓存图片库
 import 'cache_helper.dart'; // 引入缓存助手
+import 'offline_manager.dart'; // 引入新文件
 
 // 全局状态
 final ValueNotifier<String> currentUser = ValueNotifier("未登录");
@@ -126,19 +129,19 @@ class MyApp extends StatelessWidget {
       valueListenable: currentTheme,
       builder: (context, mode, child) {
         return MaterialApp(
-          title: 'GiantessNight',
+          title: 'GiantessWaltz',
           debugShowCheckedModeBanner: false,
           themeMode: mode,
           theme: ThemeData(
             colorScheme: ColorScheme.fromSeed(
-              seedColor: const Color(0xFF6750A4),
+              seedColor: const Color(0xFF61CAB8),
               brightness: Brightness.light,
             ),
             useMaterial3: true,
           ),
           darkTheme: ThemeData(
             colorScheme: ColorScheme.fromSeed(
-              seedColor: const Color(0xFF6750A4),
+              seedColor: const Color(0xFF61CAB8),
               brightness: Brightness.dark,
             ),
             useMaterial3: true,
@@ -308,7 +311,7 @@ class _ForumHomePageState extends State<ForumHomePage> {
         WebViewCookie(
           name: 'cookie_import', // 名字不重要，重要的是 value
           value: 'imported', // 占位
-          domain: 'giantessnight.com',
+          domain: kBaseDomain,
         ),
       );
 
@@ -326,14 +329,14 @@ class _ForumHomePageState extends State<ForumHomePage> {
                 WebViewCookie(
                   name: key,
                   value: value,
-                  domain: 'giantessnight.com', // 关键！必须是这个域名
+                  domain: kBaseDomain, // 关键！必须是这个域名
                 ),
               );
               await cookieMgr.setCookie(
                 WebViewCookie(
                   name: key,
                   value: value,
-                  domain: 'www.giantessnight.com', //以此类推，www也加一份
+                  domain: 'www.$kBaseDomain', //以此类推，www也加一份
                 ),
               );
             } catch (e) {
@@ -361,7 +364,7 @@ class _ForumHomePageState extends State<ForumHomePage> {
                   .toString();
               _hiddenController?.loadRequest(
                 Uri.parse(
-                  'https://www.giantessnight.com/gnforum2012/api/mobile/index.php?version=4&module=forumindex&t=$timestamp',
+                  '${kBaseUrl}api/mobile/index.php?version=4&module=forumindex&t=$timestamp',
                 ),
               );
             }
@@ -443,9 +446,7 @@ class _ForumHomePageState extends State<ForumHomePage> {
     print("🔄 WebView 开始预热...");
 
     // 预热使用 mobile=2，与登录态保持一致
-    _hiddenController?.loadRequest(
-      Uri.parse('https://www.giantessnight.com/gnforum2012/forum.php?mobile=2'),
-    );
+    _hiddenController?.loadRequest(Uri.parse('${kBaseUrl}forum.php?mobile=2'));
   }
 
   // ==========================================
@@ -474,9 +475,9 @@ class _ForumHomePageState extends State<ForumHomePage> {
 
       final String timestamp = DateTime.now().millisecondsSinceEpoch.toString();
       final String httpsUrl =
-          'https://www.giantessnight.com/gnforum2012/api/mobile/index.php?version=4&module=forumindex&t=$timestamp';
+          '${kBaseUrl}api/mobile/index.php?version=4&module=forumindex&t=$timestamp';
       final String httpUrl =
-          'http://www.giantessnight.com/gnforum2012/api/mobile/index.php?version=4&module=forumindex&t=$timestamp';
+          'http://$kBaseDomain/api/mobile/index.php?version=4&module=forumindex&t=$timestamp';
 
       print("🔍 [DioProxy Debug] 请求 URL: $httpsUrl");
       Response<String> response;
@@ -587,8 +588,7 @@ class _ForumHomePageState extends State<ForumHomePage> {
             dio.options.headers['Accept'] =
                 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8';
             dio.options.headers['Accept-Language'] = 'zh-CN,zh;q=0.9,en;q=0.8';
-            dio.options.headers['Referer'] =
-                'https://www.giantessnight.com/gnforum2012/forum.php?mobile=2';
+            dio.options.headers['Referer'] = '${kBaseUrl}forum.php?mobile=2';
 
             // 【关键】禁止自动重定向！
             // 这样我们能看到 forum.php 的 302 响应，以及它携带的 Set-Cookie
@@ -599,7 +599,7 @@ class _ForumHomePageState extends State<ForumHomePage> {
 
             // 请求 forum.php
             Response<String> forumResp = await dio.get<String>(
-              'https://www.giantessnight.com/gnforum2012/forum.php?mobile=2',
+              '${kBaseUrl}forum.php?mobile=2',
             );
 
             print("🔍 [DioProxy Debug] forum.php 响应码: ${forumResp.statusCode}");
@@ -620,19 +620,14 @@ class _ForumHomePageState extends State<ForumHomePage> {
               Uri redirectUri = Uri.parse(location);
               if (!location.startsWith('http')) {
                 if (location.startsWith('/')) {
-                  redirectUri = Uri.parse(
-                    'https://www.giantessnight.com$location',
-                  );
+                  redirectUri = Uri.parse('https://$kBaseDomain$location');
                 } else {
-                  redirectUri = Uri.parse(
-                    'https://www.giantessnight.com/gnforum2012/$location',
-                  );
+                  redirectUri = Uri.parse('$kBaseUrl$location');
                 }
               }
 
               dio.options.headers['Cookie'] = currentBestCookie;
-              dio.options.headers['Referer'] =
-                  'https://www.giantessnight.com/gnforum2012/forum.php?mobile=2';
+              dio.options.headers['Referer'] = '${kBaseUrl}forum.php?mobile=2';
 
               final Response<String> redirectResp = await dio.get<String>(
                 redirectUri.toString(),
@@ -680,8 +675,7 @@ class _ForumHomePageState extends State<ForumHomePage> {
             dio.options.headers['Cookie'] = forumMergedCookie;
             dio.options.headers.remove('Accept');
             dio.options.headers.remove('Accept-Language');
-            dio.options.headers['Referer'] =
-                'https://www.giantessnight.com/gnforum2012/forum.php?mobile=2';
+            dio.options.headers['Referer'] = '${kBaseUrl}forum.php?mobile=2';
 
             Response<String> finalRetry;
             try {
@@ -801,7 +795,7 @@ class _ForumHomePageState extends State<ForumHomePage> {
           await prefs.setString('uid', newUid);
         }
         String avatarUrl =
-            "https://www.giantessnight.com/gnforum2012/uc_server/avatar.php?uid=$newUid&size=middle";
+            "${kBaseUrl}uc_server/avatar.php?uid=$newUid&size=middle";
         if (currentUserAvatar.value != avatarUrl) {
           currentUserAvatar.value = avatarUrl;
           await prefs.setString('avatar', avatarUrl);
@@ -929,7 +923,7 @@ class _ForumHomePageState extends State<ForumHomePage> {
             .toString();
         await _hiddenController!.loadRequest(
           Uri.parse(
-            'http://www.giantessnight.com/gnforum2012/api/mobile/index.php?version=4&module=forumindex&t=$timestamp',
+            'http://$kBaseDomain/api/mobile/index.php?version=4&module=forumindex&t=$timestamp',
           ),
         );
         return;
@@ -987,7 +981,7 @@ class _ForumHomePageState extends State<ForumHomePage> {
                   bool useTransparent =
                       wallpaperPath != null && transparentBarsEnabled.value;
                   return SliverAppBar.large(
-                    title: const Text("GiantessNight"),
+                    title: const Text("GiantessWaltz"),
                     backgroundColor: useTransparent ? Colors.transparent : null,
                   );
                 },
@@ -1059,6 +1053,7 @@ class _ForumHomePageState extends State<ForumHomePage> {
                   context,
                 ).colorScheme.surfaceContainerLow.withOpacity(0.7)
               : Theme.of(context).colorScheme.surfaceContainerLow,
+
           child: InkWell(
             onTap: () => Navigator.push(
               context,
@@ -1446,7 +1441,7 @@ class _ProfilePageState extends State<ProfilePage> {
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Text("GiantessNight 第三方客户端"),
+            const Text("Giantesswaltz 第三方客户端"),
             const SizedBox(height: 8),
             const Text("这是一个非官方的第三方客户端，旨在提供更好的移动端阅读体验。"),
             const SizedBox(height: 16),
@@ -1465,7 +1460,7 @@ class _ProfilePageState extends State<ProfilePage> {
                 }
               },
               child: const Text(
-                "https://github.com/fangzny1/GiantessNight_App",
+                "基于https://github.com/fangzny1/GiantessNight_App项目改进",
                 style: TextStyle(
                   color: Colors.blue,
                   decoration: TextDecoration.underline,
@@ -1484,28 +1479,54 @@ class _ProfilePageState extends State<ProfilePage> {
     );
   }
 
-  // 【新增】选择背景图片
+  // 【修复版】选择背景图片并永久保存
   Future<void> _pickWallpaper(BuildContext context) async {
     final ImagePicker picker = ImagePicker();
     final XFile? image = await picker.pickImage(source: ImageSource.gallery);
 
     if (image != null) {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString('custom_wallpaper', image.path);
-      customWallpaperPath.value = image.path;
-      if (context.mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(const SnackBar(content: Text("背景设置成功！")));
+      try {
+        final prefs = await SharedPreferences.getInstance();
+
+        // 1. 获取永久存储目录 (Documents)
+        final appDir = await getApplicationDocumentsDirectory();
+        final String fileName = 'permanent_wallpaper.jpg';
+        final File permanentFile = File('${appDir.path}/$fileName');
+
+        // 2. 将选择的图片复制到永久目录
+        // 这一步是关键！防止被 CacheHelper 清理掉
+        await File(image.path).copy(permanentFile.path);
+
+        // 3. 记录这个永久路径
+        await prefs.setString('custom_wallpaper', permanentFile.path);
+        customWallpaperPath.value = permanentFile.path;
+
+        if (context.mounted) {
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(const SnackBar(content: Text("背景设置成功！(已永久保存)")));
+        }
+      } catch (e) {
+        print("背景保存失败: $e");
       }
     }
   }
 
-  // 【新增】清除背景图片
+  // 【修复版】清除背景图片
   Future<void> _clearWallpaper(BuildContext context) async {
     final prefs = await SharedPreferences.getInstance();
+
+    // 同时也删除那个永久文件，节省空间
+    if (customWallpaperPath.value != null) {
+      try {
+        final file = File(customWallpaperPath.value!);
+        if (await file.exists()) await file.delete();
+      } catch (_) {}
+    }
+
     await prefs.remove('custom_wallpaper');
     customWallpaperPath.value = null;
+
     if (context.mounted) {
       ScaffoldMessenger.of(
         context,
@@ -1686,7 +1707,23 @@ class _ProfilePageState extends State<ProfilePage> {
                 // 【修改】点击不再直接清理，而是弹窗询问
                 onTap: () => _showClearCacheDialog(context),
               ),
-
+              ListTile(
+                leading: const Icon(
+                  Icons.download_for_offline_outlined,
+                  color: Colors.teal,
+                ),
+                title: const Text("离线缓存"),
+                subtitle: const Text("管理已保存的帖子"),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => const OfflineListPage(),
+                    ),
+                  );
+                },
+              ),
               // 【新增】加载模式入口
               ListTile(
                 leading: const Icon(
@@ -1698,7 +1735,7 @@ class _ProfilePageState extends State<ProfilePage> {
                   valueListenable: useDioProxyLoader,
                   builder: (context, value, _) {
                     return Text(
-                      value ? "当前: 强力代理模式 (Dio)" : "当前: 原生模式 (WebView)",
+                      value ? "当前: 强力代理模式 (Dio)" : "当前: 原生模式 (WebView+Json解析)",
                     );
                   },
                 ),

@@ -1,6 +1,38 @@
 // lib/forum_model.dart
 import 'package:flutter_cache_manager/flutter_cache_manager.dart';
 
+const String kBaseUrl = 'https://giantesswaltz.org/';
+const String kCookieDomain = 'giantesswaltz.org';
+const String kBaseDomain = kCookieDomain;
+
+String mergeCookies(String currentCookie, List<String> newCookieHeaders) {
+  final Map<String, String> finalKv = {};
+
+  void parseAndAdd(String raw) {
+    for (final part in raw.split(';')) {
+      final trimmed = part.trim();
+      if (trimmed.isEmpty || !trimmed.contains('=')) continue;
+      final eq = trimmed.indexOf('=');
+      final k = trimmed.substring(0, eq).trim();
+      final v = trimmed.substring(eq + 1).trim();
+      if (k.isNotEmpty &&
+          !k.toLowerCase().contains('path') &&
+          !k.toLowerCase().contains('domain')) {
+        finalKv[k] = v;
+      }
+    }
+  }
+
+  parseAndAdd(currentCookie);
+
+  for (final header in newCookieHeaders) {
+    String cookiePart = header.split(';')[0];
+    parseAndAdd(cookiePart);
+  }
+
+  return finalKv.entries.map((e) => '${e.key}=${e.value}').join('; ');
+}
+
 class Category {
   final String fid;
   final String name;

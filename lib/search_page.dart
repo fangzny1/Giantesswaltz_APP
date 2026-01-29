@@ -81,7 +81,7 @@ class _SearchPageState extends State<SearchPage> {
 
     // 强制 mobile=no 获取电脑版页面 (结构最清晰)
     final url =
-        'https://www.giantessnight.com/gnforum2012/search.php?mod=forum&searchsubmit=yes&srchtxt=${Uri.encodeComponent(keyword)}&mobile=no';
+        '${kBaseUrl}search.php?mod=forum&searchsubmit=yes&srchtxt=${Uri.encodeComponent(keyword)}&mobile=no';
     print("🚀 开始搜索: $url");
     _hiddenController.loadRequest(Uri.parse(url));
   }
@@ -174,7 +174,7 @@ class _SearchPageState extends State<SearchPage> {
         if (href.isNotEmpty) {
           // 补全域名
           if (!href.startsWith("http")) {
-            nextUrl = "https://www.giantessnight.com/gnforum2012/$href";
+            nextUrl = "$kBaseUrl$href";
           } else {
             nextUrl = href;
           }

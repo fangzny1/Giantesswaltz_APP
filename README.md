@@ -1,38 +1,49 @@
 # 📱 GiantessNight 第三方客户端 (GN Forum App)
 
-> **专为“被窝党”打造：流畅、纯净、强大的 GN 论坛原生阅读器。**
+# GiantessWaltz Flutter Client
 
-这是一个基于 **Flutter** 开发的 [GiantessNight](https://www.giantessnight.com) 论坛第三方客户端。它解决了原生网页版在手机上翻页困难、图片加载失败、排版混乱等痛点，为你带来如丝般顺滑的阅读体验。
+一个为 **GiantessWaltz (GW论坛)** 量身定制的第三方移动客户端。采用 Flutter 开发，旨在提供远超手机网页版的流畅阅读体验与强大的离线功能。
 
-## ✨ 核心亮点
+[![Platform](https://img.shields.io/badge/platform-Android-green.svg)](https://flutter.dev)
+[![Framework](https://img.shields.io/badge/framework-Flutter-blue.svg)](https://flutter.dev)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-### 📖 独家“小说模式”
-- **沉浸阅读**：一键开启，自动过滤水贴，**只看楼主**。
-- **智能排版**：隐藏多余 UI，采用羊皮纸/护眼绿背景，字体优化，堪比专业小说软件。
-- **精准书签**：**手动选择楼层保存进度**，再也不怕进度丢失或页码错乱，随时接着看。
+## 🌟 项目亮点
 
-### 🖼️ 图片浏览“黑科技”
-- **超强兼容**：完美解决 Discuz 动态链接导致的图片裂开、无限 Loading 问题。
-- **原图预览**：点击图片进入大图预览模式，支持**双指缩放**查看细节。
-- **一键保存**：支持长按或点击按钮将高清原图**保存到手机相册**（适配 Android 13+ 权限）。
-- **智能重载**：弱网环境下图片加载失败？点击图片即可强制重载，不再需要刷新整个页面。
+这个项目最初由 AI 辅助构建，并针对 Discuz! X3.4 架构进行了深度定制和改构。它不仅仅是一个网页套壳，而是一个**原生 API 驱动**的高性能应用。
 
-### 🎨 现代化体验
-- **无限瀑布流**：告别“下一页”，手指一滑到底，自动加载后续楼层。
-- **深色模式**：完美适配夜间模式，被窝里看帖不刺眼，修复了网页版字体颜色冲突看不清的问题。
-- **个人中心**：自动同步论坛头像和用户名，一键查看自己的发帖历史。
+### 🚀 核心特性
 
-### 🛠️ 实用工具
-- **全站搜索**：支持关键词搜索帖子。
-- **外部跳转**：帖子内的网盘链接可直接唤起浏览器或夸克下载。
-- **缓存管理**：提供一键清除缓存功能，给手机瘦身。
+- **极致速度 (API-First)**：全面弃用传统的网页爬虫，直接对接 Discuz! 移动端 JSON API。解析速度提升数倍，流量节省 60% 以上。
+- **全本离线下载**：支持一键“离线整本”。App 会自动批量获取所有页面的 JSON 数据并存储在本地持久化目录（Documents），支持完全断网下的顺滑阅读。
+- **沉浸式“小说模式”**：
+    - 自动识别并锁定楼主 ID。
+    - 智能清洗 HTML 样式，提供纯净的排版。
+    - 支持“羊皮纸”、“夜间”、“豆沙绿”等多种阅读背景。
+    - 字体大小动态调节。
+- **高级回复系统**：
+    - **智能嗅探**：后台自动嗅探网页版高级回复的 `hash` 参数。
+    - **图片压缩**：上传前自动进行智能压缩，解决服务器 413 (Payload Too Large) 限制，大幅提升上传成功率。
+    - **附件支持**：支持插入 `[attachimg]` 标签，发帖体验原生化。
+- **个性化定制**：
+    - **全局壁纸**：支持从相册选择图片作为背景，并自动持久化存储。
+    - **透明美化**：支持顶栏与底栏透明，与自定义壁纸完美融合。
+- **阅读记忆**：精准记录读到的楼层与页码，支持 PID 级别的跳转。
+
+## 🛠️ 技术栈
+
+- **框架**: Flutter (Dart)
+- **网络**: [Dio](https://pub.dev/packages/dio) (拦截器处理 Cookie 持久化)
+- **渲染**: [flutter_widget_from_html](https://pub.dev/packages/flutter_widget_from_html) (高性能 HTML 渲染)
+- **存储**: [SharedPreferences](https://pub.dev/packages/shared_preferences) (配置) + [path_provider](https://pub.dev/packages/path_provider) (离线文件)
+- **组件**: [scroll_to_index](https://pub.dev/packages/scroll_to_index) (精准楼层定位)
 
 ## 📸 应用截图
 
 <!-- 这里使用的是相对路径，请确保你的图片文件在 picture 文件夹下，且文件名对应 -->
 | 首页浏览 | 小说模式 | 图片预览 | 个人中心 |
 |:---:|:---:|:---:|:---:|
-| <img src="picture/home.jpg" width="200"/> | <img src="picture/novel.jpg" width="200"/> | <img src="picture/image.jpg" width="200"/> | <img src="picture/profile.jpg" width="200"/> |
+| <img src="picture/home.png" width="200"/> | <img src="picture/novel.png" width="200"/> | <img src="picture/image.png" width="200"/> | <img src="picture/profile.png" width="200"/> |
 
 ## 📥 下载安装
 
@@ -40,13 +51,6 @@
 
 
 
-## 🛠️ 技术栈
-
-本项目使用 **Flutter** 构建，主要技术点：
-- **网络层**: `dio` + `cookie_jar` (处理 Discuz 复杂的鉴权和防盗链)
-- **内容渲染**: `flutter_widget_from_html` (深度定制的 CSS 样式清洗和图片解析)
-- **图片管理**: `cached_network_image` + `gal` (相册保存) + `photo_view` (手势缩放)
-- **架构**: 针对 Android 13/14 进行了权限适配，支持 ARM32/64 架构。
 
 ## 🔒 隐私声明
 

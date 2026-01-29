@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart'; // 引入存储库
+import 'forum_model.dart';
 
 // 统一的 UA，千万别改，保持和 main.dart 一致
 const String kUserAgent =
@@ -37,9 +38,7 @@ class _LoginPageState extends State<LoginPage> {
 
     // 2. 加载最原始的手机登录页 (兼容性最好)
     controller.loadRequest(
-      Uri.parse(
-        'https://www.giantessnight.com/gnforum2012/member.php?mod=logging&action=login&mobile=2',
-      ),
+      Uri.parse('${kBaseUrl}member.php?mod=logging&action=login&mobile=2'),
     );
   }
 
@@ -81,7 +80,6 @@ class _LoginPageState extends State<LoginPage> {
           );
 
           // 强行同步给 WebViewCookieManager (双重保险)
-          final cookieMgr = WebViewCookieManager();
           // 这里简单的把 cookie 字符串拆分一下设置进去，防止 webview 重启丢失
           // 实际 Discuz 关键是 saltkey 和 auth
 

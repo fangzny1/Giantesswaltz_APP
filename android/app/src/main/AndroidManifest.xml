@@ -1,5 +1,5 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="com.example.giantessnight_app"> <!-- 【重要】确认这里的包名和 build.gradle 里的一致 -->
+    package="com.example.gw_app"> <!-- 【重要】确认这里的包名和 build.gradle 里的一致 -->
 
     <!-- ========================================== -->
     <!-- 1. 网络权限 (基础 + 状态检测)             -->
@@ -23,7 +23,7 @@
     <uses-permission android:name="android.permission.READ_MEDIA_VIDEO"/>
 
     <application
-        android:label="GiantessNight"
+        android:label="GiantessWaltz"
         android:name="${applicationName}"
         android:icon="@mipmap/launcher_icon"
         android:usesCleartextTraffic="true"

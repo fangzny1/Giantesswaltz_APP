@@ -1,26 +1,25 @@
 import 'dart:io';
+import 'dart:convert';
 import 'package:flutter_cache_manager/flutter_cache_manager.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as p;
-import 'package:shared_preferences/shared_preferences.dart'; // Add this
-import '../forum_model.dart'; // 为了访问 globalImageCache
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:file_picker/file_picker.dart';
+import '../forum_model.dart'; // 访问 globalImageCache
 
 class CacheHelper {
+  // ================= 基础路径获取 =================
   static Future<String> getCachePath() async {
     final tempDir = await getTemporaryDirectory();
     return tempDir.path;
   }
 
-  // 获取所有相关缓存的大小 (字节)
+  // ================= 缓存大小计算 =================
   static Future<int> getTotalCacheSize() async {
     int total = 0;
     try {
-      // 1. 计算文件缓存
+      // 1. 计算临时目录 (包含压缩产生的图片、WebView缓存等)
       final tempDir = await getTemporaryDirectory();
-      print("🔍 [CacheHelper] 正在扫描缓存目录: ${tempDir.path}");
-
-      // 扫描整个临时目录，不仅仅是特定的文件夹
-      // 这样能发现所有潜在的垃圾文件
       if (await tempDir.exists()) {
         await for (var entity in tempDir.list(
           recursive: true,
@@ -28,47 +27,26 @@ class CacheHelper {
         )) {
           if (entity is File) {
             try {
-              int size = await entity.length();
-              total += size;
-              // 打印大文件，方便调试
-              if (size > 1024 * 1024) {
-                // > 1MB
-                print(
-                  "  📄 发现大文件: ${p.basename(entity.path)} (${formatSize(size)})",
-                );
-              }
-            } catch (e) {
-              // 忽略无法读取的文件
-            }
+              total += await entity.length();
+            } catch (_) {}
           }
         }
       }
 
-      // 2. 估算 SharedPreferences 帖子缓存大小 (近似值)
-      try {
-        final prefs = await SharedPreferences.getInstance();
-        final keys = prefs.getKeys();
-        for (String key in keys) {
-          if (key.startsWith('thread_cache_')) {
-            String? content = prefs.getString(key);
-            if (content != null) {
-              // Dart String 是 UTF-16，每个字符占 2 字节 (简化估算)
-              total += content.length * 2;
-            }
-          }
+      // 2. 估算 SharedPreferences 文本缓存
+      final prefs = await SharedPreferences.getInstance();
+      for (String key in prefs.getKeys()) {
+        if (key.startsWith('thread_cache_')) {
+          String? content = prefs.getString(key);
+          if (content != null) total += content.length * 2;
         }
-      } catch (e) {
-        // 忽略
       }
-
-      print("📊 [CacheHelper] 扫描完成，总大小: ${formatSize(total)}");
     } catch (e) {
-      print("❌ [CacheHelper] 计算大小出错: $e");
+      print("❌ 计算缓存大小出错: $e");
     }
     return total;
   }
 
-  // 格式化大小
   static String formatSize(int bytes) {
     if (bytes <= 0) return "0 B";
     const suffixes = ["B", "KB", "MB", "GB"];
@@ -81,127 +59,147 @@ class CacheHelper {
     return "${size.toStringAsFixed(2)} ${suffixes[i]}";
   }
 
-  // 强力清理
+  // ================= 【核心增强】强力清理逻辑 =================
   static Future<void> clearAllCaches({
     bool clearFiles = true,
     bool clearHtml = true,
   }) async {
-    print("🧹 [CacheHelper] 开始强力清理 (Files: $clearFiles, HTML: $clearHtml)...");
+    print("🧹 [CacheHelper] 开始强力清理...");
     try {
       if (clearFiles) {
-        // 1. 调用库的标准清理 (优雅清理)
+        // 1. 清理图片库缓存
         try {
           await DefaultCacheManager().emptyCache();
           await globalImageCache.emptyCache();
-        } catch (e) {
-          print("  ⚠️ 库方法清理失败 (非致命): $e");
-        }
+        } catch (_) {}
 
-        // 2. 暴力清理目录
+        // 2. 暴力清理临时目录 (包括压缩图片残余)
         final tempDir = await getTemporaryDirectory();
         if (await tempDir.exists()) {
-          // 专门针对 WebView 目录进行处理 (不区分大小写)
-          final webViewDir = Directory(p.join(tempDir.path, 'WebView'));
-          if (await webViewDir.exists()) {
-            print("  🗑️ 发现 WebView 目录，尝试强制删除: ${webViewDir.path}");
-            try {
-              await webViewDir.delete(recursive: true);
-              print("    ✅ WebView 目录删除成功");
-            } catch (e) {
-              print("    ❌ WebView 目录删除失败: $e");
-            }
-          }
-
           await for (var entity in tempDir.list(followLinks: false)) {
-            // 跳过 lib 文件夹 (防止误删 Flutter 核心文件，虽然通常不在 temp)
-            // 但为了安全，我们只删除我们认识的或者看起来像缓存的
-            // 实际上 temp 目录下的东西理论上都可以删
-            if (entity is Directory) {
-              String name = p.basename(entity.path);
-              String lowerName = name.toLowerCase();
-              // 匹配常见的缓存目录名
-              if (lowerName.contains('cache') ||
-                  lowerName.contains('img') ||
-                  lowerName.contains('web') ||
-                  lowerName == 'webview') {
-                // 显式添加 webview
-                print("  🗑️ 删除目录: $name");
-                try {
+            try {
+              // 删除所有文件 (通常是 jpg, png 临时文件)
+              if (entity is File) {
+                await entity.delete();
+              }
+              // 删除特定的缓存目录
+              else if (entity is Directory) {
+                String name = p.basename(entity.path).toLowerCase();
+                // 只要不是 flutter 的核心库目录，或者是我们认识的缓存目录，就删
+                // 一般 temp 目录下的都可以删
+                if (name != 'lib') {
                   await entity.delete(recursive: true);
-                } catch (e) {
-                  print("    ❌ 删除失败: $e");
                 }
               }
-            } else if (entity is File) {
-              try {
-                await entity.delete();
-              } catch (e) {}
+            } catch (e) {
+              print("⚠️ 删除失败: ${entity.path}");
             }
           }
         }
       }
 
-      // 3. 清理 SharedPreferences 中的帖子缓存
       if (clearHtml) {
         await clearHtmlCache();
       }
-
-      print("✅ [CacheHelper] 清理完成");
+      print("✅ 清理完成");
     } catch (e) {
-      print("❌ [CacheHelper] 强力清理致命错误: $e");
-      rethrow;
+      print("❌ 清理过程出错: $e");
     }
   }
 
-  // 单独清理 HTML 缓存
   static Future<int> clearHtmlCache() async {
+    final prefs = await SharedPreferences.getInstance();
+    int count = 0;
+    for (String key in prefs.getKeys()) {
+      if (key.startsWith('thread_cache_') || key == 'home_page_cache') {
+        await prefs.remove(key);
+        count++;
+      }
+    }
+    return count;
+  }
+
+  // ================= 导入/导出功能 (保持不变) =================
+  static Future<String?> exportThreadData(
+    String tid,
+    int page,
+    String subject,
+  ) async {
+    // ... 保持原有逻辑 ...
     try {
       final prefs = await SharedPreferences.getInstance();
-      final keys = prefs.getKeys();
-      int count = 0;
-      for (String key in keys) {
-        // 1. 清理帖子详情缓存
-        if (key.startsWith('thread_cache_')) {
-          await prefs.remove(key);
-          count++;
-        }
-        // 2. 【新增】清理主页列表缓存
-        else if (key == 'home_page_cache') {
-          await prefs.remove(key);
-          count++;
-        }
-        // 3. 【新增】清理自动保存的阅读背景设置 (可选，看你想不想重置设置)
-        // if (key == 'reader_bg_color') await prefs.remove(key);
+      String key = 'thread_cache_${tid}_$page';
+      String? data = prefs.getString(key);
+      if (data == null) {
+        key = 'thread_cache_${tid}_${page}_landlord';
+        data = prefs.getString(key);
+        if (data == null) return null;
       }
-      print("  🧹 已清除 $count 条帖子/主页缓存记录");
-      return count;
+      Directory? directory;
+      if (Platform.isAndroid) {
+        directory = Directory('/storage/emulated/0/Download/GW_Archives');
+      } else {
+        directory = await getApplicationDocumentsDirectory();
+      }
+      if (!await directory.exists()) await directory.create(recursive: true);
+
+      String safeSubject = subject.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
+      if (safeSubject.length > 20) safeSubject = safeSubject.substring(0, 20);
+      String fileName = "GW_${safeSubject}_${tid}_P$page.json";
+      File file = File('${directory.path}/$fileName');
+
+      Map<String, dynamic> archiveData = {
+        "meta": {
+          "version": 1,
+          "app": "GiantessWaltz_App",
+          "timestamp": DateTime.now().millisecondsSinceEpoch,
+        },
+        "content": {
+          "tid": tid,
+          "page": page,
+          "subject": subject,
+          "key_suffix": key.contains("landlord") ? "_landlord" : "",
+          "body": data,
+        },
+      };
+      await file.writeAsString(jsonEncode(archiveData));
+      return file.path;
     } catch (e) {
-      print("  ⚠️ 帖子缓存清理失败: $e");
-      return 0;
+      print("❌ 导出失败: $e");
+      return null;
     }
   }
 
-  // 调试方法：打印目录结构
-  static Future<String> debugAnalyze() async {
-    StringBuffer sb = StringBuffer();
+  static Future<int> importArchive() async {
     try {
-      final tempDir = await getTemporaryDirectory();
-      sb.writeln("临时目录: ${tempDir.path}");
-      await for (var entity in tempDir.list(
-        recursive: true,
-        followLinks: false,
-      )) {
-        if (entity is File) {
-          sb.writeln(
-            "  📄 ${p.basename(entity.path)} - ${formatSize(await entity.length())}",
-          );
-        } else if (entity is Directory) {
-          sb.writeln("📁 ${p.relative(entity.path, from: tempDir.path)}");
-        }
+      FilePickerResult? result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['json'],
+        allowMultiple: true,
+      );
+      if (result == null) return 0;
+      final prefs = await SharedPreferences.getInstance();
+      int successCount = 0;
+      for (var file in result.files) {
+        if (file.path == null) continue;
+        try {
+          File f = File(file.path!);
+          String content = await f.readAsString();
+          Map<String, dynamic> json = jsonDecode(content);
+          if (json['content'] != null) {
+            var data = json['content'];
+            String tid = data['tid'].toString();
+            String page = data['page'].toString();
+            String body = data['body'];
+            String suffix = data['key_suffix'] ?? "";
+            await prefs.setString('thread_cache_${tid}_${page}$suffix', body);
+            successCount++;
+          }
+        } catch (_) {}
       }
+      return successCount;
     } catch (e) {
-      sb.writeln("分析出错: $e");
+      return 0;
     }
-    return sb.toString();
   }
 }

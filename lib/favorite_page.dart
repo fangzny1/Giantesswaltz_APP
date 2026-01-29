@@ -3,6 +3,7 @@ import 'package:webview_flutter/webview_flutter.dart';
 import 'package:html/parser.dart' as html_parser;
 import 'login_page.dart';
 import 'thread_detail_page.dart';
+import 'forum_model.dart';
 import 'dart:io';
 import 'main.dart'; // 用于访问 customWallpaperPath 和 currentTheme
 
@@ -72,9 +73,7 @@ class _FavoritePageState extends State<FavoritePage> {
       _isLoading = true;
     });
     _hiddenController.loadRequest(
-      Uri.parse(
-        'https://www.giantessnight.com/gnforum2012/home.php?mod=space&do=favorite&view=me&mobile=no',
-      ),
+      Uri.parse('${kBaseUrl}home.php?mod=space&do=favorite&view=me&mobile=no'),
     );
   }
 
@@ -183,9 +182,9 @@ class _FavoritePageState extends State<FavoritePage> {
       context,
     ).showSnackBar(const SnackBar(content: Text("正在取消收藏...")));
     // 构造删除链接
-    String delUrl =
-        "https://www.giantessnight.com/gnforum2012/home.php?mod=spacecp&ac=favorite&op=delete&favid=$favid&type=all";
-    _hiddenController.loadRequest(Uri.parse(delUrl));
+    String url =
+        "${kBaseUrl}home.php?mod=spacecp&ac=favorite&op=delete&favid=$favid&type=all";
+    _hiddenController.loadRequest(Uri.parse(url));
   }
 
   @override

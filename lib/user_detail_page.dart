@@ -1,10 +1,47 @@
 import 'package:flutter/material.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 import 'package:html/parser.dart' as html_parser;
+import 'dart:convert';
 import 'dart:io';
-import 'login_page.dart';
+import 'package:dio/dio.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:cached_network_image/cached_network_image.dart'; // 引入缓存图片
+
+import 'forum_model.dart';
 import 'thread_detail_page.dart';
-import 'main.dart'; // 引入 main.dart 以访问 customWallpaperPath
+import 'login_page.dart';
+import 'main.dart';
+
+// 用户信息模型
+class UserProfile {
+  final String username;
+  final String uid;
+  final String groupTitle;
+  final String credits; // 总积分
+  final Map<String, String> extCredits; // 扩展积分 (威望/金币等)
+  final List<String> medalUrls; // 勋章图片链接
+  final String bio; // 签名或介绍
+  final String sightml; // 签名HTML
+  final String postsCount;
+  final String threadsCount;
+  final String friendsCount;
+  final String regDate;
+
+  UserProfile({
+    required this.username,
+    required this.uid,
+    required this.groupTitle,
+    required this.credits,
+    required this.extCredits,
+    required this.medalUrls,
+    required this.bio,
+    required this.sightml,
+    required this.postsCount,
+    required this.threadsCount,
+    required this.friendsCount,
+    required this.regDate,
+  });
+}
 
 class UserThreadItem {
   final String tid;
@@ -45,6 +82,7 @@ class _UserDetailPageState extends State<UserDetailPage> {
   final ScrollController _scrollController = ScrollController();
 
   List<UserThreadItem> _threads = [];
+  UserProfile? _userProfile; // 新增用户详情数据
 
   bool _isFirstLoading = true;
   bool _isLoadingMore = false;
@@ -52,15 +90,18 @@ class _UserDetailPageState extends State<UserDetailPage> {
 
   String _errorMsg = "";
   int _currentPage = 1;
-  int _targetPage = 1; // 记录当前正在请求的目标页码
+  int _targetPage = 1;
 
-  final String _baseUrl = "https://www.giantessnight.com/gnforum2012/";
+  final String _baseUrl = kBaseUrl;
 
   @override
   void initState() {
     super.initState();
     _initWebView();
     _scrollController.addListener(_onScroll);
+
+    // 【新增】同时加载用户详细信息
+    _loadUserProfile();
   }
 
   @override
@@ -70,8 +111,9 @@ class _UserDetailPageState extends State<UserDetailPage> {
   }
 
   void _onScroll() {
-    if (_scrollController.position.pixels >=
-        _scrollController.position.maxScrollExtent - 200) {
+    if (_scrollController.hasClients &&
+        _scrollController.position.pixels >=
+            _scrollController.position.maxScrollExtent - 200) {
       _loadMore();
     }
   }
@@ -79,106 +121,233 @@ class _UserDetailPageState extends State<UserDetailPage> {
   void _initWebView() {
     _hiddenController = WebViewController()
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
-      ..setUserAgent(kUserAgent)
-      ..setNavigationDelegate(
-        NavigationDelegate(
-          onPageFinished: (url) {
-            _parseUserData();
-          },
-        ),
-      );
+      ..setUserAgent(kUserAgent);
 
     _loadPage(1);
   }
 
-  void _loadPage(int page) {
-    if (!_hasMore && page > 1) return;
+  // 【新增】加载用户详细信息 (API)
+  Future<void> _loadUserProfile() async {
+    // API 地址: module=profile
+    String url =
+        '${_baseUrl}api/mobile/index.php?version=4&module=profile&uid=${widget.uid}';
+    print("🚀 加载用户详情: $url");
 
-    _targetPage = page;
-    String url;
-
-    // 构建分页 URL：&page=X
-    if (widget.uid != null && widget.uid!.isNotEmpty) {
-      url =
-          '${_baseUrl}home.php?mod=space&uid=${widget.uid}&do=thread&view=me&from=space&mobile=no&page=$page';
-    } else {
-      url =
-          '${_baseUrl}home.php?mod=space&username=${Uri.encodeComponent(widget.username)}&do=thread&view=me&from=space&mobile=no&page=$page';
-    }
-
-    print("🚀 加载用户主题第 $page 页: $url");
-    _hiddenController.loadRequest(Uri.parse(url));
-  }
-
-  void _loadMore() {
-    if (_isLoadingMore || !_hasMore || _isFirstLoading) return;
-    setState(() {
-      _isLoadingMore = true;
-    });
-    _loadPage(_currentPage + 1);
-  }
-
-  Future<void> _parseUserData() async {
     try {
-      final String rawHtml =
-          await _hiddenController.runJavaScriptReturningResult(
-                "document.documentElement.outerHTML",
-              )
-              as String;
+      final dio = Dio();
+      final prefs = await SharedPreferences.getInstance();
+      final String cookie = prefs.getString('saved_cookie_string') ?? "";
+      dio.options.headers['Cookie'] = cookie;
+      dio.options.headers['User-Agent'] = kUserAgent;
 
-      String cleanHtml = rawHtml;
-      if (cleanHtml.startsWith('"'))
-        cleanHtml = cleanHtml.substring(1, cleanHtml.length - 1);
-      cleanHtml = cleanHtml
-          .replaceAll('\\u003C', '<')
-          .replaceAll('\\"', '"')
-          .replaceAll('\\\\', '\\');
+      final response = await dio.get<String>(url);
 
-      var document = html_parser.parse(cleanHtml);
+      if (response.statusCode == 200 && response.data != null) {
+        String jsonStr = response.data!;
+        if (jsonStr.startsWith('"')) {
+          jsonStr = jsonStr
+              .substring(1, jsonStr.length - 1)
+              .replaceAll('\\"', '"')
+              .replaceAll('\\\\', '\\');
+        }
+
+        var data = jsonDecode(jsonStr);
+        if (data['Variables'] != null && data['Variables']['space'] != null) {
+          var space = data['Variables']['space'];
+          var extCreditsMap = data['Variables']['extcredits'] ?? {};
+
+          // 解析扩展积分
+          Map<String, String> credits = {};
+          // 简单解析前几个重要的
+          if (extCreditsMap['1'] != null)
+            credits['威望'] = space['extcredits1'] ?? '0';
+          if (extCreditsMap['2'] != null)
+            credits['金币'] = space['extcredits2'] ?? '0';
+          if (extCreditsMap['3'] != null)
+            credits['贡献'] = space['extcredits3'] ?? '0';
+
+          // 解析勋章
+          List<String> medals = [];
+          // 如果 API 返回了 medals 数组 (你的 JSON 里是 null，可能需要 specific logic)
+          // 暂时留空
+
+          if (mounted) {
+            setState(() {
+              _userProfile = UserProfile(
+                username: space['username'],
+                uid: space['uid'],
+                groupTitle: space['group']['grouptitle'] ?? "未知用户组",
+                credits: space['credits'] ?? "0",
+                extCredits: credits,
+                medalUrls: medals,
+                bio: space['bio'] ?? "",
+                sightml: space['sightml'] ?? "",
+                postsCount: space['posts'] ?? "0",
+                threadsCount: space['threads'] ?? "0",
+                friendsCount: space['friends'] ?? "0",
+                regDate: space['regdate'] ?? "",
+              );
+            });
+          }
+        }
+      }
+    } catch (e) {
+      print("❌ 用户详情加载失败: $e");
+    }
+  }
+
+  void _loadPage(int page) async {
+    if (!_hasMore && page > 1) return;
+    _targetPage = page;
+
+    if (mounted)
+      setState(() {
+        _isLoadingMore = true;
+      });
+
+    // 使用网页版抓取主题列表
+    String url =
+        '${_baseUrl}home.php?mod=space&uid=${widget.uid}&do=thread&view=me&order=dateline&mobile=no&page=$page';
+
+    try {
+      final dio = Dio();
+      final prefs = await SharedPreferences.getInstance();
+      final String cookie = prefs.getString('saved_cookie_string') ?? "";
+
+      dio.options.headers['Cookie'] = cookie;
+      dio.options.headers['User-Agent'] = kUserAgent;
+      dio.options.connectTimeout = const Duration(seconds: 15);
+
+      final response = await dio.get<String>(url);
+
+      if (response.statusCode == 200 && response.data != null) {
+        _parseHtmlData(response.data!);
+      }
+    } catch (e) {
+      if (mounted)
+        setState(() {
+          _isLoadingMore = false;
+          _isFirstLoading = false;
+          _errorMsg = "网络请求失败";
+        });
+    }
+  }
+
+  void _parseHtmlData(String htmlString) {
+    try {
+      var document = html_parser.parse(htmlString);
       List<UserThreadItem> newThreads = [];
 
-      // Discuz 用户页列表解析
-      var rows = document.querySelectorAll('form[id^="delform"] table tr');
+      // 模式 A：GW (Rabbit 模板)
+      var listItems = document.querySelectorAll('.c_threadlist ul li');
 
-      for (var row in rows) {
-        try {
-          if (row.className.contains('th')) continue;
+      if (listItems.isNotEmpty) {
+        for (var li in listItems) {
+          try {
+            // 修复后的标题查找逻辑
+            var titleNode = li.querySelector('.tit > a');
+            if (titleNode == null || titleNode.text.trim().isEmpty) {
+              var allLinks = li.querySelectorAll('.tit a');
+              for (var link in allLinks) {
+                if (link.children.any((child) => child.localName == 'img'))
+                  continue;
+                if (link.text.trim().isNotEmpty) {
+                  titleNode = link;
+                  break;
+                }
+              }
+            }
+            if (titleNode == null) continue;
 
-          var titleNode = row.querySelector('th a');
-          if (titleNode == null) continue;
+            String subject = titleNode.text.trim();
+            String href = titleNode.attributes['href'] ?? "";
 
-          String subject = titleNode.text.trim();
-          String href = titleNode.attributes['href'] ?? "";
-          // 提取 TID
-          RegExp tidReg = RegExp(r'tid=(\d+)');
-          String tid = tidReg.firstMatch(href)?.group(1) ?? "";
+            RegExp tidReg = RegExp(r'tid=(\d+)');
+            String tid = tidReg.firstMatch(href)?.group(1) ?? "";
+            if (tid.isEmpty) continue;
 
-          if (tid.isEmpty) continue;
+            String dateline = li.querySelector('.dte')?.text.trim() ?? "";
+            String replies =
+                li
+                    .querySelector('.rep')
+                    ?.text
+                    .replaceAll(RegExp(r'[^0-9]'), '') ??
+                "0";
+            String views =
+                li
+                    .querySelector('.vie')
+                    ?.text
+                    .replaceAll(RegExp(r'[^0-9]'), '') ??
+                "0";
 
-          var forumNode = row.querySelector('a.xg1');
-          String forumName = forumNode?.text.trim() ?? "未知板块";
+            String forumName = "帖子";
+            var catNode =
+                li.querySelector('.cat a') ??
+                li.querySelector('.sub a[href*="forumdisplay"]');
+            if (catNode != null) forumName = catNode.text.trim();
 
-          var numNode = row.querySelector('td.num');
-          String replies = numNode?.querySelector('a')?.text ?? "0";
-          String views = numNode?.querySelector('em')?.text ?? "0";
+            newThreads.add(
+              UserThreadItem(
+                tid: tid,
+                subject: subject,
+                forumName: forumName,
+                dateline: dateline,
+                views: views,
+                replies: replies,
+              ),
+            );
+          } catch (e) {
+            continue;
+          }
+        }
+      }
+      // 模式 B：标准 Discuz (GN)
+      else {
+        var rows = document.querySelectorAll('form table tr');
+        if (rows.isEmpty) rows = document.querySelectorAll('.tl table tr');
+        rows = rows
+            .where((r) => r.getElementsByTagName('td').isNotEmpty)
+            .toList();
 
-          var dateNode =
-              row.querySelector('td.by em span') ??
-              row.querySelector('td.by em');
-          String dateline = dateNode?.text.trim() ?? "";
+        for (var row in rows) {
+          try {
+            var titleLink =
+                row.querySelector('th a[href*="viewthread"]') ??
+                row.querySelector('td a[href*="viewthread"]');
+            if (titleLink == null) continue;
 
-          newThreads.add(
-            UserThreadItem(
-              tid: tid,
-              subject: subject,
-              forumName: forumName,
-              dateline: dateline,
-              views: views,
-              replies: replies,
-            ),
-          );
-        } catch (e) {
-          continue;
+            String subject = titleLink.text.trim();
+            String href = titleLink.attributes['href'] ?? "";
+            RegExp tidReg = RegExp(r'tid=(\d+)');
+            String tid = tidReg.firstMatch(href)?.group(1) ?? "";
+            if (tid.isEmpty) continue;
+
+            String forumName = row.querySelector('a.xg1')?.text.trim() ?? "";
+            String replies = "0";
+            String views = "0";
+            var numTd = row.querySelector('td.num');
+            if (numTd != null) {
+              replies = numTd.querySelector('a')?.text.trim() ?? "0";
+              views = numTd.querySelector('em')?.text.trim() ?? "0";
+            }
+            String dateline = "";
+            var byTd = row.querySelector('td.by');
+            if (byTd != null)
+              dateline = byTd.text.replaceAll(RegExp(r'\s+'), ' ').trim();
+
+            newThreads.add(
+              UserThreadItem(
+                tid: tid,
+                subject: subject,
+                forumName: forumName,
+                dateline: dateline,
+                views: views,
+                replies: replies,
+              ),
+            );
+          } catch (e) {
+            continue;
+          }
         }
       }
 
@@ -187,41 +356,46 @@ class _UserDetailPageState extends State<UserDetailPage> {
           if (_targetPage == 1) {
             _threads = newThreads;
             _currentPage = 1;
-            // 【修复】如果是第一页且数据很少(小于20条)，直接认为没有下一页了，防止转圈
-            if (newThreads.length < 20) _hasMore = false;
           } else {
-            // 翻页追加逻辑
-            bool hasNew = false;
             for (var t in newThreads) {
               if (!_threads.any((old) => old.tid == t.tid)) {
                 _threads.add(t);
-                hasNew = true;
               }
             }
-            if (hasNew) _currentPage = _targetPage;
+            if (newThreads.isNotEmpty) _currentPage = _targetPage;
           }
-
-          // 【修复】如果获取到的数据为空，或者少于 Discuz 默认分页数(通常20)，说明到底了
-          if (newThreads.isEmpty || newThreads.length < 20) {
-            _hasMore = false;
-          }
-
+          if (newThreads.length < 5) _hasMore = false;
           _isFirstLoading = false;
           _isLoadingMore = false;
           _errorMsg = "";
         });
+
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          _checkIfNeedLoadMore();
+        });
       }
     } catch (e) {
-      if (mounted) {
+      print("HTML 解析错误: $e");
+      if (mounted)
         setState(() {
           _isLoadingMore = false;
           _isFirstLoading = false;
-          // 【修复】如果出错且是第一页，认为到底了，防止加载条卡住
-          if (_currentPage == 1) _hasMore = false;
-          if (_currentPage == 1) _errorMsg = "解析失败或网络错误";
         });
+    }
+  }
+
+  void _checkIfNeedLoadMore() {
+    if (!_hasMore || _isLoadingMore) return;
+    if (_scrollController.hasClients) {
+      if (_scrollController.position.maxScrollExtent <= 0) {
+        _loadMore();
       }
     }
+  }
+
+  void _loadMore() {
+    if (_isLoadingMore || !_hasMore || _isFirstLoading) return;
+    _loadPage(_currentPage + 1);
   }
 
   @override
@@ -262,51 +436,44 @@ class _UserDetailPageState extends State<UserDetailPage> {
                     },
                   ),
                 ),
-              CustomScrollView(
-                controller: _scrollController, // 绑定滚动控制器
-                slivers: [
-                  SliverAppBar.large(
-                    title: Text("${widget.username} 的主题"),
-                    backgroundColor:
-                        (wallpaperPath != null && transparentBarsEnabled.value)
-                        ? Colors.transparent
-                        : null,
-                    actions: [
-                      if (widget.avatarUrl != null &&
-                          widget.avatarUrl!.isNotEmpty)
-                        Padding(
-                          padding: const EdgeInsets.all(12.0),
-                          child: CircleAvatar(
-                            backgroundImage: NetworkImage(widget.avatarUrl!),
+
+              // 使用 NestedScrollView 来实现可折叠的头部
+              NestedScrollView(
+                controller: _scrollController,
+                headerSliverBuilder: (context, innerBoxIsScrolled) {
+                  return [
+                    SliverAppBar.large(
+                      title: Text(_userProfile?.username ?? widget.username),
+                      backgroundColor:
+                          (wallpaperPath != null &&
+                              transparentBarsEnabled.value)
+                          ? Colors.transparent
+                          : null,
+                      actions: [
+                        if (widget.avatarUrl != null &&
+                            widget.avatarUrl!.isNotEmpty)
+                          Padding(
+                            padding: const EdgeInsets.all(12.0),
+                            child: CircleAvatar(
+                              backgroundImage: CachedNetworkImageProvider(
+                                widget.avatarUrl!,
+                              ),
+                            ),
                           ),
-                        ),
-                    ],
-                  ),
+                      ],
+                    ),
 
-                  if (_isFirstLoading)
-                    const SliverToBoxAdapter(child: LinearProgressIndicator()),
-
-                  if (_threads.isEmpty && !_isFirstLoading)
-                    SliverFillRemaining(
-                      child: Center(
-                        child: Text(
-                          _errorMsg.isNotEmpty ? _errorMsg : "没有找到公开的主题",
-                        ),
+                    // 【新增】用户信息展示卡片
+                    if (_userProfile != null)
+                      SliverToBoxAdapter(
+                        child: _buildUserProfileCard(context, wallpaperPath),
                       ),
-                    ),
-
-                  SliverList(
-                    delegate: SliverChildBuilderDelegate(
-                      (context, index) {
-                        if (index == _threads.length) return _buildFooter();
-                        final item = _threads[index];
-                        return _buildThreadTile(item);
-                      },
-                      childCount: _threads.length + 1, // +1 给 footer
-                    ),
-                  ),
-                ],
+                  ];
+                },
+                body: _buildThreadList(wallpaperPath),
               ),
+
+              // 后台 WebView 兜底
               SizedBox(
                 height: 0,
                 width: 0,
@@ -319,129 +486,225 @@ class _UserDetailPageState extends State<UserDetailPage> {
     );
   }
 
-  Widget _buildFooter() {
-    if (_hasMore) {
-      return const Padding(
-        padding: EdgeInsets.all(16),
-        child: Center(child: CircularProgressIndicator()),
-      );
-    } else {
-      if (_threads.isEmpty) return const SizedBox.shrink();
-      return const Padding(
-        padding: EdgeInsets.all(24),
-        child: Center(
-          child: Text("--- 没有更多了 ---", style: TextStyle(color: Colors.grey)),
-        ),
-      );
-    }
-  }
+  // 构建用户信息卡片 (MD3 风格)
+  Widget _buildUserProfileCard(BuildContext context, String? wallpaperPath) {
+    if (_userProfile == null) return const SizedBox();
 
-  Widget _buildThreadTile(UserThreadItem item) {
-    return ValueListenableBuilder<String?>(
-      valueListenable: customWallpaperPath,
-      builder: (context, wallpaperPath, _) {
-        return Card(
-          margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-          elevation: 0,
-          color: wallpaperPath != null
-              ? Theme.of(context).cardColor.withOpacity(0.7)
-              : Theme.of(context).cardColor,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(12),
-          ),
-          child: InkWell(
-            borderRadius: BorderRadius.circular(12),
-            onTap: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (context) =>
-                      ThreadDetailPage(tid: item.tid, subject: item.subject),
-                ),
-              );
-            },
-            child: Padding(
-              padding: const EdgeInsets.all(16.0),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
+    final theme = Theme.of(context);
+    final cardColor = wallpaperPath != null
+        ? theme.cardColor.withOpacity(0.8)
+        : theme.cardColor;
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
+      child: Card(
+        color: cardColor,
+        elevation: 0,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        child: Padding(
+          padding: const EdgeInsets.all(16.0),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // 1. 用户组和基本信息
+              Row(
                 children: [
-                  Text(
-                    item.subject,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      fontWeight: FontWeight.bold,
-                      fontSize: 15,
+                  Chip(
+                    label: Text(_userProfile!.groupTitle),
+                    avatar: const Icon(Icons.verified_user, size: 16),
+                    backgroundColor: theme.colorScheme.tertiaryContainer,
+                    labelStyle: TextStyle(
+                      fontSize: 12,
+                      color: theme.colorScheme.onTertiaryContainer,
                     ),
+                    visualDensity: VisualDensity.compact,
                   ),
-                  const SizedBox(height: 8),
-                  Row(
-                    children: [
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 6,
-                          vertical: 2,
-                        ),
-                        decoration: BoxDecoration(
-                          color: Theme.of(
-                            context,
-                          ).colorScheme.secondaryContainer,
-                          borderRadius: BorderRadius.circular(4),
-                        ),
-                        child: Text(
-                          item.forumName,
-                          style: TextStyle(
-                            fontSize: 10,
-                            color: Theme.of(
-                              context,
-                            ).colorScheme.onSecondaryContainer,
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      Text(
-                        item.dateline,
-                        style: const TextStyle(
-                          fontSize: 12,
-                          color: Colors.grey,
-                        ),
-                      ),
-                      const Spacer(),
-                      const Icon(
-                        Icons.remove_red_eye,
-                        size: 12,
-                        color: Colors.grey,
-                      ),
-                      const SizedBox(width: 2),
-                      Text(
-                        item.views,
-                        style: const TextStyle(
-                          fontSize: 12,
-                          color: Colors.grey,
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      const Icon(
-                        Icons.chat_bubble_outline,
-                        size: 14,
-                        color: Colors.grey,
-                      ),
-                      const SizedBox(width: 2),
-                      Text(
-                        item.replies,
-                        style: const TextStyle(
-                          fontSize: 12,
-                          color: Colors.grey,
-                        ),
-                      ),
-                    ],
+                  const SizedBox(width: 8),
+                  Text(
+                    "UID: ${_userProfile!.uid}",
+                    style: TextStyle(color: Colors.grey),
+                  ),
+                  const Spacer(),
+                  Text(
+                    "注册: ${_userProfile!.regDate}",
+                    style: TextStyle(fontSize: 12, color: Colors.grey),
                   ),
                 ],
               ),
-            ),
+              const SizedBox(height: 12),
+
+              // 2. 积分数据 (横向排列)
+              SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: Row(
+                  children: [
+                    _buildStatItem("积分", _userProfile!.credits),
+                    _buildStatItem("帖子", _userProfile!.postsCount),
+                    _buildStatItem("主题", _userProfile!.threadsCount),
+                    // 扩展积分
+                    ..._userProfile!.extCredits.entries.map(
+                      (e) => _buildStatItem(e.key, e.value),
+                    ),
+                  ],
+                ),
+              ),
+
+              // 3. 个人简介/签名 (如果有)
+              if (_userProfile!.bio.isNotEmpty) ...[
+                const Divider(height: 24),
+                Text(
+                  "简介",
+                  style: TextStyle(
+                    fontWeight: FontWeight.bold,
+                    color: theme.colorScheme.primary,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  _userProfile!.bio,
+                  style: TextStyle(color: theme.colorScheme.onSurfaceVariant),
+                ),
+              ],
+            ],
           ),
-        );
+        ),
+      ),
+    );
+  }
+
+  Widget _buildStatItem(String label, String value) {
+    return Container(
+      margin: const EdgeInsets.only(right: 16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            value,
+            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+          ),
+          Text(label, style: const TextStyle(fontSize: 12, color: Colors.grey)),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildThreadList(String? wallpaperPath) {
+    if (_isFirstLoading)
+      return const Center(child: CircularProgressIndicator());
+    if (_threads.isEmpty)
+      return Center(child: Text(_errorMsg.isNotEmpty ? _errorMsg : "这里空空如也"));
+
+    return ListView.builder(
+      // key: PageStorageKey('user_threads'), // 可选：保持滚动位置
+      padding: const EdgeInsets.only(bottom: 30),
+      itemCount: _threads.length + 1,
+      itemBuilder: (ctx, index) {
+        if (index == _threads.length) return _buildFooter();
+        final item = _threads[index];
+        return _buildThreadTile(item, wallpaperPath);
       },
+    );
+  }
+
+  Widget _buildFooter() {
+    return _hasMore
+        ? const Padding(
+            padding: EdgeInsets.all(20),
+            child: Center(child: CircularProgressIndicator()),
+          )
+        : const Padding(
+            padding: EdgeInsets.all(20),
+            child: Center(child: Text("没有更多了")),
+          );
+  }
+
+  Widget _buildThreadTile(UserThreadItem item, String? wallpaperPath) {
+    return Card(
+      margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+      elevation: 0,
+      color: wallpaperPath != null
+          ? Theme.of(context).cardColor.withOpacity(0.7)
+          : Theme.of(context).cardColor,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(12),
+        onTap: () {
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (context) =>
+                  ThreadDetailPage(tid: item.tid, subject: item.subject),
+            ),
+          );
+        },
+        child: Padding(
+          padding: const EdgeInsets.all(16.0),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                item.subject,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  fontWeight: FontWeight.bold,
+                  fontSize: 15,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 6,
+                      vertical: 2,
+                    ),
+                    decoration: BoxDecoration(
+                      color: Theme.of(context).colorScheme.secondaryContainer,
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                    child: Text(
+                      item.forumName,
+                      style: TextStyle(
+                        fontSize: 10,
+                        color: Theme.of(
+                          context,
+                        ).colorScheme.onSecondaryContainer,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Text(
+                    item.dateline,
+                    style: const TextStyle(fontSize: 12, color: Colors.grey),
+                  ),
+                  const Spacer(),
+                  const Icon(
+                    Icons.remove_red_eye,
+                    size: 12,
+                    color: Colors.grey,
+                  ),
+                  const SizedBox(width: 2),
+                  Text(
+                    item.views,
+                    style: const TextStyle(fontSize: 12, color: Colors.grey),
+                  ),
+                  const SizedBox(width: 8),
+                  const Icon(
+                    Icons.chat_bubble_outline,
+                    size: 14,
+                    color: Colors.grey,
+                  ),
+                  const SizedBox(width: 2),
+                  Text(
+                    item.replies,
+                    style: const TextStyle(fontSize: 12, color: Colors.grey),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }

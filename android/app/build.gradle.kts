@@ -8,7 +8,7 @@ plugins {
 android {
     // 【修改点 1】保持与 applicationId 和 Manifest 中的 package 一致
     // 之前是 "com.example.flutter_giantessnight_1"，建议改成下面这个：
-    namespace = "com.example.giantessnight_app"
+    namespace = "com.example.gw_app"
     
     compileSdk = flutter.compileSdkVersion
     ndkVersion = flutter.ndkVersion
@@ -24,7 +24,7 @@ android {
 
     defaultConfig {
         // 【关键点】VPN 识别的就是这个 ID，保持不动
-        applicationId = "com.example.giantessnight_app"
+        applicationId = "com.example.gw_app"
         
         // 这里的配置很棒，minSdk 21 兼容老手机，targetSdk 34 适配新权限
         minSdk = flutter.minSdkVersion

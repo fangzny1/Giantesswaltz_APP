@@ -1448,7 +1448,7 @@ class _ProfilePageState extends State<ProfilePage> {
             InkWell(
               onTap: () async {
                 final Uri url = Uri.parse(
-                  "https://github.com/fangzny1/GiantessNight_App",
+                  "https://github.com/fangzny1/Giantesswaltz_APP/",
                 );
                 if (!await launchUrl(
                   url,
@@ -1460,7 +1460,7 @@ class _ProfilePageState extends State<ProfilePage> {
                 }
               },
               child: const Text(
-                "基于https://github.com/fangzny1/GiantessNight_App项目改进",
+                "https://github.com/fangzny1/Giantesswaltz_APP/",
                 style: TextStyle(
                   color: Colors.blue,
                   decoration: TextDecoration.underline,

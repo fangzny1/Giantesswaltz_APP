@@ -616,31 +616,91 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
   }
 
   void _showSaveBookmarkDialog() {
+    if (_posts.isEmpty) return;
+
     showModalBottomSheet(
       context: context,
-      builder: (context) => Container(
-        padding: const EdgeInsets.all(20),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
+      backgroundColor: Theme.of(context).cardColor,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (context) {
+        return Column(
           children: [
-            const Text(
-              "保存当前进度",
-              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+            Padding(
+              padding: const EdgeInsets.all(16.0),
+              child: Text(
+                "选择你读到的楼层进行存档",
+                style: TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.bold,
+                  color: Theme.of(context).primaryColor,
+                ),
+              ),
             ),
-            const SizedBox(height: 10),
-            ListTile(
-              title: const Text("确认保存"),
-              leading: const Icon(Icons.save),
-              onTap: () {
-                String floor = _posts.isNotEmpty ? _posts.last.floor : "1楼";
-                String? pid = _posts.isNotEmpty ? _posts.last.pid : null;
-                _saveBookmarkWithFloor(floor, _targetPage, pid: pid);
-                Navigator.pop(context);
-              },
+            Expanded(
+              child: ListView.builder(
+                itemCount: _posts.length,
+                itemBuilder: (context, index) {
+                  // 倒序显示，因为大家通常是看到最新的（最底下）
+                  // 如果想正序（从第1楼开始），就用 final post = _posts[index];
+                  final int reverseIndex = _posts.length - 1 - index;
+                  final post = _posts[reverseIndex];
+
+                  // 简单的摘要提取
+                  String summary = post.contentHtml
+                      .replaceAll(RegExp(r'<[^>]*>'), '') // 去掉HTML标签
+                      .replaceAll('&nbsp;', ' ')
+                      .trim();
+                  if (summary.length > 30) {
+                    summary = "${summary.substring(0, 30)}...";
+                  }
+                  if (summary.isEmpty) summary = "[图片/表情]";
+
+                  return ListTile(
+                    leading: CircleAvatar(
+                      backgroundColor: Theme.of(
+                        context,
+                      ).colorScheme.primaryContainer,
+                      child: Text(
+                        post.floor.replaceAll("楼", ""),
+                        style: const TextStyle(fontSize: 12),
+                      ),
+                    ),
+                    title: Text(
+                      post.author,
+                      style: const TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                    subtitle: Text(
+                      summary,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    trailing: const Icon(Icons.bookmark_add_outlined),
+                    onTap: () {
+                      // 解析楼层号并反推页码（Discuz 默认每页10楼）
+                      int pageToSave = _targetPage;
+                      final m = RegExp(r'(\\d+)').firstMatch(post.floor);
+                      if (m != null) {
+                        int floorNum = int.tryParse(m.group(1)!) ?? 0;
+                        if (floorNum > 0) {
+                          pageToSave = ((floorNum - 1) ~/ 10) + 1;
+                        }
+                      }
+                      _saveBookmarkWithFloor(
+                        post.floor,
+                        pageToSave,
+                        pid: post.pid,
+                      );
+                      Navigator.pop(context);
+                    },
+                  );
+                },
+              ),
             ),
           ],
-        ),
-      ),
+        );
+      },
     );
   }
 

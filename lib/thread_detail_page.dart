@@ -74,6 +74,7 @@ class ThreadDetailPage extends StatefulWidget {
 class _ThreadDetailPageState extends State<ThreadDetailPage>
     with TickerProviderStateMixin {
   late AutoScrollController _scrollController;
+  bool get isDark => Theme.of(context).brightness == Brightness.dark;
   bool _hasPerformedInitialJump = false;
   double _lineHeight = 1.4; // 默认行高从 1.8 调小到 1.4
   List<PostItem> _posts = [];
@@ -244,6 +245,14 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
           int.tryParse(threadInfo['allreplies']?.toString() ?? '0') ?? 0;
       int ppp = int.tryParse(vars['ppp']?.toString() ?? '10') ?? 10;
       _totalPages = ((allReplies + 1) / ppp).ceil();
+      // ===========================
+      // 【新增】在这里加入历史记录保存
+      // ===========================
+      String authorName = threadInfo['author']?.toString() ?? "未知";
+      // 这里的 addHistory 是 fire-and-forget (不需 await)，不阻塞界面渲染
+      HistoryManager.addHistory(widget.tid, widget.subject, authorName);
+      print("📝 已添加历史记录: ${widget.subject}");
+      // ===========================
     }
 
     var rawPostList = vars['postlist'];
@@ -1616,12 +1625,27 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
                                 ),
                               );
                             },
-                            icon: const Icon(Icons.assignment_outlined),
+                            icon: Icon(
+                              Icons.assignment_outlined,
+                              // 根据暗色/亮色动态切换图标颜色
+                              color: isDark
+                                  ? Colors.blue[200]
+                                  : Colors.blue[800],
+                            ),
                             label: const Text("参与/查看读者问卷"),
                             style: ElevatedButton.styleFrom(
-                              backgroundColor: Colors.blue[50],
-                              foregroundColor: Colors.blue[800],
+                              // 背景色适配：暗色用深蓝灰，亮色用浅蓝
+                              backgroundColor: isDark
+                                  ? const Color(0xFF1E293B)
+                                  : Colors.blue[50],
                               elevation: 0,
+                              padding: const EdgeInsets.symmetric(vertical: 12),
+                              // 暗黑模式加一个半透明的边框，更有质感，防止“隐身”
+                              side: BorderSide(
+                                color: isDark
+                                    ? Colors.blue[900]!.withOpacity(0.5)
+                                    : Colors.blue[100]!,
+                              ),
                               shape: RoundedRectangleBorder(
                                 borderRadius: BorderRadius.circular(8),
                               ),

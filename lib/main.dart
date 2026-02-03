@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:giantesswaltz_app/history_page.dart';
-import 'package:giantesswaltz_app/http_service.dart';
 import 'package:giantesswaltz_app/offline_list_page.dart';
 import 'package:giantesswaltz_app/thread_detail_page.dart';
 import 'package:path_provider/path_provider.dart';
@@ -22,7 +21,6 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:cached_network_image/cached_network_image.dart'; // 引入缓存图片库
 import 'cache_helper.dart'; // 引入缓存助手
-import 'offline_manager.dart'; // 引入新文件
 
 // 全局状态
 final ValueNotifier<String> currentUser = ValueNotifier("未登录");
@@ -275,6 +273,8 @@ class _ForumHomePageState extends State<ForumHomePage> {
   void initState() {
     super.initState();
     _initHiddenWebView();
+    // 👇👇👇 一进页面，马上读缓存，不要等网络 👇👇👇
+    _loadHotCache();
   }
 
   @override
@@ -404,6 +404,8 @@ class _ForumHomePageState extends State<ForumHomePage> {
         print("⚠️ 缓存解析失败: $e");
       }
     }
+    // 【新增】同时预加载热门帖子缓存
+    _loadHotThreadCache();
   }
 
   // ==========================================
@@ -438,7 +440,6 @@ class _ForumHomePageState extends State<ForumHomePage> {
     // 不管有没有开启强力模式，只要有 Cookie，就尝试抢跑
     // 这样能最大程度利用 API 速度优势
     _fetchDataByDio();
-    _fetchHotThreads();
     // 【新增】每次刷新前清理 WebView 缓存，确保 Cookie 状态重置
     // 这样能解决"第一次行第二次不行"的问题
     try {
@@ -514,6 +515,11 @@ class _ForumHomePageState extends State<ForumHomePage> {
         if (mergedCookie.contains('auth') || mergedCookie.contains('saltkey')) {
           await prefs.setString('saved_cookie_string', mergedCookie);
           print("💾 [DioProxy] Cookie 合并成功，已保存！");
+          // 👇👇👇【新增这行】👇👇👇
+          // 拿到新 Cookie 后，立刻用它去请求热门，不再等待硬盘写入
+          print("🚀 [HotThread] 使用最新 Cookie 发起请求...");
+          _fetchHotThreads(overrideCookie: mergedCookie);
+          // 👆👆👆👆👆👆
           updatedCookie = mergedCookie; // 记录下来准备重试
         }
       } else {
@@ -737,20 +743,25 @@ class _ForumHomePageState extends State<ForumHomePage> {
     return false;
   }
 
-  // 【新增】独立加载热门帖子的方法（完全不影响主页加载逻辑）
-  Future<void> _fetchHotThreads() async {
+  // 【最终版】独立加载热门帖子 (支持写入缓存 + 传入Cookie)
+  Future<void> _fetchHotThreads({String? overrideCookie}) async {
+    final dio = Dio();
     try {
       final prefs = await SharedPreferences.getInstance();
-      String savedCookie = prefs.getString('saved_cookie_string') ?? "";
+      String cookieToUse =
+          overrideCookie ?? prefs.getString('saved_cookie_string') ?? "";
 
-      if (savedCookie.isEmpty) {
-        print("🔍 [HotThread] 无 Cookie，跳过热门加载");
+      // 1. 如果没有 Cookie，直接不请求网络，但是！不要 return！
+      // 后面可能还要处理缓存逻辑（虽然这里是 fetch，但保持结构清晰）
+      if (cookieToUse.isEmpty) {
+        print("🔍 [HotThread] 无 Cookie，跳过网络请求");
         return;
       }
 
-      final dio = Dio();
-      dio.options.headers['Cookie'] = savedCookie;
+      dio.options.headers['Cookie'] = cookieToUse;
       dio.options.headers['User-Agent'] = kUserAgent;
+      dio.options.connectTimeout = const Duration(seconds: 10);
+      dio.options.responseType = ResponseType.plain;
 
       final String timestamp = DateTime.now().millisecondsSinceEpoch.toString();
       final String url =
@@ -761,28 +772,86 @@ class _ForumHomePageState extends State<ForumHomePage> {
       if (response.statusCode == 200 && response.data != null) {
         String jsonStr = response.data!;
 
-        // 清洗数据（和主页一样）
+        if (jsonStr.contains('to_login')) return; // 需要登录，跳过
+
+        // 清洗
         if (jsonStr.startsWith('"') && jsonStr.endsWith('"')) {
-          jsonStr = jsonStr
-              .substring(1, jsonStr.length - 1)
-              .replaceAll('\\"', '"')
-              .replaceAll('\\\\', '\\');
+          try {
+            jsonStr = jsonStr
+                .substring(1, jsonStr.length - 1)
+                .replaceAll('\\"', '"')
+                .replaceAll('\\\\', '\\');
+          } catch (_) {}
         }
 
         final data = jsonDecode(jsonStr);
+        List<dynamic> finalList = [];
 
-        // 解析热门数据（Discuz hotthread API 返回 Variables.data 数组）
         if (data['Variables'] != null && data['Variables']['data'] != null) {
+          var raw = data['Variables']['data'];
+          if (raw is List)
+            finalList = raw;
+          else if (raw is Map)
+            finalList = raw.values.toList();
+        }
+
+        if (finalList.isNotEmpty) {
+          // 👇👇👇【重点】请求成功后，马上存入本地缓存！👇👇👇
+          await prefs.setString('hot_threads_cache_v2', jsonEncode(finalList));
+
           if (mounted) {
             setState(() {
-              _hotThreads = data['Variables']['data'];
-              print("🔥 热门帖子加载成功，共 ${_hotThreads.length} 条");
+              _hotThreads = finalList;
             });
+            print("🔥 [HotThread] 网络刷新成功，缓存已更新");
           }
         }
       }
     } catch (e) {
-      print("❌ [HotThread] 加载失败: $e");
+      print("❌ [HotThread] 网络请求失败: $e");
+    } finally {
+      dio.close();
+    }
+  }
+
+  // 【新增】读取本地热门缓存 (秒开的关键)
+  Future<void> _loadHotCache() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      String? cacheStr = prefs.getString('hot_threads_cache_v2');
+
+      if (cacheStr != null && cacheStr.isNotEmpty) {
+        List<dynamic> cachedList = jsonDecode(cacheStr);
+        if (mounted && _hotThreads.isEmpty) {
+          // 只有当前为空时才加载缓存
+          setState(() {
+            _hotThreads = cachedList;
+          });
+          print("💾 [HotThread] 命中本地缓存，已显示 ${cachedList.length} 条");
+        }
+      }
+    } catch (e) {
+      print("⚠️ 读取热门缓存失败");
+    }
+  }
+
+  // 【新增】读取热门帖子缓存
+  Future<void> _loadHotThreadCache() async {
+    if (_hotThreads.isNotEmpty) return; // 如果已有数据就不读缓存了
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      String? cacheStr = prefs.getString('hot_thread_cache');
+      if (cacheStr != null && cacheStr.isNotEmpty) {
+        final List<dynamic> list = jsonDecode(cacheStr);
+        if (mounted) {
+          setState(() {
+            _hotThreads = list;
+          });
+          print("💾 [HotThread] 已加载本地缓存 ${list.length} 条");
+        }
+      }
+    } catch (e) {
+      print("⚠️ 读取热门缓存失败: $e");
     }
   }
 
@@ -898,11 +967,16 @@ class _ForumHomePageState extends State<ForumHomePage> {
         _isLoading = false;
       });
 
-      // 【新增】保存主页缓存
-      // 我们只保存关键数据，把 _categories 和 _forumsMap 序列化后保存
-      // 但 _processData 接收的是原始 data，所以我们应该在 _processData 外部保存原始 data
-      // 或者在这里重新构造一下 data 结构
-      // 最简单的办法：在 _fetchDataByDio 和 _parsePageContent 里，成功拿到 jsonStr 后直接保存
+      // 👇👇👇【这里发起网络请求】👇👇👇
+      // 此时主页加载成功，Cookie 绝对是好的。
+      // 我们发起请求去更新热门数据（覆盖刚才显示的缓存）
+      print("🔄 [HotThread] 主页就绪，开始更新热门帖子...");
+
+      // 读取最新的 Cookie 传进去
+      final prefs = await SharedPreferences.getInstance();
+      String validCookie = prefs.getString('saved_cookie_string') ?? "";
+      _fetchHotThreads(overrideCookie: validCookie);
+      // 👆👆👆👆👆👆
     }
   }
 

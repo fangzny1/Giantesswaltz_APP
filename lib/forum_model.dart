@@ -93,7 +93,7 @@ class Thread {
   final String replies;
   final String views;
   final String readperm;
-
+  final String lastpost;
   Thread({
     required this.tid,
     required this.subject,
@@ -101,6 +101,7 @@ class Thread {
     required this.replies,
     required this.views,
     required this.readperm,
+    this.lastpost = "",
   });
 
   factory Thread.fromJson(Map<String, dynamic> json) {
@@ -111,8 +112,17 @@ class Thread {
       replies: json['replies']?.toString() ?? '0',
       views: json['views']?.toString() ?? '0',
       readperm: json['readperm']?.toString() ?? '0',
+      lastpost: json['lastpost']?.toString() ?? "",
     );
   }
+  // 【新增这个方法】用于缓存
+  Map<String, dynamic> toJson() => {
+    'tid': tid,
+    'subject': subject,
+    'author': author,
+    'replies': replies,
+    'lastpost': lastpost,
+  };
 }
 
 class PostInfo {

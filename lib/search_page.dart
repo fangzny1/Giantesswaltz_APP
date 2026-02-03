@@ -4,7 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:html/parser.dart' as html_parser;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:cached_network_image/cached_network_image.dart'; // 必须有这个，速度才快
-import 'dart:convert';
+
 import 'forum_model.dart';
 import 'thread_detail_page.dart';
 import 'user_detail_page.dart';

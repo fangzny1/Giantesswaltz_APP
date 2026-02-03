@@ -4,8 +4,7 @@ import 'package:html/parser.dart' as html_parser;
 import 'dart:convert';
 import 'dart:io';
 import 'package:dio/dio.dart';
-import 'package:shared_preferences/shared_preferences.dart';
-import 'package:cached_network_image/cached_network_image.dart'; // 引入缓存图片
+import 'package:shared_preferences/shared_preferences.dart'; // 引入缓存图片
 
 import 'forum_model.dart';
 import 'thread_detail_page.dart';

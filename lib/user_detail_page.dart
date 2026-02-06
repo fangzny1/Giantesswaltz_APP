@@ -4,23 +4,25 @@ import 'package:html/parser.dart' as html_parser;
 import 'dart:convert';
 import 'dart:io';
 import 'package:dio/dio.dart';
-import 'package:shared_preferences/shared_preferences.dart'; // 引入缓存图片
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:cached_network_image/cached_network_image.dart';
 
 import 'forum_model.dart';
 import 'thread_detail_page.dart';
 import 'login_page.dart';
-import 'main.dart';
+import 'http_service.dart'; // 引入 HttpService
+import 'main.dart'; // 引入全局变量
 
 // 用户信息模型
 class UserProfile {
   final String username;
   final String uid;
   final String groupTitle;
-  final String credits; // 总积分
-  final Map<String, String> extCredits; // 扩展积分 (威望/金币等)
-  final List<String> medalUrls; // 勋章图片链接
-  final String bio; // 签名或介绍
-  final String sightml; // 签名HTML
+  final String credits;
+  final Map<String, String> extCredits;
+  final List<String> medalUrls;
+  final String bio;
+  final String sightml;
   final String postsCount;
   final String threadsCount;
   final String friendsCount;
@@ -77,11 +79,11 @@ class UserDetailPage extends StatefulWidget {
 }
 
 class _UserDetailPageState extends State<UserDetailPage> {
-  late final WebViewController _hiddenController;
+  late final WebViewController _hiddenController; // 仅用于维持 Cookie 活性
   final ScrollController _scrollController = ScrollController();
 
   List<UserThreadItem> _threads = [];
-  UserProfile? _userProfile; // 新增用户详情数据
+  UserProfile? _userProfile;
 
   bool _isFirstLoading = true;
   bool _isLoadingMore = false;
@@ -89,9 +91,9 @@ class _UserDetailPageState extends State<UserDetailPage> {
 
   String _errorMsg = "";
   int _currentPage = 1;
-  int _targetPage = 1;
 
-  final String _baseUrl = currentBaseUrl.value;
+  // 获取当前的 API 基础地址
+  String get _baseUrl => currentBaseUrl.value;
 
   @override
   void initState() {
@@ -99,8 +101,8 @@ class _UserDetailPageState extends State<UserDetailPage> {
     _initWebView();
     _scrollController.addListener(_onScroll);
 
-    // 【新增】同时加载用户详细信息
-    _loadUserProfile();
+    // 并发加载
+    _loadData();
   }
 
   @override
@@ -121,148 +123,158 @@ class _UserDetailPageState extends State<UserDetailPage> {
     _hiddenController = WebViewController()
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
       ..setUserAgent(kUserAgent);
-
-    _loadPage(1);
+    // 这里不需要 loadRequest，只是占位，请求全部走 HttpService
   }
 
-  // 【新增】加载用户详细信息 (API)
-  Future<void> _loadUserProfile() async {
-    // API 地址: module=profile
-    String url =
-        '${_baseUrl}api/mobile/index.php?version=4&module=profile&uid=${widget.uid}';
-    print("🚀 加载用户详情: $url");
+  Future<void> _loadData() async {
+    setState(() {
+      _isFirstLoading = true;
+      _errorMsg = "";
+    });
 
-    try {
-      final dio = Dio();
-      final prefs = await SharedPreferences.getInstance();
-      final String cookie = prefs.getString('saved_cookie_string') ?? "";
-      dio.options.headers['Cookie'] = cookie;
-      dio.options.headers['User-Agent'] = kUserAgent;
+    // 同时请求用户信息和第一页帖子
+    await Future.wait([_loadUserProfile(), _loadThreadPage(1)]);
 
-      final response = await dio.get<String>(url);
-
-      if (response.statusCode == 200 && response.data != null) {
-        String jsonStr = response.data!;
-        if (jsonStr.startsWith('"')) {
-          jsonStr = jsonStr
-              .substring(1, jsonStr.length - 1)
-              .replaceAll('\\"', '"')
-              .replaceAll('\\\\', '\\');
-        }
-
-        var data = jsonDecode(jsonStr);
-        if (data['Variables'] != null && data['Variables']['space'] != null) {
-          var space = data['Variables']['space'];
-          var extCreditsMap = data['Variables']['extcredits'] ?? {};
-
-          // 解析扩展积分
-          Map<String, String> credits = {};
-          // 简单解析前几个重要的
-          if (extCreditsMap['1'] != null)
-            credits['威望'] = space['extcredits1'] ?? '0';
-          if (extCreditsMap['2'] != null)
-            credits['金币'] = space['extcredits2'] ?? '0';
-          if (extCreditsMap['3'] != null)
-            credits['贡献'] = space['extcredits3'] ?? '0';
-
-          // 解析勋章
-          List<String> medals = [];
-          // 如果 API 返回了 medals 数组 (你的 JSON 里是 null，可能需要 specific logic)
-          // 暂时留空
-
-          if (mounted) {
-            setState(() {
-              _userProfile = UserProfile(
-                username: space['username'],
-                uid: space['uid'],
-                groupTitle: space['group']['grouptitle'] ?? "未知用户组",
-                credits: space['credits'] ?? "0",
-                extCredits: credits,
-                medalUrls: medals,
-                bio: space['bio'] ?? "",
-                sightml: space['sightml'] ?? "",
-                postsCount: space['posts'] ?? "0",
-                threadsCount: space['threads'] ?? "0",
-                friendsCount: space['friends'] ?? "0",
-                regDate: space['regdate'] ?? "",
-              );
-            });
-          }
-        }
-      }
-    } catch (e) {
-      print("❌ 用户详情加载失败: $e");
+    if (mounted) {
+      setState(() => _isFirstLoading = false);
     }
   }
 
-  void _loadPage(int page) async {
+  Future<void> _loadUserProfile() async {
+    String uidParam = widget.uid ?? "";
+    if (uidParam.isEmpty) return;
+
+    // 构造请求 URL
+    String url =
+        '${_baseUrl}api/mobile/index.php?version=4&module=profile&uid=$uidParam';
+    print("🚀 [Profile] 正在加载: $url");
+
+    try {
+      // 1. 第一次尝试请求
+      String responseBody = await HttpService().getHtml(url);
+
+      // 1. 检查是否掉登录
+      if (responseBody.contains("to_login")) {
+        print("💨 [Profile] 检测到失效，调用全局强力续命...");
+
+        // 【调用全局杀招】
+        await HttpService().reviveSession();
+
+        // 稍微等一下服务器数据库同步
+        await Future.delayed(const Duration(milliseconds: 800));
+
+        // 重新获取最新 Cookie 并重试
+        final prefs = await SharedPreferences.getInstance();
+        String freshCookie = prefs.getString('saved_cookie_string') ?? "";
+
+        print("🔄 [Profile] 续命完成，带新 Cookie 重试...");
+        responseBody = await HttpService().getHtml(
+          url,
+          headers: {'Cookie': freshCookie},
+        );
+      }
+
+      // 3. 数据清洗 (处理可能的引号包裹)
+      String cleaned = responseBody.trim();
+      if (cleaned.startsWith('"') && cleaned.endsWith('"')) {
+        cleaned = cleaned
+            .substring(1, cleaned.length - 1)
+            .replaceAll('\\"', '"')
+            .replaceAll('\\\\', '\\');
+      }
+
+      final data = jsonDecode(cleaned);
+
+      // 4. 正常解析显示
+      if (data['Variables'] != null && data['Variables']['space'] != null) {
+        var space = data['Variables']['space'];
+        var extCreditsMap = data['Variables']['extcredits'] ?? {};
+
+        Map<String, String> credits = {};
+        if (extCreditsMap is Map) {
+          extCreditsMap.forEach((k, v) {
+            credits[v['title'] ?? "积分$k"] =
+                space['extcredits$k']?.toString() ?? "0";
+          });
+        }
+
+        if (mounted) {
+          setState(() {
+            _userProfile = UserProfile(
+              username: space['username'] ?? widget.username,
+              uid: space['uid'].toString(),
+              groupTitle: space['group']['grouptitle'] ?? "用户",
+              credits: space['credits']?.toString() ?? "0",
+              extCredits: credits,
+              medalUrls: [],
+              bio: space['bio'] ?? "",
+              sightml: space['sightml'] ?? "",
+              postsCount: space['posts']?.toString() ?? "0",
+              threadsCount: space['threads']?.toString() ?? "0",
+              friendsCount: space['friends']?.toString() ?? "0",
+              regDate: space['regdate'] ?? "",
+            );
+          });
+        }
+      } else {
+        // 如果两次都失败了，说明真的掉登录了
+        print("🚨 [Profile] 自动续命失败，依然返回: $responseBody");
+        if (mounted) setState(() => _errorMsg = "该线路登录态同步失败，请重试");
+      }
+    } catch (e) {
+      print("❌ [Profile Error] 加载异常: $e");
+      if (mounted) setState(() => _errorMsg = "网络连接异常");
+    }
+  }
+
+  // 加载帖子列表 (HTML 解析)
+  Future<void> _loadThreadPage(int page) async {
     if (!_hasMore && page > 1) return;
-    _targetPage = page;
 
-    if (mounted)
-      setState(() {
-        _isLoadingMore = true;
-      });
+    if (page > 1 && mounted) setState(() => _isLoadingMore = true);
 
-    // 使用网页版抓取主题列表
+    // 必须有 UID 才能查
+    if (widget.uid == null) {
+      if (mounted) setState(() => _errorMsg = "无法获取用户ID");
+      return;
+    }
+
     String url =
         '${_baseUrl}home.php?mod=space&uid=${widget.uid}&do=thread&view=me&order=dateline&mobile=no&page=$page';
 
     try {
-      final dio = Dio();
-      final prefs = await SharedPreferences.getInstance();
-      final String cookie = prefs.getString('saved_cookie_string') ?? "";
-
-      dio.options.headers['Cookie'] = cookie;
-      dio.options.headers['User-Agent'] = kUserAgent;
-      dio.options.connectTimeout = const Duration(seconds: 15);
-
-      final response = await dio.get<String>(url);
-
-      if (response.statusCode == 200 && response.data != null) {
-        _parseHtmlData(response.data!);
-      }
+      String html = await HttpService().getHtml(url);
+      _parseHtmlData(html, page);
     } catch (e) {
-      if (mounted)
+      print("❌ 帖子列表加载失败: $e");
+      if (mounted) {
         setState(() {
           _isLoadingMore = false;
-          _isFirstLoading = false;
-          _errorMsg = "网络请求失败";
+          if (page == 1) _errorMsg = "网络请求失败，请重试";
         });
+      }
     }
   }
 
-  void _parseHtmlData(String htmlString) {
+  void _parseHtmlData(String htmlString, int page) {
     try {
       var document = html_parser.parse(htmlString);
       List<UserThreadItem> newThreads = [];
 
-      // 模式 A：GW (Rabbit 模板)
-      var listItems = document.querySelectorAll('.c_threadlist ul li');
+      // 【核心修复】双重解析策略
 
+      // 策略 A: 针对特定模板 (.c_threadlist ul li)
+      var listItems = document.querySelectorAll('.c_threadlist ul li');
       if (listItems.isNotEmpty) {
         for (var li in listItems) {
           try {
-            // 修复后的标题查找逻辑
-            var titleNode = li.querySelector('.tit > a');
-            if (titleNode == null || titleNode.text.trim().isEmpty) {
-              var allLinks = li.querySelectorAll('.tit a');
-              for (var link in allLinks) {
-                if (link.children.any((child) => child.localName == 'img'))
-                  continue;
-                if (link.text.trim().isNotEmpty) {
-                  titleNode = link;
-                  break;
-                }
-              }
-            }
+            var titleNode =
+                li.querySelector('.tit > a') ?? li.querySelector('.tit a');
             if (titleNode == null) continue;
 
             String subject = titleNode.text.trim();
             String href = titleNode.attributes['href'] ?? "";
-
-            RegExp tidReg = RegExp(r'tid=(\d+)');
-            String tid = tidReg.firstMatch(href)?.group(1) ?? "";
+            String tid = RegExp(r'tid=(\d+)').firstMatch(href)?.group(1) ?? "";
             if (tid.isEmpty) continue;
 
             String dateline = li.querySelector('.dte')?.text.trim() ?? "";
@@ -279,11 +291,8 @@ class _UserDetailPageState extends State<UserDetailPage> {
                     .replaceAll(RegExp(r'[^0-9]'), '') ??
                 "0";
 
-            String forumName = "帖子";
-            var catNode =
-                li.querySelector('.cat a') ??
-                li.querySelector('.sub a[href*="forumdisplay"]');
-            if (catNode != null) forumName = catNode.text.trim();
+            // 尝试获取板块名
+            String forumName = li.querySelector('.cat a')?.text.trim() ?? "帖子";
 
             newThreads.add(
               UserThreadItem(
@@ -295,106 +304,114 @@ class _UserDetailPageState extends State<UserDetailPage> {
                 replies: replies,
               ),
             );
-          } catch (e) {
-            continue;
-          }
+          } catch (_) {}
         }
       }
-      // 模式 B：标准 Discuz (GN)
+      // 策略 B: 针对 Discuz 标准表格布局 (.tl table tr / form table tr)
       else {
-        var rows = document.querySelectorAll('form table tr');
-        if (rows.isEmpty) rows = document.querySelectorAll('.tl table tr');
-        rows = rows
-            .where((r) => r.getElementsByTagName('td').isNotEmpty)
-            .toList();
-
+        // 查找所有包含 viewthread 链接的行
+        var rows = document.querySelectorAll('tr');
         for (var row in rows) {
-          try {
-            var titleLink =
-                row.querySelector('th a[href*="viewthread"]') ??
-                row.querySelector('td a[href*="viewthread"]');
-            if (titleLink == null) continue;
+          var titleLink = row.querySelector('a[href*="viewthread"]');
+          if (titleLink == null) continue;
+          // 排除掉“最后发表”那一栏的链接，通常标题栏的链接 class 是 xst 或者在 th/td[class=icn] 后面
+          // 简单判断：文本长度大于 0 且不是 "新窗口打开" 之类的
+          String text = titleLink.text.trim();
+          if (text.isEmpty || text == "新窗口打开") continue;
 
-            String subject = titleLink.text.trim();
-            String href = titleLink.attributes['href'] ?? "";
-            RegExp tidReg = RegExp(r'tid=(\d+)');
-            String tid = tidReg.firstMatch(href)?.group(1) ?? "";
-            if (tid.isEmpty) continue;
+          String href = titleLink.attributes['href'] ?? "";
+          String tid = RegExp(r'tid=(\d+)').firstMatch(href)?.group(1) ?? "";
+          if (tid.isEmpty) continue;
 
-            String forumName = row.querySelector('a.xg1')?.text.trim() ?? "";
-            String replies = "0";
-            String views = "0";
-            var numTd = row.querySelector('td.num');
-            if (numTd != null) {
-              replies = numTd.querySelector('a')?.text.trim() ?? "0";
-              views = numTd.querySelector('em')?.text.trim() ?? "0";
-            }
-            String dateline = "";
-            var byTd = row.querySelector('td.by');
-            if (byTd != null)
-              dateline = byTd.text.replaceAll(RegExp(r'\s+'), ' ').trim();
+          // 尝试获取板块
+          String forumName =
+              row.querySelector('a[href*="forumdisplay"]')?.text.trim() ?? "";
 
+          // 尝试获取数据 (Discuz 表格通常 num 列是 回复/查看)
+          String replies = "0";
+          String views = "0";
+          var numNode = row.querySelector('.num');
+          if (numNode != null) {
+            var a = numNode.querySelector('a');
+            var em = numNode.querySelector('em');
+            if (a != null) replies = a.text.trim();
+            if (em != null) views = em.text.trim();
+          }
+
+          // 尝试获取时间 (by 列的 em 或 span)
+          String dateline = "";
+          var byNode = row.querySelector('.by');
+          if (byNode != null) {
+            dateline = byNode.querySelector('em')?.text.trim() ?? "";
+            if (dateline.isEmpty)
+              dateline = byNode.querySelector('span')?.text.trim() ?? "";
+          }
+
+          // 去重添加 (因为有时候一个 tr 里有多个 viewthread 链接)
+          if (!newThreads.any((t) => t.tid == tid)) {
             newThreads.add(
               UserThreadItem(
                 tid: tid,
-                subject: subject,
+                subject: text,
                 forumName: forumName,
                 dateline: dateline,
                 views: views,
                 replies: replies,
               ),
             );
-          } catch (e) {
-            continue;
           }
         }
       }
 
       if (mounted) {
         setState(() {
-          if (_targetPage == 1) {
+          if (page == 1) {
             _threads = newThreads;
             _currentPage = 1;
+            // 如果第一页就没数据，说明真没了
+            if (newThreads.isEmpty) {
+              _errorMsg = "该用户暂无帖子";
+            }
           } else {
+            // 追加
             for (var t in newThreads) {
               if (!_threads.any((old) => old.tid == t.tid)) {
                 _threads.add(t);
               }
             }
-            if (newThreads.isNotEmpty) _currentPage = _targetPage;
+            if (newThreads.isNotEmpty) _currentPage = page;
           }
-          if (newThreads.length < 5) _hasMore = false;
-          _isFirstLoading = false;
-          _isLoadingMore = false;
-          _errorMsg = "";
-        });
 
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          _checkIfNeedLoadMore();
+          // 如果获取到的数量少于每页常见数量(比如10)，说明没更多了
+          if (newThreads.length < 5) _hasMore = false;
+
+          _isLoadingMore = false;
+          _isFirstLoading = false;
         });
       }
     } catch (e) {
       print("HTML 解析错误: $e");
-      if (mounted)
-        setState(() {
-          _isLoadingMore = false;
-          _isFirstLoading = false;
-        });
-    }
-  }
-
-  void _checkIfNeedLoadMore() {
-    if (!_hasMore || _isLoadingMore) return;
-    if (_scrollController.hasClients) {
-      if (_scrollController.position.maxScrollExtent <= 0) {
-        _loadMore();
-      }
+      if (mounted) setState(() => _isLoadingMore = false);
     }
   }
 
   void _loadMore() {
-    if (_isLoadingMore || !_hasMore || _isFirstLoading) return;
-    _loadPage(_currentPage + 1);
+    if (_isLoadingMore || !_hasMore) return;
+    _loadThreadPage(_currentPage + 1);
+  }
+
+  // --- 工具方法 ---
+  String _stripHtml(String html) {
+    return html.replaceAll(RegExp(r'<[^>]*>'), '').trim();
+  }
+
+  Color? _extractColor(String html) {
+    RegExp reg = RegExp(r'color="?#([0-9a-fA-F]{6})"?');
+    var match = reg.firstMatch(html);
+    if (match != null) {
+      return Color(int.parse("0xFF${match.group(1)}"));
+    }
+    return null;
   }
 
   @override
@@ -436,7 +453,6 @@ class _UserDetailPageState extends State<UserDetailPage> {
                   ),
                 ),
 
-              // 使用 NestedScrollView 来实现可折叠的头部
               NestedScrollView(
                 controller: _scrollController,
                 headerSliverBuilder: (context, innerBoxIsScrolled) {
@@ -455,21 +471,18 @@ class _UserDetailPageState extends State<UserDetailPage> {
                             backgroundColor: Theme.of(
                               context,
                             ).colorScheme.primaryContainer,
+                            // 头像加载逻辑
                             backgroundImage: () {
-                              // 【逻辑优先级修复】
-                              // 1. 如果详情页 API 加载出了头像，用 API 的
                               if (_userProfile != null &&
                                   _userProfile!.uid.isNotEmpty) {
                                 return NetworkImage(
-                                  "${currentBaseUrl.value}uc_server/avatar.php?uid=${_userProfile!.uid}&size=middle",
+                                  "${_baseUrl}uc_server/avatar.php?uid=${_userProfile!.uid}&size=middle",
                                 );
                               }
-                              // 2. 如果 API 还没好，但搜索页传了头像地址进来，用搜索页的
                               if (widget.avatarUrl != null &&
                                   widget.avatarUrl!.isNotEmpty) {
                                 return NetworkImage(widget.avatarUrl!);
                               }
-                              // 3. 都没有，返回 null 显示下面的 Icon
                               return null;
                             }(),
                             child:
@@ -483,7 +496,6 @@ class _UserDetailPageState extends State<UserDetailPage> {
                       ],
                     ),
 
-                    // 【新增】用户信息展示卡片
                     if (_userProfile != null)
                       SliverToBoxAdapter(
                         child: _buildUserProfileCard(context, wallpaperPath),
@@ -493,7 +505,7 @@ class _UserDetailPageState extends State<UserDetailPage> {
                 body: _buildThreadList(wallpaperPath),
               ),
 
-              // 后台 WebView 兜底
+              // 隐藏的 WebView
               SizedBox(
                 height: 0,
                 width: 0,
@@ -506,22 +518,7 @@ class _UserDetailPageState extends State<UserDetailPage> {
     );
   }
 
-  // 1. 在 _UserDetailPageState 类里添加这两个工具方法
-  String _stripHtml(String html) {
-    return html.replaceAll(RegExp(r'<[^>]*>'), '').trim();
-  }
-
-  Color? _extractColor(String html) {
-    // 匹配 color="#009900" 或 color=#009900
-    RegExp reg = RegExp(r'color="?#([0-9a-fA-F]{6})"?');
-    var match = reg.firstMatch(html);
-    if (match != null) {
-      return Color(int.parse("0xFF${match.group(1)}"));
-    }
-    return null;
-  }
-
-  // 2. 替换你刚才提供的那个 _buildUserProfileCard 方法
+  // 用户信息卡片
   Widget _buildUserProfileCard(BuildContext context, String? wallpaperPath) {
     if (_userProfile == null) return const SizedBox();
 
@@ -530,7 +527,6 @@ class _UserDetailPageState extends State<UserDetailPage> {
         ? theme.cardColor.withOpacity(0.8)
         : theme.cardColor;
 
-    // 解析颜色和纯文字标题
     final String rawTitle = _userProfile!.groupTitle;
     final String cleanTitle = _stripHtml(rawTitle);
     final Color? groupColor = _extractColor(rawTitle);
@@ -546,15 +542,13 @@ class _UserDetailPageState extends State<UserDetailPage> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // --- 第一部分：使用 Wrap 防止溢出 ---
               Wrap(
-                spacing: 8, // 水平间距
-                runSpacing: 4, // 垂直间距（换行时）
+                spacing: 8,
+                runSpacing: 4,
                 crossAxisAlignment: WrapCrossAlignment.center,
                 children: [
                   Chip(
                     label: Text(cleanTitle),
-                    // 如果 HTML 里有颜色，就用那个颜色；否则用默认主题色
                     backgroundColor:
                         groupColor?.withOpacity(0.2) ??
                         theme.colorScheme.tertiaryContainer,
@@ -579,7 +573,6 @@ class _UserDetailPageState extends State<UserDetailPage> {
                     "UID: ${_userProfile!.uid}",
                     style: const TextStyle(color: Colors.grey, fontSize: 13),
                   ),
-                  // 注册日期通常较长，会自动换行到下一行
                   Text(
                     "注册: ${_userProfile!.regDate}",
                     style: const TextStyle(fontSize: 12, color: Colors.grey),
@@ -587,8 +580,6 @@ class _UserDetailPageState extends State<UserDetailPage> {
                 ],
               ),
               const SizedBox(height: 16),
-
-              // --- 第二部分：积分数据 ---
               SingleChildScrollView(
                 scrollDirection: Axis.horizontal,
                 physics: const BouncingScrollPhysics(),
@@ -603,8 +594,6 @@ class _UserDetailPageState extends State<UserDetailPage> {
                   ],
                 ),
               ),
-
-              // --- 第三部分：个人简介 ---
               if (_userProfile!.bio.isNotEmpty) ...[
                 const Divider(height: 32),
                 Text(
@@ -616,7 +605,6 @@ class _UserDetailPageState extends State<UserDetailPage> {
                   ),
                 ),
                 const SizedBox(height: 8),
-                // 使用 SelectableText 防止文字太长且无法复制
                 SelectableText(
                   _userProfile!.bio,
                   style: TextStyle(
@@ -651,11 +639,31 @@ class _UserDetailPageState extends State<UserDetailPage> {
   Widget _buildThreadList(String? wallpaperPath) {
     if (_isFirstLoading)
       return const Center(child: CircularProgressIndicator());
-    if (_threads.isEmpty)
-      return Center(child: Text(_errorMsg.isNotEmpty ? _errorMsg : "这里空空如也"));
+
+    // 【核心修复】显示空状态或错误信息
+    if (_threads.isEmpty) {
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(
+              Icons.description_outlined,
+              size: 48,
+              color: Colors.grey,
+            ),
+            const SizedBox(height: 10),
+            Text(
+              _errorMsg.isNotEmpty ? _errorMsg : "这里空空如也",
+              style: const TextStyle(color: Colors.grey),
+            ),
+            if (_errorMsg.isNotEmpty)
+              TextButton(onPressed: _loadData, child: const Text("重试")),
+          ],
+        ),
+      );
+    }
 
     return ListView.builder(
-      // key: PageStorageKey('user_threads'), // 可选：保持滚动位置
       padding: const EdgeInsets.only(bottom: 30),
       itemCount: _threads.length + 1,
       itemBuilder: (ctx, index) {
@@ -674,7 +682,9 @@ class _UserDetailPageState extends State<UserDetailPage> {
           )
         : const Padding(
             padding: EdgeInsets.all(20),
-            child: Center(child: Text("没有更多了")),
+            child: Center(
+              child: Text("没有更多了", style: TextStyle(color: Colors.grey)),
+            ),
           );
   }
 
@@ -713,26 +723,27 @@ class _UserDetailPageState extends State<UserDetailPage> {
               const SizedBox(height: 8),
               Row(
                 children: [
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 6,
-                      vertical: 2,
-                    ),
-                    decoration: BoxDecoration(
-                      color: Theme.of(context).colorScheme.secondaryContainer,
-                      borderRadius: BorderRadius.circular(4),
-                    ),
-                    child: Text(
-                      item.forumName,
-                      style: TextStyle(
-                        fontSize: 10,
-                        color: Theme.of(
-                          context,
-                        ).colorScheme.onSecondaryContainer,
+                  if (item.forumName.isNotEmpty)
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 6,
+                        vertical: 2,
+                      ),
+                      decoration: BoxDecoration(
+                        color: Theme.of(context).colorScheme.secondaryContainer,
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: Text(
+                        item.forumName,
+                        style: TextStyle(
+                          fontSize: 10,
+                          color: Theme.of(
+                            context,
+                          ).colorScheme.onSecondaryContainer,
+                        ),
                       ),
                     ),
-                  ),
-                  const SizedBox(width: 8),
+                  if (item.forumName.isNotEmpty) const SizedBox(width: 8),
                   Text(
                     item.dateline,
                     style: const TextStyle(fontSize: 12, color: Colors.grey),

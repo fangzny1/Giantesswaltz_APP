@@ -87,11 +87,11 @@ class _SearchPageState extends State<SearchPage> {
     if (_isSearchUser) {
       // 用户搜索接口
       url =
-          '${kBaseUrl}home.php?mod=spacecp&ac=search&searchsubmit=yes&username=${Uri.encodeComponent(keyword)}';
+          '${currentBaseUrl.value}home.php?mod=spacecp&ac=search&searchsubmit=yes&username=${Uri.encodeComponent(keyword)}';
     } else {
       // 帖子搜索接口
       url =
-          '${kBaseUrl}search.php?mod=forum&searchsubmit=yes&srchtxt=${Uri.encodeComponent(keyword)}&mobile=no';
+          '${currentBaseUrl.value}search.php?mod=forum&searchsubmit=yes&srchtxt=${Uri.encodeComponent(keyword)}&mobile=no';
     }
 
     try {
@@ -126,7 +126,7 @@ class _SearchPageState extends State<SearchPage> {
     String? nextUrl;
     if (nextBtn != null) {
       String href = nextBtn.attributes['href'] ?? "";
-      nextUrl = href.startsWith("http") ? href : "$kBaseUrl$href";
+      nextUrl = href.startsWith("http") ? href : "$currentBaseUrl.value$href";
       if (!nextUrl.contains("mobile=no")) nextUrl += "&mobile=no";
     }
 
@@ -384,7 +384,7 @@ class _SearchPageState extends State<SearchPage> {
 
         // 构造高清头像地址
         final String avatarUrl =
-            "${kBaseUrl}uc_server/avatar.php?uid=$uid&size=middle";
+            "${currentBaseUrl.value}uc_server/avatar.php?uid=$uid&size=middle";
 
         return ListTile(
           contentPadding: const EdgeInsets.symmetric(

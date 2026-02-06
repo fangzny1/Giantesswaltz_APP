@@ -91,7 +91,7 @@ class _UserDetailPageState extends State<UserDetailPage> {
   int _currentPage = 1;
   int _targetPage = 1;
 
-  final String _baseUrl = kBaseUrl;
+  final String _baseUrl = currentBaseUrl.value;
 
   @override
   void initState() {
@@ -461,7 +461,7 @@ class _UserDetailPageState extends State<UserDetailPage> {
                               if (_userProfile != null &&
                                   _userProfile!.uid.isNotEmpty) {
                                 return NetworkImage(
-                                  "${kBaseUrl}uc_server/avatar.php?uid=${_userProfile!.uid}&size=middle",
+                                  "${currentBaseUrl.value}uc_server/avatar.php?uid=${_userProfile!.uid}&size=middle",
                                 );
                               }
                               // 2. 如果 API 还没好，但搜索页传了头像地址进来，用搜索页的

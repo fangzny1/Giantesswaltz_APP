@@ -8,15 +8,20 @@ class HttpService {
   factory HttpService() => _instance;
 
   final Dio _dio;
+  // 【新增】切换线路的方法
+  void updateBaseUrl(String newUrl) {
+    _dio.options.baseUrl = newUrl;
+    _dio.options.headers['Referer'] = newUrl; // Referer 也要跟着变
+  }
 
   HttpService._internal()
     : _dio = Dio(
         BaseOptions(
-          baseUrl: kBaseUrl,
+          baseUrl: currentBaseUrl.value, // 【修改】这里改成引用变量
           connectTimeout: const Duration(seconds: 10),
           receiveTimeout: const Duration(seconds: 15),
           responseType: ResponseType.plain,
-          headers: {'User-Agent': kUserAgent, 'Referer': kBaseUrl},
+          headers: {'User-Agent': kUserAgent, 'Referer': currentBaseUrl.value},
         ),
       );
 

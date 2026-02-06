@@ -73,7 +73,9 @@ class _FavoritePageState extends State<FavoritePage> {
       _isLoading = true;
     });
     _hiddenController.loadRequest(
-      Uri.parse('${kBaseUrl}home.php?mod=space&do=favorite&view=me&mobile=no'),
+      Uri.parse(
+        '${currentBaseUrl.value}home.php?mod=space&do=favorite&view=me&mobile=no',
+      ),
     );
   }
 
@@ -183,7 +185,7 @@ class _FavoritePageState extends State<FavoritePage> {
     ).showSnackBar(const SnackBar(content: Text("正在取消收藏...")));
     // 构造删除链接
     String url =
-        "${kBaseUrl}home.php?mod=spacecp&ac=favorite&op=delete&favid=$favid&type=all";
+        "${currentBaseUrl.value}home.php?mod=spacecp&ac=favorite&op=delete&favid=$favid&type=all";
     _hiddenController.loadRequest(Uri.parse(url));
   }
 

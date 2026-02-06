@@ -1,9 +1,18 @@
 // lib/forum_model.dart
 import 'package:flutter_cache_manager/flutter_cache_manager.dart';
+import 'package:flutter/foundation.dart'; // 引入这个以使用 ValueNotifier
+// const String currentBaseUrl.value = 'https://giantesswaltz.org/';
+// const String kCookieDomain = 'giantesswaltz.org';
+// const String kBaseDomain = kCookieDomain;
+//临时删除旧的常量
 
-const String kBaseUrl = 'https://giantesswaltz.org/';
-const String kCookieDomain = 'giantesswaltz.org';
-const String kBaseDomain = kCookieDomain;
+// 【修改】将原来的 const 替换为 ValueNotifier，默认是主站
+final ValueNotifier<String> currentBaseUrl = ValueNotifier(
+  'https://giantesswaltz.org/',
+);
+
+// 辅助函数：获取当前域名 (去掉 https:// 和 /)
+String get currentDomain => Uri.parse(currentBaseUrl.value).host;
 
 String mergeCookies(String currentCookie, List<String> newCookieHeaders) {
   final Map<String, String> finalKv = {};

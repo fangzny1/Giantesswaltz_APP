@@ -73,6 +73,16 @@ class ThreadDetailPage extends StatefulWidget {
 
 class _ThreadDetailPageState extends State<ThreadDetailPage>
     with TickerProviderStateMixin {
+  // 【新增】清洗时间字符串
+  String _formatTime(String time) {
+    // 替换 &nbsp; 为普通空格
+    return time
+        .replaceAll('&nbsp;', ' ')
+        .replaceAll('<span title="', '') // 有时候 API 会返回带 span 的复杂格式
+        .replaceAll('">', ' ')
+        .replaceAll('</span>', '');
+  }
+
   late AutoScrollController _scrollController;
   bool get isDark => Theme.of(context).brightness == Brightness.dark;
   bool _hasPerformedInitialJump = false;
@@ -182,7 +192,7 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
     if (mounted) setState(() => _isLoading = true);
 
     String url =
-        '${kBaseUrl}api/mobile/index.php?version=4&module=viewthread&tid=${widget.tid}&page=$page';
+        '${currentBaseUrl.value}api/mobile/index.php?version=4&module=viewthread&tid=${widget.tid}&page=$page';
     if (_isOnlyLandlord && _landlordUid != null)
       url += '&authorid=$_landlordUid';
 
@@ -293,8 +303,8 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
           author: p['author']?.toString() ?? "匿名",
           authorId: authorId,
           avatarUrl:
-              "${kBaseUrl}uc_server/avatar.php?uid=$authorId&size=middle",
-          time: p['dateline']?.toString() ?? "",
+              "${currentBaseUrl.value}uc_server/avatar.php?uid=$authorId&size=middle",
+          time: _formatTime(p['dateline']?.toString() ?? ""),
           contentHtml: _cleanApiHtml(content),
           floor: "${p['number']}楼",
           device: "",
@@ -324,8 +334,11 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
 
   String _cleanApiHtml(String html) {
     return html
-        .replaceAll('src="static/', 'src="${kBaseUrl}static/')
-        .replaceAll('src="data/attachment/', 'src="${kBaseUrl}data/attachment/')
+        .replaceAll('src="static/', 'src="${currentBaseUrl.value}static/')
+        .replaceAll(
+          'src="data/attachment/',
+          'src="${currentBaseUrl.value}data/attachment/',
+        )
         .replaceAll('\r\n', '<br/>')
         .replaceAll('\n', '<br/>');
   }
@@ -440,7 +453,7 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
           posttime: _posttime,
           minChars: _postMinChars,
           maxChars: _postMaxChars,
-          baseUrl: kBaseUrl,
+          baseUrl: currentBaseUrl.value,
           userCookies: _userCookies,
         ),
       ),
@@ -582,7 +595,7 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
       String url;
       if (_isFavorited && _favid != null) {
         url =
-            "${kBaseUrl}home.php?mod=spacecp&ac=favorite&op=delete&favid=$_favid&type=all";
+            "${currentBaseUrl.value}home.php?mod=spacecp&ac=favorite&op=delete&favid=$_favid&type=all";
       } else {
         final String? addUrl = await _fetchFavoriteAddUrl();
         if (addUrl == null) return;
@@ -600,14 +613,14 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
 
   Future<String?> _fetchFavoriteAddUrl() async {
     if (_formhash == null) return null;
-    return "${kBaseUrl}home.php?mod=spacecp&ac=favorite&type=thread&id=${widget.tid}&formhash=$_formhash";
+    return "${currentBaseUrl.value}home.php?mod=spacecp&ac=favorite&type=thread&id=${widget.tid}&formhash=$_formhash";
   }
 
   Future<void> _refreshFavoriteStatus() async {
     if (_userCookies.isEmpty) return;
     try {
       final String html = await HttpService().getHtml(
-        '${kBaseUrl}home.php?mod=space&do=favorite&view=me&mobile=no',
+        '${currentBaseUrl.value}home.php?mod=space&do=favorite&view=me&mobile=no',
       );
       if (html.contains('tid=${widget.tid}')) {
         setState(() => _isFavorited = true);
@@ -1178,7 +1191,7 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
       try {
         // 构造 API 地址
         String url =
-            '${kBaseUrl}api/mobile/index.php?version=4&module=viewthread&tid=${widget.tid}&page=$i';
+            '${currentBaseUrl.value}api/mobile/index.php?version=4&module=viewthread&tid=${widget.tid}&page=$i';
         if (_isOnlyLandlord && _landlordUid != null) {
           url += '&authorid=$_landlordUid';
         }
@@ -1669,10 +1682,10 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
                               // 构造地址
                               String? src = element.attributes['src'];
                               String finalUrl = (src == null || src.isEmpty)
-                                  ? "${kBaseUrl}plugin.php?id=cxpform:style2&form_id=35&type=iframe&tid=${widget.tid}"
+                                  ? "${currentBaseUrl.value}plugin.php?id=cxpform:style2&form_id=35&type=iframe&tid=${widget.tid}"
                                   : (src.startsWith('http')
                                         ? src
-                                        : "$kBaseUrl$src");
+                                        : "$currentBaseUrl.value$src");
 
                               // 【核心修改】不再直接外跳，而是进入内置页面
                               Navigator.push(
@@ -1808,14 +1821,14 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
 
   Widget _buildClickableImage(String url) {
     if (url.isEmpty) return const SizedBox();
-    String fullUrl = url.startsWith('http') ? url : "$kBaseUrl$url";
+    String fullUrl = url.startsWith('http') ? url : "$currentBaseUrl.value$url";
     return RetryableImage(
       imageUrl: fullUrl,
       cacheManager: globalImageCache,
       headers: {
         'Cookie': _userCookies,
         'User-Agent': kUserAgent,
-        'Referer': kBaseUrl,
+        'Referer': currentBaseUrl.value,
       },
       onTap: (u) => Navigator.push(
         context,

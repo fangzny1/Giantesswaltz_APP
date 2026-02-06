@@ -25,6 +25,11 @@ class _LoginPageState extends State<LoginPage> {
     super.initState();
     // 1. 清理环境
     WebViewCookieManager().clearCookies();
+    // 【核心修复】动态获取当前选中的域名
+    // 之前可能写死成 '${kBaseUrl}member.php...' 了，现在要改成 currentBaseUrl.value
+    final String loginUrl =
+        '${currentBaseUrl.value}member.php?mod=logging&action=login&mobile=2';
+    print("🔐 正在打开登录页: $loginUrl");
 
     controller = WebViewController()
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
@@ -41,10 +46,8 @@ class _LoginPageState extends State<LoginPage> {
         ),
       );
 
-    // 2. 加载登录页
-    controller.loadRequest(
-      Uri.parse('${kBaseUrl}member.php?mod=logging&action=login&mobile=2'),
-    );
+    // 2. 加载动态构建的 URL
+    controller.loadRequest(Uri.parse(loginUrl));
 
     // 3. 【核心修复】定时器主动嗅探内容
     _timer = Timer.periodic(const Duration(seconds: 1), (t) {
@@ -80,26 +83,27 @@ class _LoginPageState extends State<LoginPage> {
     }
   }
 
-  // 【黑科技 2】检查 URL 状态
   void _checkLoginStatus(String url) {
     if (isDetecting) return;
 
-    // 如果跳回了首页或导读页，说明登录动作已完成
-    if (url == kBaseUrl ||
-        url.contains("index.php") ||
-        url.contains("forum.php")) {
+    // 【优化】使用动态域名判断跳转
+    // 只要 URL 包含了当前基础域名，且是首页或论坛页，就认为登录跳转完成了
+    String domain = Uri.parse(currentBaseUrl.value).host;
+
+    if (url == currentBaseUrl.value ||
+        (url.contains(domain) &&
+            (url.contains("index.php") || url.contains("forum.php")))) {
       _completeLogin();
     }
   }
 
-  // 【核心方法】抓取 Cookie 并退出
   Future<void> _completeLogin() async {
     if (isDetecting) return;
     isDetecting = true;
     _timer?.cancel();
 
     try {
-      // 抓取当前所有能读到的 Cookie
+      // 抓取 Cookie
       final String cookies =
           await controller.runJavaScriptReturningResult('document.cookie')
               as String;
@@ -110,8 +114,12 @@ class _LoginPageState extends State<LoginPage> {
 
       print("✅ [Login] 捕获凭证: $rawCookie");
 
+      // 保存到本地
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString('saved_cookie_string', rawCookie);
+
+      // 【新增】同时保存UID（如果能从Cookie里简单解析的话），或者留给主页去解析
+      // 这里主要确保 Cookie 被写入
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -120,11 +128,12 @@ class _LoginPageState extends State<LoginPage> {
             backgroundColor: Colors.green,
           ),
         );
-        await Future.delayed(const Duration(milliseconds: 800));
+        // 稍微等待一下写入
+        await Future.delayed(const Duration(milliseconds: 500));
         Navigator.pop(context, true);
       }
     } catch (e) {
-      isDetecting = false; // 出错重试
+      isDetecting = false;
     }
   }
 

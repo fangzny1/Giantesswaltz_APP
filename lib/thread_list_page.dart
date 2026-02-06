@@ -65,7 +65,7 @@ class _ThreadListPageState extends State<ThreadListPage> {
     // 构造 API 链接
     // 核心：增加 typeid 参数
     String apiUrl =
-        '${kBaseUrl}api/mobile/index.php?version=4&module=forumdisplay&fid=${widget.fid}&page=$page';
+        '${currentBaseUrl.value}api/mobile/index.php?version=4&module=forumdisplay&fid=${widget.fid}&page=$page';
     if (_currentTypeId != 0) {
       apiUrl += '&filter=typeid&typeid=$_currentTypeId';
     }

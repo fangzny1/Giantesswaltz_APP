@@ -1820,24 +1820,71 @@ class _ProfilePageState extends State<ProfilePage> {
     );
   }
 
+  // 在 _ProfilePageState 类中
+
   void _changeDomain(BuildContext context, String newUrl) async {
     Navigator.pop(context); // 关弹窗
 
     if (newUrl == currentBaseUrl.value) return;
 
+    // 1. 保存新设置
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('selected_base_url', newUrl);
 
-    // 更新全局变量
+    // 2. 更新全局变量
     currentBaseUrl.value = newUrl;
-    // 更新 Dio 配置
+
+    // 3. 更新 HttpService
     HttpService().updateBaseUrl(newUrl);
 
+    // 4. 【核心黑科技】Cookie 搬家 (Domain Migration)
+    // 将保存在本地的 Cookie 字符串，强制注入给新域名
+    // 这样 Discuz 就会在新域名下也认为你已登录 (前提是两个域名后端通用的)
+    String savedCookie = prefs.getString('saved_cookie_string') ?? "";
+    if (savedCookie.isNotEmpty) {
+      final cookieMgr = WebViewCookieManager();
+      // 清除旧的 WebView Cookie 防止冲突
+      await cookieMgr.clearCookies();
+
+      String newDomain = Uri.parse(newUrl).host; // 获取 gtswaltz.org
+      List<String> cookieList = savedCookie.split(';');
+
+      for (var c in cookieList) {
+        if (c.contains('=')) {
+          var kv = c.split('=');
+          String key = kv[0].trim();
+          String value = kv.sublist(1).join('=').trim();
+
+          if (key.isNotEmpty &&
+              !['path', 'domain', 'expires'].contains(key.toLowerCase())) {
+            // 强行把旧 Cookie 种到新域名下
+            await cookieMgr.setCookie(
+              WebViewCookie(
+                name: key,
+                value: value,
+                domain: newDomain,
+                path: '/',
+              ),
+            );
+          }
+        }
+      }
+      print("🍪 [Switch] Cookie 已搬家至新域名: $newDomain");
+    }
+
     if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("线路已切换，建议重启 App 或重新登录以确保状态同步")),
-      );
-      // 强制刷新主页数据
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text("线路已切换，正在刷新数据...")));
+
+      // 5. 强制跳回首页大厅并刷新
+      // 这相当于一次“软重启”
+      setState(() {
+        // 这里假设 MainScreen 的 state 能够控制 index
+        // 如果无法直接控制，我们至少让当前的 ProfilePage 刷新一下状态
+      });
+
+      // 强力刷新主页数据
       forumKey.currentState?.refreshData();
     }
   }

@@ -10,7 +10,8 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter_cache_manager/flutter_cache_manager.dart';
 import 'package:scroll_to_index/scroll_to_index.dart';
 import 'general_webview_page.dart';
-
+import 'package:flutter_html/flutter_html.dart';
+import 'package:html/dom.dart' as html_dom; // 保持这个，用于类型
 import 'login_page.dart';
 import 'user_detail_page.dart';
 import 'forum_model.dart';
@@ -391,6 +392,57 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
     await prefs.setDouble('reader_line_height', _lineHeight);
 
     await prefs.setInt('reader_bg_color', color.toARGB32());
+  }
+
+  Future<void> _handleRecommend() async {
+    if (_formhash == null) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text("数据未加载完，请稍后")));
+      return;
+    }
+
+    // 【核心修复】使用网页版的接口，而不是 API
+    // 这里的 hash 是 formhash，tid 是帖子 ID
+    final url =
+        '${currentBaseUrl.value}forum.php?mod=misc&action=recommend&do=add&tid=${widget.tid}&hash=$_formhash&inajax=1';
+
+    try {
+      // 发起请求
+      final resp = await HttpService().getHtml(url);
+      print(resp);
+      // Discuz 返回的是 XML 或者是纯文本提示
+      // 常见的成功提示包含 "succeed" 或 "已评价"
+      if (resp.contains("succeed") ||
+          resp.contains("已评价") ||
+          resp.contains("指数") ||
+          resp.contains("成功")) {
+        if (mounted)
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(const SnackBar(content: Text("👍 点赞/顶帖成功！")));
+      } else if (resp.contains("不能")) {
+        if (mounted)
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(const SnackBar(content: Text("你已经点过赞了")));
+      } else {
+        // 提取错误信息 (CDATA)
+        String err = "操作失败";
+        if (resp.contains("CDATA[")) {
+          err = RegExp(r'CDATA\[(.*?)\]').firstMatch(resp)?.group(1) ?? err;
+        }
+        if (mounted)
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text(err)));
+      }
+    } catch (e) {
+      if (mounted)
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text("网络请求失败")));
+    }
   }
 
   void _handleEdgePaging() {
@@ -1011,92 +1063,259 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
         begin: const Offset(0, 1),
         end: Offset.zero,
       ).animate(_hideController),
+      // 1. 最外层只用一个 Material 提供阴影和背景
       child: Material(
-        elevation: 16,
+        elevation: 20, // 稍微加深阴影
         color: Theme.of(context).colorScheme.surface,
+        // 顶部加个圆角，看起来更像一个面板
+        shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+        ),
         child: SafeArea(
           top: false,
-          child: Container(
-            padding: const EdgeInsets.symmetric(vertical: 8),
-            height: 60,
-            child: Row(
-              children: [
-                IconButton(
-                  icon: Icon(_isFabOpen ? Icons.close : Icons.menu),
-                  onPressed: _toggleFab,
-                ),
-                Expanded(
-                  child: SliderTheme(
-                    data: SliderTheme.of(context).copyWith(
-                      trackHeight: 6.0,
-                      thumbShape: const RoundSliderThumbShape(
-                        enabledThumbRadius: 10.0,
-                      ),
-                      overlayShape: const RoundSliderOverlayShape(
-                        overlayRadius: 20.0,
-                      ),
-                    ),
-                    child: AnimatedBuilder(
-                      animation: _scrollController,
-                      builder: (context, child) {
-                        int count = _posts.length;
-                        if (count == 0)
-                          return const Slider(value: 0, onChanged: null);
-                        double uiVal =
-                            (_isScrubbingScroll && _dragValue != null)
-                            ? _dragValue!
-                            : (_dragValue ?? 0.0).clamp(
-                                0.0,
-                                (count - 1).toDouble(),
-                              );
-                        return Slider(
-                          value: uiVal,
-                          min: 0.0,
-                          max: (count - 1).toDouble(),
-                          divisions: count > 1 ? count - 1 : 1,
-                          label: "${uiVal.round() + 1}楼",
-                          onChangeStart: (v) => setState(() {
-                            _isScrubbingScroll = true;
-                            _dragValue = v;
-                          }),
-                          onChanged: (v) {
-                            setState(() => _dragValue = v);
-                            _scrollController.scrollToIndex(
-                              v.round(),
-                              preferPosition: AutoScrollPosition.begin,
-                              duration: const Duration(milliseconds: 50),
+          child: Column(
+            mainAxisSize: MainAxisSize.min, // 关键：只占用必要的高度
+            children: [
+              // === 第一部分：进度条 ===
+              SizedBox(
+                height: 40, // 限制进度条高度
+                child: Row(
+                  children: [
+                    const SizedBox(width: 16),
+                    Expanded(
+                      child: SliderTheme(
+                        data: SliderTheme.of(context).copyWith(
+                          trackHeight: 4.0, // 轨道稍微细一点，更精致
+                          thumbShape: const RoundSliderThumbShape(
+                            enabledThumbRadius: 8.0,
+                          ),
+                          overlayShape: const RoundSliderOverlayShape(
+                            overlayRadius: 16.0,
+                          ),
+                          activeTrackColor: Theme.of(context).primaryColor,
+                          inactiveTrackColor: Theme.of(
+                            context,
+                          ).primaryColor.withOpacity(0.2),
+                        ),
+                        child: AnimatedBuilder(
+                          animation: _scrollController,
+                          builder: (context, child) {
+                            int count = _posts.length;
+                            if (count == 0)
+                              return const Slider(value: 0, onChanged: null);
+                            double uiVal =
+                                (_isScrubbingScroll && _dragValue != null)
+                                ? _dragValue!
+                                : (_dragValue ?? 0.0).clamp(
+                                    0.0,
+                                    (count - 1).toDouble(),
+                                  );
+
+                            return Slider(
+                              value: uiVal,
+                              min: 0.0,
+                              max: (count - 1).toDouble(),
+                              divisions: count > 1 ? count - 1 : 1,
+                              label: "${uiVal.round() + 1}楼",
+                              onChangeStart: (v) => setState(() {
+                                _isScrubbingScroll = true;
+                                _dragValue = v;
+                              }),
+                              onChanged: (v) {
+                                setState(() => _dragValue = v);
+                                _scrollController.scrollToIndex(
+                                  v.round(),
+                                  preferPosition: AutoScrollPosition.begin,
+                                  duration: const Duration(milliseconds: 50),
+                                );
+                              },
+                              onChangeEnd: (v) {
+                                setState(() => _isScrubbingScroll = false);
+                                _scrollController.scrollToIndex(
+                                  v.round(),
+                                  preferPosition: AutoScrollPosition.begin,
+                                  duration: const Duration(milliseconds: 300),
+                                );
+                              },
                             );
                           },
-                          onChangeEnd: (v) {
-                            setState(() => _isScrubbingScroll = false);
-                            _scrollController.scrollToIndex(
-                              v.round(),
-                              preferPosition: AutoScrollPosition.begin,
-                              duration: const Duration(milliseconds: 300),
-                            );
-                          },
-                        );
-                      },
+                        ),
+                      ),
                     ),
-                  ),
+                    // 页码显示
+                    TextButton.icon(
+                      icon: const Icon(
+                        Icons.import_contacts,
+                        size: 14,
+                        color: Colors.grey,
+                      ),
+                      label: Text(
+                        "$_targetPage / $_totalPages",
+                        style: const TextStyle(
+                          color: Colors.grey,
+                          fontSize: 12,
+                        ),
+                      ),
+                      onPressed: _showPageJumpDialog,
+                      style: TextButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(horizontal: 8),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                  ],
                 ),
-                TextButton.icon(
-                  icon: const Icon(Icons.import_contacts, size: 16),
-                  label: Text("$_targetPage / $_totalPages"),
-                  onPressed: _showPageJumpDialog,
+              ),
+
+              // 分割线
+              Divider(
+                height: 1,
+                color: Theme.of(context).dividerColor.withOpacity(0.1),
+              ),
+
+              // === 第二部分：操作按钮 ===
+              Container(
+                height: 56,
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                child: Row(
+                  children: [
+                    // 1. 模拟输入框 (圆角矩形)
+                    Expanded(
+                      child: GestureDetector(
+                        onTap: () => _onReply(null),
+                        child: Container(
+                          height: 36,
+                          padding: const EdgeInsets.symmetric(horizontal: 12),
+                          decoration: BoxDecoration(
+                            color: Theme.of(context)
+                                .colorScheme
+                                .surfaceContainerHighest
+                                .withOpacity(0.4),
+                            borderRadius: BorderRadius.circular(18),
+                          ),
+                          child: Row(
+                            children: [
+                              Icon(
+                                Icons.edit,
+                                size: 16,
+                                color: Theme.of(context).primaryColor,
+                              ),
+                              const SizedBox(width: 8),
+                              const Text(
+                                "回复楼主...",
+                                style: TextStyle(
+                                  color: Colors.grey,
+                                  fontSize: 13,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+
+                    const SizedBox(width: 12),
+
+                    // 2. 点赞 (带动画效果的图标)
+                    IconButton(
+                      icon: const Icon(Icons.thumb_up_alt_outlined),
+                      iconSize: 22,
+                      tooltip: "支持/顶帖",
+                      onPressed: _handleRecommend,
+                    ),
+
+                    // 3. 收藏
+                    IconButton(
+                      icon: Icon(
+                        _isFavorited
+                            ? Icons.star_rounded
+                            : Icons.star_outline_rounded,
+                      ),
+                      color: _isFavorited ? Colors.amber : null,
+                      iconSize: 26,
+                      tooltip: "收藏",
+                      onPressed: _handleFavorite,
+                    ),
+
+                    // 4. 更多菜单
+                    IconButton(
+                      icon: const Icon(
+                        Icons.grid_view_rounded,
+                      ), // 换个图标，更像“更多功能”
+                      iconSize: 22,
+                      onPressed: _toggleFab,
+                    ),
+                  ],
                 ),
-              ],
-            ),
+              ),
+            ],
           ),
         ),
       ),
     );
   }
 
+  Future<void> _downloadAllPages() async {
+    if (_totalPages <= 0) return;
+    if (_isFabOpen) _toggleFab();
+
+    showModalBottomSheet(
+      context: context,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) {
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const ListTile(
+                title: Text(
+                  "请选择保存方式",
+                  style: TextStyle(fontWeight: FontWeight.bold),
+                ),
+              ),
+              ListTile(
+                leading: const Icon(Icons.code, color: Colors.blue),
+                title: const Text("离线 JSON 数据"),
+                subtitle: const Text("保存整本文字内容，支持 App 内断网阅读"),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _startRealBatchDownload(); // 之前的批量下载逻辑
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.picture_as_pdf, color: Colors.red),
+                title: const Text("生成/预览 网页打印版"),
+                subtitle: const Text("适合导出 PDF 或直接打印"),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  // 构造打印页面链接
+                  String printableUrl =
+                      '${currentBaseUrl.value}forum.php?mod=viewthread&action=printable&tid=${widget.tid}';
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (c) => GeneralWebViewPage(
+                        url: printableUrl,
+                        title: "打印预览 (可保存为PDF)",
+                        isPrintMode: true, // 【关键】这是打印模式，需要注入 CSS 美化
+                      ),
+                    ),
+                  );
+                },
+              ),
+              const SizedBox(height: 10),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
   // ==========================================
   // 【新增】批量下载所有页面 (只存JSON，不存图)
   // ==========================================
-  Future<void> _downloadAllPages() async {
+  Future<void> _startRealBatchDownload() async {
     // 1. 基础检查
     if (_totalPages <= 0) {
       ScaffoldMessenger.of(
@@ -1650,84 +1869,136 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
                   child: HtmlWidget(
                     post.contentHtml,
                     textStyle: TextStyle(
-                      fontSize: _fontSize - 2, // 普通模式稍微小一点，更有层次感
+                      fontSize: _fontSize - 2,
                       height: _lineHeight,
+                      // 确保基础颜色跟随主题
+                      color: Theme.of(context).brightness == Brightness.dark
+                          ? Colors.white70
+                          : Colors.black87,
                     ),
 
-                    // 【新增/修改】处理问卷容器样式
+                    // ==================== 1. 样式构建器 (解决背景和文字冲突) ====================
                     customStylesBuilder: (element) {
-                      // 识别问卷 div (#d4ebfa 是问卷背景色)
+                      bool isDark =
+                          Theme.of(context).brightness == Brightness.dark;
+                      String style = element.attributes['style'] ?? '';
+                      String parentStyle =
+                          element.parent?.attributes['style'] ?? '';
+
+                      // A. 针对问卷外层 div (通过包含 d4ebfa 字符串精准识别)
                       if (element.localName == 'div' &&
-                          (element.attributes['style']?.contains('#d4ebfa') ??
-                              false)) {
-                        // 普通模式下保留背景，或者你也可以在这里加样式
-                        return {'border-radius': '8px', 'padding': '8px'};
+                          style.contains('d4ebfa')) {
+                        if (_isReaderMode || _isNovelMode)
+                          return {'display': 'none'};
+
+                        if (isDark) {
+                          return {
+                            'background-color': '#121212', // 强制改为纯黑或深灰
+                            'color': '#FFFFFF', // 强制文字为白色
+                            'border': '1px solid #333333',
+                            'border-radius': '10px',
+                            'padding': '15px',
+                            'display': 'block',
+                          };
+                        }
+                        return {'border-radius': '10px', 'padding': '15px'};
                       }
+
+                      if (element.localName == 'h3') {
+                        final parentBg =
+                            element.parent?.attributes['background-color'];
+                        if (parentBg == '#d4ebfa') {
+                          return {
+                            'color': isDark
+                                ? '#FFFFFF !important'
+                                : '#111111 !important',
+                            'font-weight': 'bold !important',
+                            'font-size': '16px !important',
+                            'margin': '0 0 12px 0 !important',
+                            'text-align': 'center !important',
+                          };
+                        }
+                      }
+
+                      // C. 针对问卷内可能存在的普通文本 (p 或 span)
+                      if (parentStyle.contains('d4ebfa')) {
+                        if (isDark) return {'color': '#FFFFFF'};
+                      }
+
                       return null;
                     },
 
+                    // ==================== 2. 组件构建器 (解决图标和按钮) ====================
                     customWidgetBuilder: (element) {
-                      // 1. 处理图片
+                      // 屏蔽那个破损的 favicon.ico 图标
                       if (element.localName == 'img') {
                         String src = element.attributes['src'] ?? '';
+                        if (src.contains('favicon.ico'))
+                          return const SizedBox.shrink();
                         if (src.isNotEmpty) return _buildClickableImage(src);
                       }
 
+                      // 将 iframe 转换为 MD3 风格按钮
                       if (element.localName == 'iframe') {
+                        if (_isReaderMode || _isNovelMode)
+                          return const SizedBox.shrink();
+
+                        bool isDark =
+                            Theme.of(context).brightness == Brightness.dark;
                         return Container(
-                          margin: const EdgeInsets.symmetric(vertical: 10),
+                          margin: const EdgeInsets.symmetric(vertical: 15),
                           width: double.infinity,
                           child: ElevatedButton.icon(
                             onPressed: () {
-                              // 构造地址
                               String? src = element.attributes['src'];
                               String finalUrl = (src == null || src.isEmpty)
                                   ? "${currentBaseUrl.value}plugin.php?id=cxpform:style2&form_id=35&type=iframe&tid=${widget.tid}"
                                   : (src.startsWith('http')
                                         ? src
-                                        : "$currentBaseUrl.value$src");
+                                        : "${currentBaseUrl.value}$src");
 
-                              // 【核心修改】不再直接外跳，而是进入内置页面
                               Navigator.push(
                                 context,
                                 MaterialPageRoute(
                                   builder: (context) => GeneralWebViewPage(
                                     url: finalUrl,
-                                    title: "论坛问卷",
+                                    title: "参与问卷",
+                                    isPrintMode: false,
                                   ),
                                 ),
                               );
                             },
                             icon: Icon(
-                              Icons.assignment_outlined,
-                              // 根据暗色/亮色动态切换图标颜色
+                              Icons.check_box_outlined,
                               color: isDark
                                   ? Colors.blue[200]
-                                  : Colors.blue[800],
+                                  : Colors.blue[700],
                             ),
-                            label: const Text("参与/查看读者问卷"),
+                            label: const Text("点击此处参与读者问卷"),
                             style: ElevatedButton.styleFrom(
-                              // 背景色适配：暗色用深蓝灰，亮色用浅蓝
                               backgroundColor: isDark
-                                  ? const Color(0xFF1E293B)
+                                  ? const Color(0xFF262626)
                                   : Colors.blue[50],
-                              elevation: 0,
+                              foregroundColor: isDark
+                                  ? Colors.blue[100]
+                                  : Colors.blue[900],
                               padding: const EdgeInsets.symmetric(vertical: 12),
-                              // 暗黑模式加一个半透明的边框，更有质感，防止“隐身”
-                              side: BorderSide(
-                                color: isDark
-                                    ? Colors.blue[900]!.withOpacity(0.5)
-                                    : Colors.blue[100]!,
-                              ),
                               shape: RoundedRectangleBorder(
                                 borderRadius: BorderRadius.circular(8),
+                                side: BorderSide(
+                                  color: isDark
+                                      ? Colors.white12
+                                      : Colors.blue[100]!,
+                                ),
                               ),
+                              elevation: 0,
                             ),
                           ),
                         );
                       }
                       return null;
                     },
+
                     onTapUrl: (url) async {
                       await _launchURL(url);
                       return true;

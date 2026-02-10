@@ -345,12 +345,10 @@ class _ThreadListPageState extends State<ThreadListPage> {
                     : Colors.grey,
               ),
             ),
-            onTap: () => Navigator.push(
+            // 记得引入 main.dart 才能使用 adaptivePush
+            onTap: () => adaptivePush(
               context,
-              MaterialPageRoute(
-                builder: (context) =>
-                    ThreadDetailPage(tid: thread.tid, subject: thread.subject),
-              ),
+              ThreadDetailPage(tid: thread.tid, subject: thread.subject),
             ),
           ),
         );

@@ -1,13 +1,11 @@
-import 'dart:async';
 import 'package:flutter/material.dart';
-import 'package:webview_flutter/webview_flutter.dart';
 import 'package:html/parser.dart' as html_parser;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'thread_detail_page.dart';
 import 'forum_model.dart';
+import 'http_service.dart';
+import 'main.dart'; // 访问 currentBaseUrl
 import 'dart:io';
-import 'login_page.dart'; // 引入 kUserAgent
-import 'main.dart'; // 用于访问 customWallpaperPath 和 currentTheme
 
 class FavoriteItem {
   final String tid;
@@ -31,143 +29,119 @@ class FavoritePage extends StatefulWidget {
 }
 
 class _FavoritePageState extends State<FavoritePage> {
-  late final WebViewController _hiddenController;
   List<FavoriteItem> _favorites = [];
   bool _isLoading = true;
-  bool _isBlockedByCloudflare = false;
+  String _errorMsg = "";
 
   @override
   void initState() {
     super.initState();
-    _initWebView();
-  }
-
-  // 【核心修复】初始化 WebView 并强力注入 Cookie
-  Future<void> _initWebView() async {
-    // 1. 获取本地 Cookie
-    final prefs = await SharedPreferences.getInstance();
-    final String savedCookie = prefs.getString('saved_cookie_string') ?? "";
-
-    // 2. 注入 Cookie 到系统管理器
-    if (savedCookie.isNotEmpty) {
-      final cookieManager = WebViewCookieManager();
-      String domain = Uri.parse(currentBaseUrl.value).host;
-      List<String> cookieList = savedCookie.split(';');
-      for (var c in cookieList) {
-        if (c.contains('=')) {
-          var kv = c.split('=');
-          await cookieManager.setCookie(
-            WebViewCookie(
-              name: kv[0].trim(),
-              value: kv.sublist(1).join('=').trim(),
-              domain: domain,
-              path: '/',
-            ),
-          );
-        }
-      }
-      print("🍪 [Favorite] Cookie 已注入: $domain");
-    }
-
-    _hiddenController = WebViewController()
-      ..setJavaScriptMode(JavaScriptMode.unrestricted)
-      ..setUserAgent(kUserAgent) // 必须与登录时一致
-      ..setNavigationDelegate(
-        NavigationDelegate(
-          onPageFinished: (url) {
-            if (url.contains("do=favorite")) {
-              _parseFavorites();
-            } else if (url.contains("op=delete")) {
-              _hiddenController.runJavaScript(
-                "var btn = document.querySelector('button[name=\"deletesubmitbtn\"]'); if(btn) btn.click();",
-              );
-              Future.delayed(
-                const Duration(seconds: 1),
-                () => _loadFavorites(),
-              );
-            }
-          },
-        ),
-      );
-
     _loadFavorites();
   }
 
-  void _loadFavorites() {
-    if (!mounted) return;
+  // ==========================================
+  // 【核心优化】支持自动续命的加载逻辑
+  // ==========================================
+  Future<void> _loadFavorites({bool isRetry = false}) async {
     setState(() {
       _isLoading = true;
-      _isBlockedByCloudflare = false;
+      _errorMsg = "";
     });
 
-    // 【关键】带上 Header 发起请求
-    final prefs = SharedPreferences.getInstance().then((p) {
-      String cookie = p.getString('saved_cookie_string') ?? "";
-      _hiddenController.loadRequest(
-        Uri.parse(
-          '${currentBaseUrl.value}home.php?mod=space&do=favorite&view=me&mobile=no',
-        ),
-        headers: {'Cookie': cookie}, // 双重保险
-      );
-    });
-  }
+    final String url =
+        '${currentBaseUrl.value}home.php?mod=space&do=favorite&view=me&mobile=no';
 
-  Future<void> _parseFavorites() async {
     try {
-      final String rawHtml =
-          await _hiddenController.runJavaScriptReturningResult(
-                "document.documentElement.outerHTML",
-              )
-              as String;
+      String html = await HttpService().getHtml(url);
 
-      String cleanHtml = rawHtml;
-      if (cleanHtml.startsWith('"'))
-        cleanHtml = cleanHtml.substring(1, cleanHtml.length - 1);
-      cleanHtml = cleanHtml
-          .replaceAll('\\u003C', '<')
-          .replaceAll('\\"', '"')
-          .replaceAll('\\\\', '\\');
-
-      // 检测 Cloudflare 拦截
-      if (cleanHtml.contains("challenges.cloudflare.com") ||
-          cleanHtml.contains("Just a moment") ||
-          cleanHtml.contains("Verify you are human")) {
-        print("🛡️ [Favorite] 检测到 Cloudflare 验证");
-        if (mounted) {
-          setState(() {
-            _isBlockedByCloudflare = true;
-            _isLoading = false;
-          });
+      // 1. 检查是否撞到了 Cloudflare
+      if (html.contains("challenges.cloudflare.com") ||
+          html.contains("Verify you are human")) {
+        // 如果没重试过，尝试续命一下（有时是因为 Cookie 太旧导致 CF 触发）
+        if (!isRetry) {
+          await HttpService().reviveSession();
+          return _loadFavorites(isRetry: true);
         }
+        setState(() {
+          _isLoading = false;
+          _errorMsg = "触发安全验证，请在主页手动刷新";
+        });
         return;
       }
 
-      // 如果通过验证，隐藏 WebView
-      if (_isBlockedByCloudflare && mounted) {
-        setState(() => _isBlockedByCloudflare = false);
+      // 2. 检查是否掉登录 (这是你原来的逻辑，我做增强)
+      // 如果 HTML 里包含 login 或者没有找到 favorite_ul 列表，通常说明没登录或 Cookie 只有一半
+      bool isInvalid =
+          html.contains("尚未登录") ||
+          html.contains('id="ls_username"') || // 桌面版登录框特征
+          (html.contains("login") && !html.contains("favorite_ul"));
+
+      if (isInvalid) {
+        if (!isRetry) {
+          print("💨 [Favorite] 检测到登录失效，尝试自动续命...");
+          // 显示一个小提示
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text("正在同步收藏夹数据..."),
+                duration: Duration(milliseconds: 800),
+              ),
+            );
+          }
+
+          await HttpService().reviveSession();
+          // 续命后重试
+          return _loadFavorites(isRetry: true);
+        } else {
+          setState(() {
+            _isLoading = false;
+            _errorMsg = "登录状态失效，请重新登录";
+          });
+          return;
+        }
       }
 
-      var document = html_parser.parse(cleanHtml);
-      List<FavoriteItem> newList = [];
-      var items = document.querySelectorAll('ul[id="favorite_ul"] li');
+      // 3. 解析 HTML
+      _parseHtml(html);
+    } catch (e) {
+      // 网络错误也试一次续命
+      if (!isRetry) {
+        await HttpService().reviveSession();
+        return _loadFavorites(isRetry: true);
+      }
+      print("❌ 收藏夹加载异常: $e");
+      setState(() {
+        _isLoading = false;
+        _errorMsg = "加载失败，请检查网络";
+      });
+    }
+  }
 
-      for (var item in items) {
+  void _parseHtml(String html) {
+    var document = html_parser.parse(html);
+    List<FavoriteItem> newList = [];
+
+    // Discuz 收藏列表通常在 ul#favorite_ul li 里面
+    var items = document.querySelectorAll('ul[id="favorite_ul"] li');
+
+    for (var item in items) {
+      try {
         var link = item.querySelector('a[href*="tid="]');
         if (link == null) continue;
 
         String title = link.text.trim();
         String href = link.attributes['href'] ?? "";
         String tid = RegExp(r'tid=(\d+)').firstMatch(href)?.group(1) ?? "";
+
+        // 提取描述
         String desc = item.querySelector('.xg1')?.text ?? "";
 
+        // 提取 favid (取消收藏时需要)
         String favid = "";
         var delLink = item.querySelector('a[href*="op=delete"]');
         if (delLink != null) {
-          favid =
-              RegExp(
-                r'favid=(\d+)',
-              ).firstMatch(delLink.attributes['href'] ?? "")?.group(1) ??
-              "";
+          String delHref = delLink.attributes['href'] ?? "";
+          favid = RegExp(r'favid=(\d+)').firstMatch(delHref)?.group(1) ?? "";
         }
 
         if (tid.isNotEmpty) {
@@ -180,16 +154,44 @@ class _FavoritePageState extends State<FavoritePage> {
             ),
           );
         }
+      } catch (e) {
+        continue;
       }
+    }
 
-      if (mounted) {
-        setState(() {
-          _favorites = newList;
-          _isLoading = false;
-        });
-      }
+    if (mounted) {
+      setState(() {
+        _favorites = newList;
+        _isLoading = false;
+        if (newList.isEmpty) _errorMsg = "收藏夹空空如也";
+      });
+    }
+  }
+
+  // ==========================================
+  // 【优化】删除收藏逻辑
+  // ==========================================
+  Future<void> _deleteFavorite(String favid) async {
+    if (favid.isEmpty) return;
+
+    // 显示简单的加载提示
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text("正在取消收藏...")));
+
+    // 构造删除 URL
+    final String url =
+        "${currentBaseUrl.value}home.php?mod=spacecp&ac=favorite&op=delete&favid=$favid&type=all&inajax=1";
+
+    try {
+      // 发起删除请求
+      await HttpService().getHtml(url);
+      // 成功后本地刷新
+      _loadFavorites();
     } catch (e) {
-      if (mounted) setState(() => _isLoading = false);
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text("删除失败")));
     }
   }
 
@@ -216,30 +218,16 @@ class _FavoritePageState extends State<FavoritePage> {
     );
   }
 
-  void _deleteFavorite(String favid) async {
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(const SnackBar(content: Text("正在取消收藏...")));
-    final prefs = await SharedPreferences.getInstance();
-    String cookie = prefs.getString('saved_cookie_string') ?? "";
-    String url =
-        "${currentBaseUrl.value}home.php?mod=spacecp&ac=favorite&op=delete&favid=$favid&type=all";
-    _hiddenController.loadRequest(Uri.parse(url), headers: {'Cookie': cookie});
-  }
-
   @override
   Widget build(BuildContext context) {
     return ValueListenableBuilder<String?>(
       valueListenable: customWallpaperPath,
       builder: (context, wallpaperPath, _) {
-        bool useTransparent =
-            wallpaperPath != null && transparentBarsEnabled.value;
         return Scaffold(
-          backgroundColor: useTransparent ? Colors.transparent : null,
+          backgroundColor: wallpaperPath != null ? Colors.transparent : null,
           appBar: AppBar(
             title: const Text("我的收藏"),
-            backgroundColor: useTransparent ? Colors.transparent : null,
-            elevation: useTransparent ? 0 : null,
+            backgroundColor: wallpaperPath != null ? Colors.transparent : null,
             actions: [
               IconButton(
                 icon: const Icon(Icons.refresh),
@@ -254,115 +242,64 @@ class _FavoritePageState extends State<FavoritePage> {
                   child: Image.file(File(wallpaperPath), fit: BoxFit.cover),
                 ),
                 Positioned.fill(
-                  child: ValueListenableBuilder<ThemeMode>(
-                    valueListenable: currentTheme,
-                    builder: (context, mode, _) {
-                      bool isDark =
-                          mode == ThemeMode.dark ||
-                          (mode == ThemeMode.system &&
-                              MediaQuery.of(context).platformBrightness ==
-                                  Brightness.dark);
-                      return Container(
-                        color: isDark
-                            ? Colors.black.withOpacity(0.6)
-                            : Colors.white.withOpacity(0.3),
-                      );
-                    },
-                  ),
+                  child: Container(color: Colors.black.withOpacity(0.5)),
                 ),
               ],
 
-              // 列表视图
-              SafeArea(
-                child: _isLoading
-                    ? const Center(child: CircularProgressIndicator())
-                    : _favorites.isEmpty
-                    ? Center(
-                        child: _isBlockedByCloudflare
-                            ? const SizedBox()
-                            : const Text("暂无收藏"),
-                      )
-                    : ListView.builder(
-                        itemCount: _favorites.length,
-                        itemBuilder: (context, index) {
-                          final fav = _favorites[index];
-                          return Card(
-                            color: wallpaperPath != null
-                                ? Theme.of(context).cardColor.withOpacity(0.7)
-                                : null,
-                            margin: const EdgeInsets.symmetric(
-                              horizontal: 8,
-                              vertical: 4,
-                            ),
-                            child: ListTile(
-                              leading: const Icon(
-                                Icons.star,
-                                color: Colors.orange,
-                              ),
-                              title: Text(
-                                fav.title,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                              subtitle: fav.description.isNotEmpty
-                                  ? Text(fav.description)
-                                  : null,
-                              onTap: () => Navigator.push(
-                                context,
-                                MaterialPageRoute(
-                                  builder: (c) => ThreadDetailPage(
-                                    tid: fav.tid,
-                                    subject: fav.title,
-                                  ),
-                                ),
-                              ),
-                              onLongPress: () {
-                                if (fav.favid.isNotEmpty)
-                                  _showDeleteConfirmDialog(
-                                    fav.favid,
-                                    fav.title,
-                                  );
-                              },
-                            ),
-                          );
-                        },
-                      ),
-              ),
-
-              // WebView 层 (平时隐藏，被盾时显示)
-              if (_isBlockedByCloudflare)
-                Positioned.fill(
-                  child: Container(
-                    color: Theme.of(context).scaffoldBackgroundColor,
-                    padding: EdgeInsets.only(
-                      top: MediaQuery.of(context).padding.top + 60,
-                    ),
-                    child: Column(
-                      children: [
-                        const Padding(
-                          padding: EdgeInsets.all(8.0),
-                          child: Text(
-                            "检测到安全验证，请点击下方的验证框",
-                            style: TextStyle(
-                              fontWeight: FontWeight.bold,
-                              color: Colors.red,
-                            ),
+              _isLoading
+                  ? const Center(child: CircularProgressIndicator())
+                  : _errorMsg.isNotEmpty && _favorites.isEmpty
+                  ? Center(
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Text(
+                            _errorMsg,
+                            style: const TextStyle(color: Colors.grey),
                           ),
-                        ),
-                        Expanded(
-                          child: WebViewWidget(controller: _hiddenController),
-                        ),
-                      ],
-                    ),
-                  ),
-                )
-              else
-                SizedBox(
-                  height: 0,
-                  width: 0,
-                  child: WebViewWidget(controller: _hiddenController),
-                ),
+                          const SizedBox(height: 10),
+                          ElevatedButton(
+                            onPressed: _loadFavorites,
+                            child: const Text("重试"),
+                          ),
+                        ],
+                      ),
+                    )
+                  : _buildList(wallpaperPath),
             ],
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildList(String? wallpaperPath) {
+    return ListView.builder(
+      itemCount: _favorites.length,
+      itemBuilder: (context, index) {
+        final fav = _favorites[index];
+        return Card(
+          margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+          color: wallpaperPath != null ? Colors.white.withOpacity(0.1) : null,
+          elevation: 0,
+          child: ListTile(
+            leading: const Icon(Icons.star, color: Colors.orange),
+            title: Text(
+              fav.title,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+            subtitle: fav.description.isNotEmpty ? Text(fav.description) : null,
+            onTap: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (c) =>
+                      ThreadDetailPage(tid: fav.tid, subject: fav.title),
+                ),
+              );
+            },
+            onLongPress: () => _showDeleteConfirmDialog(fav.favid, fav.title),
           ),
         );
       },

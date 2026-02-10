@@ -1,14 +1,17 @@
 import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_widget_from_html/flutter_widget_from_html.dart';
+import 'package:giantesswaltz_app/cloudflare_solver.dart';
 import 'package:giantesswaltz_app/history_manager.dart';
 import 'package:url_launcher/url_launcher.dart'; // 现在已正确使用
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter_cache_manager/flutter_cache_manager.dart';
 import 'package:scroll_to_index/scroll_to_index.dart';
+import 'package:webview_flutter/webview_flutter.dart';
 import 'general_webview_page.dart';
 import 'package:flutter_html/flutter_html.dart';
 import 'package:html/dom.dart' as html_dom; // 保持这个，用于类型
@@ -188,9 +191,30 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
     super.dispose();
   }
 
-  Future<void> _loadPage(int page, {bool resetScroll = false}) async {
+  // ==========================================
+  // 【核心修改】增加 isRetry 参数，实现自动续命重试
+  // ==========================================
+  Future<void> _loadPage(
+    int page, {
+    bool resetScroll = false,
+    bool isRetry = false,
+  }) async {
     _targetPage = page;
-    if (mounted) setState(() => _isLoading = true);
+    // 如果不是重试状态，才显示加载圈，避免重试时闪烁
+    if (mounted && !isRetry) setState(() => _isLoading = true);
+
+    // 1. 优先读取离线缓存（保持原逻辑，提升体验）
+    // 注意：如果是重试，说明网络可能通了但Cookie不对，此时不要读缓存，强制走网络
+    if (!isRetry) {
+      String? localData = await OfflineManager().readPage(widget.tid, page);
+      if (localData != null) {
+        print("📦 [Offline] 发现本地持久缓存，优先渲染");
+        try {
+          _processApiResponse(jsonDecode(localData));
+          if (mounted) setState(() => _isLoading = false);
+        } catch (_) {}
+      }
+    }
 
     String url =
         '${currentBaseUrl.value}api/mobile/index.php?version=4&module=viewthread&tid=${widget.tid}&page=$page';
@@ -198,12 +222,62 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
       url += '&authorid=$_landlordUid';
 
     try {
+      // 2. 发起网络请求
       String responseBody = await HttpService().getHtml(url);
+      // 如果返回的还是 HTML（说明自愈失败了）
+      if (responseBody.trim().startsWith('<!DOCTYPE') ||
+          responseBody.contains('<html')) {
+        setState(() {
+          _isLoading = false;
+          _posts = []; // 清空，触发显示“加载失败”的 UI
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("Session 同步失败，请尝试下拉刷新或重新登录")),
+        );
+        return;
+      }
+      // 在 _loadPage 内部
+      if (responseBody.contains("to_login")) {
+        setState(() {
+          _isLoading = false;
+          _posts = []; // 依然保持空，但我们要修改 build 函数来显示登录引导
+        });
 
-      // 【核心修复】更加激进的 JSON 清洗
+        // 弹窗提示，并直接跳转
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text("登录已过期，请重新登录以继续阅读")));
+
+        // 延迟一下直接弹回登录
+        Future.delayed(const Duration(milliseconds: 500), () {
+          Navigator.push(
+            context,
+            MaterialPageRoute(builder: (c) => const LoginPage()),
+          ).then((val) {
+            if (val == true) _loadPage(1); // 登录成功回来刷新
+          });
+        });
+        return;
+      }
+      // 3. 检查是否被 Cloudflare 拦截
+      if (responseBody.contains('<!DOCTYPE html') ||
+          responseBody.contains('<html')) {
+        // 如果是 HTML，说明可能撞盾了，或者 Cookie 失效导致返回了网页版错误页
+        if (!isRetry) {
+          print("🚨 [AutoRetry] 检测到 HTML 响应（可能是失效或撞盾），尝试自动续命...");
+          await _performAutoRevive(); // 执行续命
+          return _loadPage(
+            page,
+            resetScroll: resetScroll,
+            isRetry: true,
+          ); // 递归重试
+        }
+        throw "Cloudflare Intercepted";
+      }
+
+      // 4. 清洗 JSON
       responseBody = responseBody.trim();
       if (responseBody.startsWith('"') && responseBody.endsWith('"')) {
-        // 处理被转义的引号: \" -> "
         responseBody = responseBody
             .substring(1, responseBody.length - 1)
             .replaceAll('\\"', '"')
@@ -212,28 +286,80 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
 
       final data = jsonDecode(responseBody);
 
-      // 验证返回的是否是错误消息 JSON
+      // 5. 【关键】检查 API 是否返回了“需要登录”或错误
+      // 很多时候服务器不报错，而是返回 Variables 为 null
+      if (data['Variables'] == null) {
+        if (!isRetry) {
+          print("🚨 [AutoRetry] 数据解析为空（Variables=null），Cookie 可能过期，尝试自动续命...");
+          await _performAutoRevive();
+          return _loadPage(page, resetScroll: resetScroll, isRetry: true);
+        }
+      }
+
+      // 如果有明确的 Message 报错
       if (data['Message'] != null && data['Variables'] == null) {
-        _handleLoginExpired(data['Message']['messagestr']);
+        String msg = data['Message']['messagestr'] ?? "";
+        // 如果错误是“未定义操作”或者“需要登录”，尝试自动修复
+        if (!isRetry) {
+          print("🚨 [AutoRetry] API 返回错误: $msg，尝试自动续命...");
+          await _performAutoRevive();
+          return _loadPage(page, resetScroll: resetScroll, isRetry: true);
+        }
+        _handleLoginExpired(msg);
         return;
       }
 
-      // 网络请求成功，赋值并解析
+      // 6. 成功获取数据
       _currentRawJson = responseBody;
       _processApiResponse(data);
 
       if (resetScroll && _scrollController.hasClients)
         _scrollController.jumpTo(0);
     } catch (e) {
-      print("❌ API 请求或解析失败: $e");
-      // 如果报错了，去读离线缓存
-      String? offlineData = await OfflineManager().readPage(widget.tid, page);
-      if (offlineData != null) {
-        _processApiResponse(jsonDecode(offlineData));
+      print("❌ 网络请求失败: $e");
+
+      // 7. 捕获异常时的自动重试
+      if (!isRetry) {
+        print("🚨 [AutoRetry] 发生异常，尝试死马当活马医（续命重试）...");
+        await _performAutoRevive();
+        return _loadPage(page, resetScroll: resetScroll, isRetry: true);
       }
+
+      if (e.toString().contains("Cloudflare") ||
+          e.toString().contains("Intercepted")) {
+        bool solved = await CloudflareSolver.show(context);
+        if (solved) _loadPage(page);
+      } else {
+        if (_posts.isEmpty && mounted) {
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(const SnackBar(content: Text("加载失败，请下拉刷新或检查网络")));
+        }
+      }
+      // 如果抛出了异常
+      setState(() {
+        _isLoading = false;
+        _posts = []; // 确保列表为空
+      });
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }
+  }
+
+  // 【新增】辅助方法：执行自动续命
+  Future<void> _performAutoRevive() async {
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text("连接失效，正在自动修复..."),
+          duration: Duration(milliseconds: 1000),
+        ),
+      );
+    }
+    // 调用 HttpService 的全局续命方法
+    await HttpService().reviveSession();
+    // 重新读取本地 Cookie 到内存
+    await _loadLocalCookie();
   }
 
   void _processApiResponse(dynamic data) {
@@ -1920,11 +2046,6 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
                         }
                       }
 
-                      // C. 针对问卷内可能存在的普通文本 (p 或 span)
-                      if (parentStyle.contains('d4ebfa')) {
-                        if (isDark) return {'color': '#FFFFFF'};
-                      }
-
                       return null;
                     },
 
@@ -2183,29 +2304,54 @@ class _RetryableImageState extends State<RetryableImage> {
             child: const Center(child: CircularProgressIndicator()),
           ),
           errorWidget: (ctx, url, error) {
+            // 【新增调试逻辑】
             return InkWell(
               onTap: () async {
-                await CachedNetworkImage.evictFromCache(widget.imageUrl);
+                try {
+                  // 1. 尝试找到本地缓存的文件路径
+                  var fileInfo = await widget.cacheManager.getFileFromCache(
+                    url,
+                  );
+                  if (fileInfo != null) {
+                    File badFile = fileInfo.file;
+                    // 2. 读取文件开头的一部分内容（通常前100个字符就能看出是不是HTML）
+                    String content = await badFile.readAsString();
+                    print("⚠️ [Image Debug] 发现坏图文件！内容预览:");
+                    print("----------------------------------");
+                    print(
+                      content.length > 200
+                          ? content.substring(0, 200)
+                          : content,
+                    );
+                    print("----------------------------------");
+
+                    if (content.contains("<!DOCTYPE html") ||
+                        content.contains("<html")) {
+                      print("💡 结论：下载到的是网页（防火墙拦截页），不是图片。");
+                    } else if (content.contains("messageval")) {
+                      print("💡 结论：下载到的是 JSON 报错信息（可能掉登录了）。");
+                    }
+                  } else {
+                    print("🚨 [Image Debug] 本地竟然没找到缓存文件？");
+                  }
+                } catch (e) {
+                  print("🛠️ [Image Debug] 读取坏图文件失败（可能是二进制流）: $e");
+                }
+
+                // 执行清理并重试（保持你之前的清理代码）
                 await widget.cacheManager.removeFile(widget.imageUrl);
+                await CachedNetworkImage.evictFromCache(widget.imageUrl);
                 setState(() => _retryCount++);
               },
               child: Container(
                 height: 120,
                 width: double.infinity,
-                color: Colors.grey[300],
-                child: Column(
+                color: Colors.red.withOpacity(0.1),
+                child: const Column(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
-                    const Icon(
-                      Icons.broken_image,
-                      color: Colors.grey,
-                      size: 30,
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      "加载失败，点击重试 (${_retryCount})",
-                      style: const TextStyle(color: Colors.blue),
-                    ),
+                    Icon(Icons.bug_report, color: Colors.red),
+                    Text("加载失败：可能是网络被拦截\n点击尝试重连", textAlign: TextAlign.center),
                   ],
                 ),
               ),

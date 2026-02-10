@@ -579,12 +579,10 @@ class _SearchPageState extends State<SearchPage> {
               "作者: ${item.author} ${item.replies != '0' ? '· ${item.replies}回' : ''}",
               style: const TextStyle(fontSize: 12),
             ),
-            onTap: () => Navigator.push(
+            // 修改后：使用 adaptivePush (推入下一页)
+            onTap: () => adaptivePush(
               context,
-              MaterialPageRoute(
-                builder: (c) =>
-                    ThreadDetailPage(tid: item.tid, subject: item.subject),
-              ),
+              ThreadDetailPage(tid: item.tid, subject: item.subject),
             ),
           ),
         );
@@ -623,14 +621,12 @@ class _SearchPageState extends State<SearchPage> {
           ),
           trailing: const Icon(Icons.chevron_right, size: 18),
           onTap: () {
-            Navigator.push(
+            adaptivePush(
               context,
-              MaterialPageRoute(
-                builder: (c) => UserDetailPage(
-                  uid: uid,
-                  username: user['username']!,
-                  avatarUrl: avatarUrl,
-                ),
+              UserDetailPage(
+                uid: uid,
+                username: user['username']!,
+                avatarUrl: avatarUrl,
               ),
             );
           },

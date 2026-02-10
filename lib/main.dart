@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_cache_manager/flutter_cache_manager.dart';
 import 'package:giantesswaltz_app/history_page.dart';
 import 'package:giantesswaltz_app/http_service.dart';
 import 'package:giantesswaltz_app/offline_list_page.dart';
@@ -38,6 +39,54 @@ final ValueNotifier<bool> transparentBarsEnabled = ValueNotifier(false);
 final ValueNotifier<bool> useDioProxyLoader = ValueNotifier(false);
 
 final GlobalKey<_ForumHomePageState> forumKey = GlobalKey();
+
+// 1. 定义一个 Key，用来专门控制右边的导航
+final GlobalKey<NavigatorState> tabletNavigatorKey =
+    GlobalKey<NavigatorState>();
+
+// 2.【平板模式状态】右边当前显示的根页面 (比如板块列表)
+final ValueNotifier<Widget?> tabletRightRootPage = ValueNotifier(null);
+// 【新增】统一的判断标准：宽度大于600 且 处于横屏模式
+bool _isTabletMode(BuildContext context) {
+  final size = MediaQuery.of(context).size;
+  final orientation = MediaQuery.of(context).orientation;
+  return size.width > 600 && orientation == Orientation.landscape;
+}
+
+// 【核心修复】左侧点击 (板块/菜单)
+void openOnTablet(BuildContext context, Widget page) {
+  if (_isTabletMode(context)) {
+    // 1. 更新根页面记录 (为了防止旋转屏幕后丢失当前状态)
+    tabletRightRootPage.value = page;
+
+    // 2. 【关键】如果右侧导航器已经存在，直接操作它进行跳转！
+    // pushAndRemoveUntil 会清空右侧所有历史，只保留新的这一页
+    if (tabletNavigatorKey.currentState != null) {
+      tabletNavigatorKey.currentState!.pushAndRemoveUntil(
+        MaterialPageRoute(builder: (c) => page),
+        (route) => false, // 这里的 false 表示删掉之前所有路由
+      );
+    }
+  } else {
+    // 竖屏或手机：普通跳转
+    Navigator.push(context, MaterialPageRoute(builder: (c) => page));
+  }
+}
+
+// 2. 右侧点击 (帖子详情)
+void adaptivePush(BuildContext context, Widget page) {
+  if (_isTabletMode(context)) {
+    // 横屏平板：在右侧导航入栈
+    if (tabletNavigatorKey.currentState != null) {
+      tabletNavigatorKey.currentState!.push(
+        MaterialPageRoute(builder: (c) => page),
+      );
+    }
+  } else {
+    // 竖屏或手机：普通跳转
+    Navigator.push(context, MaterialPageRoute(builder: (c) => page));
+  }
+}
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -181,85 +230,196 @@ class _MainScreenState extends State<MainScreen> {
     return ValueListenableBuilder<String?>(
       valueListenable: customWallpaperPath,
       builder: (context, wallpaperPath, child) {
-        return Scaffold(
-          // 如果有壁纸，Scaffold 背景透明
-          backgroundColor: wallpaperPath != null ? Colors.transparent : null,
-          extendBody: wallpaperPath != null && transparentBarsEnabled.value,
-          body: Stack(
-            children: [
-              // 1. 背景层
-              if (wallpaperPath != null)
-                Positioned.fill(
-                  child: Image.file(
-                    File(wallpaperPath),
-                    fit: BoxFit.cover,
-                    errorBuilder: (_, __, ___) => const SizedBox(),
-                  ),
-                ),
-              // 2. 遮罩层 (适配暗黑模式)
-              if (wallpaperPath != null)
-                Positioned.fill(
-                  child: ValueListenableBuilder<ThemeMode>(
-                    valueListenable: currentTheme,
-                    builder: (context, mode, _) {
-                      bool isDark = mode == ThemeMode.dark;
-                      if (mode == ThemeMode.system) {
-                        isDark =
-                            MediaQuery.of(context).platformBrightness ==
-                            Brightness.dark;
-                      }
-                      return Container(
-                        color: isDark
-                            ? Colors.black.withOpacity(0.6) // 暗黑模式加深遮罩
-                            : Colors.white.withOpacity(0.3), // 亮色模式轻微遮罩
-                      );
-                    },
-                  ),
-                ),
-              // 3. 内容层
-              IndexedStack(index: _selectedIndex, children: _pages),
-            ],
-          ),
-          bottomNavigationBar: ValueListenableBuilder<bool>(
-            valueListenable: transparentBarsEnabled,
-            builder: (context, enabled, _) {
-              final bool useTransparent = wallpaperPath != null && enabled;
-              return NavigationBar(
-                backgroundColor: useTransparent
-                    ? Colors.transparent
-                    : (wallpaperPath != null
-                          ? (Theme.of(context).brightness == Brightness.dark
-                                ? Colors.black.withOpacity(0.4)
-                                : Colors.white.withOpacity(0.6))
-                          : null),
-                elevation: wallpaperPath != null ? 0 : 3,
-                indicatorColor: Theme.of(context).colorScheme.secondaryContainer
-                    .withOpacity(useTransparent ? 0.6 : 0.8),
-                selectedIndex: _selectedIndex,
-                onDestinationSelected: (int index) =>
-                    setState(() => _selectedIndex = index),
-                destinations: const [
-                  NavigationDestination(
-                    icon: Icon(Icons.home_outlined),
-                    selectedIcon: Icon(Icons.home),
-                    label: '大厅',
-                  ),
-                  NavigationDestination(icon: Icon(Icons.search), label: '搜索'),
-                  NavigationDestination(
-                    icon: Icon(Icons.person_outline),
-                    selectedIcon: Icon(Icons.person),
-                    label: '我的',
-                  ),
+        return LayoutBuilder(
+          builder: (context, constraints) {
+            // =========== 【核心修改在这里】 ===========
+            // 只有当宽度够大，且屏幕方向是横屏时，才启用分栏
+            bool isTablet =
+                constraints.maxWidth > 600 &&
+                MediaQuery.of(context).orientation == Orientation.landscape;
+            // =======================================
+
+            // 左侧手机版脚手架 (保持不变)
+            Widget mainScaffold = Scaffold(
+              backgroundColor: (wallpaperPath != null && !isTablet)
+                  ? Colors.transparent
+                  : null,
+              extendBody: wallpaperPath != null && transparentBarsEnabled.value,
+              body: Stack(
+                children: [
+                  if (wallpaperPath != null)
+                    Positioned.fill(
+                      child: Image.file(
+                        File(wallpaperPath),
+                        fit: BoxFit.cover,
+                        errorBuilder: (_, __, ___) => const SizedBox(),
+                      ),
+                    ),
+                  if (wallpaperPath != null)
+                    Positioned.fill(
+                      child: ValueListenableBuilder<ThemeMode>(
+                        valueListenable: currentTheme,
+                        builder: (context, mode, _) {
+                          bool isDark = mode == ThemeMode.dark;
+                          if (mode == ThemeMode.system) {
+                            isDark =
+                                MediaQuery.of(context).platformBrightness ==
+                                Brightness.dark;
+                          }
+                          return Container(
+                            color: isDark
+                                ? Colors.black.withOpacity(0.6)
+                                : Colors.white.withOpacity(0.3),
+                          );
+                        },
+                      ),
+                    ),
+                  IndexedStack(index: _selectedIndex, children: _pages),
                 ],
-              );
-            },
-          ),
+              ),
+              bottomNavigationBar: isTablet
+                  ? null
+                  : ValueListenableBuilder<bool>(
+                      valueListenable: transparentBarsEnabled,
+                      builder: (context, enabled, _) {
+                        final bool useTransparent =
+                            wallpaperPath != null && enabled;
+                        return NavigationBar(
+                          backgroundColor: useTransparent
+                              ? Colors.transparent
+                              : (wallpaperPath != null
+                                    ? (Theme.of(context).brightness ==
+                                              Brightness.dark
+                                          ? Colors.black.withOpacity(0.4)
+                                          : Colors.white.withOpacity(0.6))
+                                    : null),
+                          elevation: wallpaperPath != null ? 0 : 3,
+                          selectedIndex: _selectedIndex,
+                          onDestinationSelected: (int index) =>
+                              setState(() => _selectedIndex = index),
+                          destinations: const [
+                            NavigationDestination(
+                              icon: Icon(Icons.home_outlined),
+                              selectedIcon: Icon(Icons.home),
+                              label: '大厅',
+                            ),
+                            NavigationDestination(
+                              icon: Icon(Icons.search),
+                              label: '搜索',
+                            ),
+                            NavigationDestination(
+                              icon: Icon(Icons.person_outline),
+                              selectedIcon: Icon(Icons.person),
+                              label: '我的',
+                            ),
+                          ],
+                        );
+                      },
+                    ),
+            );
+
+            if (!isTablet) return mainScaffold;
+
+            // === 平板双栏布局 ===
+            return Scaffold(
+              // 【新增】拦截物理返回键
+              // 如果右侧能返回，就右侧返回；否则不处理（系统会退出或挂起）
+              body: PopScope(
+                canPop: false,
+                onPopInvoked: (didPop) async {
+                  if (didPop) return;
+                  // 检查右侧导航器是否可以后退
+                  if (tabletNavigatorKey.currentState != null &&
+                      tabletNavigatorKey.currentState!.canPop()) {
+                    tabletNavigatorKey.currentState!.pop();
+                  } else {
+                    // 如果右侧到底了，或者没得退，则允许系统处理（退出App）
+                    // 这里的逻辑可以根据需要调整，比如提示再按一次退出
+                    if (context.mounted) Navigator.of(context).pop();
+                  }
+                },
+                child: Row(
+                  children: [
+                    // 左侧导航条
+                    NavigationRail(
+                      selectedIndex: _selectedIndex,
+                      onDestinationSelected: (int index) =>
+                          setState(() => _selectedIndex = index),
+                      labelType: NavigationRailLabelType.all,
+                      destinations: const [
+                        NavigationRailDestination(
+                          icon: Icon(Icons.home_outlined),
+                          selectedIcon: Icon(Icons.home),
+                          label: Text('大厅'),
+                        ),
+                        NavigationRailDestination(
+                          icon: Icon(Icons.search),
+                          label: Text('搜索'),
+                        ),
+                        NavigationRailDestination(
+                          icon: Icon(Icons.person_outline),
+                          selectedIcon: Icon(Icons.person),
+                          label: Text('我的'),
+                        ),
+                      ],
+                    ),
+                    const VerticalDivider(thickness: 1, width: 1),
+
+                    // 左侧列表区
+                    SizedBox(width: 380, child: mainScaffold),
+
+                    const VerticalDivider(thickness: 1, width: 1),
+
+                    // === 右侧：详情展示区 (核心修改) ===
+                    Expanded(
+                      child: Container(
+                        color: Theme.of(context).scaffoldBackgroundColor,
+                        child: ValueListenableBuilder<Widget?>(
+                          valueListenable: tabletRightRootPage, // 监听根页面变化
+                          builder: (context, rootPage, _) {
+                            if (rootPage == null) {
+                              return const Center(
+                                child: Column(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    Icon(
+                                      Icons.touch_app,
+                                      size: 64,
+                                      color: Colors.grey,
+                                    ),
+                                    SizedBox(height: 16),
+                                    Text(
+                                      "请在左侧选择板块或帖子",
+                                      style: TextStyle(color: Colors.grey),
+                                    ),
+                                  ],
+                                ),
+                              );
+                            }
+                            // 嵌套 Navigator！
+                            // 加上 Key 是为了当 rootPage 变了(换板块了)，强制重建 Navigator，清空历史
+                            return Navigator(
+                              key: tabletNavigatorKey, // 绑定全局 Key
+                              onGenerateRoute: (settings) {
+                                return MaterialPageRoute(
+                                  builder: (context) => rootPage,
+                                );
+                              },
+                            );
+                          },
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
         );
       },
     );
   }
 }
-
 // ================== 首页 ==================
 
 class ForumHomePage extends StatefulWidget {
@@ -1133,12 +1293,35 @@ class _ForumHomePageState extends State<ForumHomePage> {
               _buildHotThreadBanner(), // 新增：热门横幅放在最上面
               if (_isLoading)
                 const SliverToBoxAdapter(child: LinearProgressIndicator()),
+              // 在 ForumHomePage 的 build 方法里找到 _categories.isEmpty 的判断
               if (_categories.isEmpty && !_isLoading)
                 SliverFillRemaining(
                   child: Center(
-                    child: ElevatedButton(
-                      onPressed: _fetchData,
-                      child: const Text("刷新数据"),
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        const Icon(
+                          Icons.lock_person,
+                          size: 64,
+                          color: Colors.grey,
+                        ),
+                        const SizedBox(height: 16),
+                        const Text(
+                          "登录态已失效，内容无法加载",
+                          style: TextStyle(color: Colors.grey),
+                        ),
+                        const SizedBox(height: 20),
+                        ElevatedButton.icon(
+                          onPressed: () => Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (c) => const LoginPage(),
+                            ),
+                          ).then((_) => _fetchData()),
+                          icon: const Icon(Icons.login),
+                          label: const Text("立即重新登录"),
+                        ),
+                      ],
                     ),
                   ),
                 ),
@@ -1367,12 +1550,10 @@ class _ForumHomePageState extends State<ForumHomePage> {
                     backgroundColor: Colors.redAccent,
                   )
                 : const Icon(Icons.chevron_right, size: 16, color: Colors.grey),
-            onTap: () => Navigator.push(
+            // 修改后：使用 openOnTablet (重置右侧)
+            onTap: () => openOnTablet(
               context,
-              MaterialPageRoute(
-                builder: (context) =>
-                    ThreadListPage(fid: forum.fid, forumName: forum.name),
-              ),
+              ThreadListPage(fid: forum.fid, forumName: forum.name),
             ),
           ),
         );
@@ -1598,6 +1779,15 @@ class _ProfilePageState extends State<ProfilePage> {
                       },
                     ),
                     const SizedBox(height: 10),
+                    ListTile(
+                      leading: const Icon(
+                        Icons.build_circle_outlined,
+                        color: Colors.redAccent,
+                      ),
+                      title: const Text("登录状态修复"),
+                      subtitle: const Text("遇到“暂无内容”或无法登录时点击"),
+                      onTap: () => _showRepairDialog(context),
+                    ),
                   ],
                 ),
               ),
@@ -1611,6 +1801,41 @@ class _ProfilePageState extends State<ProfilePage> {
           },
         );
       },
+    );
+  }
+
+  void _showRepairDialog(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text("深度修复"),
+        content: const Text("这将清除所有本地 Cookie 并尝试重新激活登录状态。如果依然无效，请尝试退出登录并重新登录。"),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text("取消"),
+          ),
+          TextButton(
+            onPressed: () async {
+              Navigator.pop(ctx);
+              // 1. 暴力清理 WebView 和 本地所有 Cookie
+              await WebViewCookieManager().clearCookies();
+              final prefs = await SharedPreferences.getInstance();
+              await prefs.remove('saved_cookie_string'); // 关键：删掉本地存的脏 Cookie
+
+              // 2. 尝试静默激活
+              ScaffoldMessenger.of(
+                context,
+              ).showSnackBar(const SnackBar(content: Text("正在深度清理并重置环境...")));
+              await HttpService().reviveSession();
+
+              // 3. 强制回到首页刷新
+              forumKey.currentState?.refreshData();
+            },
+            child: const Text("立即修复", style: TextStyle(color: Colors.red)),
+          ),
+        ],
+      ),
     );
   }
 
@@ -1820,48 +2045,47 @@ class _ProfilePageState extends State<ProfilePage> {
     );
   }
 
-  // 在 _ProfilePageState 类中
-
   void _changeDomain(BuildContext context, String newUrl) async {
-    Navigator.pop(context); // 关弹窗
+    Navigator.pop(context);
 
     if (newUrl == currentBaseUrl.value) return;
 
-    // 1. 保存新设置
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('selected_base_url', newUrl);
+    // 显示加载进度，因为清空缓存需要时间
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => const Center(child: CircularProgressIndicator()),
+    );
 
-    // 2. 更新全局变量
-    currentBaseUrl.value = newUrl;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('selected_base_url', newUrl);
 
-    // 3. 更新 HttpService
-    HttpService().updateBaseUrl(newUrl);
+      // 1. 【核心修复】切换线路时必须清空图片磁盘缓存
+      // 否则旧域名的拦截页面（伪装成图片）会留在本地导致解码失败
+      await DefaultCacheManager().emptyCache();
+      await globalImageCache.emptyCache();
+      PaintingBinding.instance.imageCache.clear();
+      PaintingBinding.instance.imageCache.clearLiveImages();
 
-    // 4. 【核心黑科技】Cookie 搬家 (Domain Migration)
-    // 将保存在本地的 Cookie 字符串，强制注入给新域名
-    // 这样 Discuz 就会在新域名下也认为你已登录 (前提是两个域名后端通用的)
-    String savedCookie = prefs.getString('saved_cookie_string') ?? "";
-    if (savedCookie.isNotEmpty) {
-      final cookieMgr = WebViewCookieManager();
-      // 清除旧的 WebView Cookie 防止冲突
-      await cookieMgr.clearCookies();
+      // 2. 更新基础域名
+      currentBaseUrl.value = newUrl;
+      HttpService().updateBaseUrl(newUrl);
 
-      String newDomain = Uri.parse(newUrl).host; // 获取 gtswaltz.org
-      List<String> cookieList = savedCookie.split(';');
-
-      for (var c in cookieList) {
-        if (c.contains('=')) {
-          var kv = c.split('=');
-          String key = kv[0].trim();
-          String value = kv.sublist(1).join('=').trim();
-
-          if (key.isNotEmpty &&
-              !['path', 'domain', 'expires'].contains(key.toLowerCase())) {
-            // 强行把旧 Cookie 种到新域名下
+      // 3. Cookie 搬家逻辑 (保持你之前的)
+      String savedCookie = prefs.getString('saved_cookie_string') ?? "";
+      if (savedCookie.isNotEmpty) {
+        final cookieMgr = WebViewCookieManager();
+        await cookieMgr.clearCookies();
+        String newDomain = Uri.parse(newUrl).host;
+        List<String> cookieList = savedCookie.split(';');
+        for (var c in cookieList) {
+          if (c.contains('=')) {
+            var kv = c.split('=');
             await cookieMgr.setCookie(
               WebViewCookie(
-                name: key,
-                value: value,
+                name: kv[0].trim(),
+                value: kv.sublist(1).join('=').trim(),
                 domain: newDomain,
                 path: '/',
               ),
@@ -1869,23 +2093,17 @@ class _ProfilePageState extends State<ProfilePage> {
           }
         }
       }
-      print("🍪 [Switch] Cookie 已搬家至新域名: $newDomain");
-    }
 
-    if (mounted) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text("线路已切换，正在刷新数据...")));
-
-      // 5. 强制跳回首页大厅并刷新
-      // 这相当于一次“软重启”
-      setState(() {
-        // 这里假设 MainScreen 的 state 能够控制 index
-        // 如果无法直接控制，我们至少让当前的 ProfilePage 刷新一下状态
-      });
-
-      // 强力刷新主页数据
-      forumKey.currentState?.refreshData();
+      if (mounted) {
+        Navigator.pop(context); // 关闭加载弹窗
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text("线路已切换，缓存已重置")));
+        // 强制回首页刷新
+        forumKey.currentState?.refreshData();
+      }
+    } catch (e) {
+      if (mounted) Navigator.pop(context);
     }
   }
 
@@ -2058,19 +2276,19 @@ class _ProfilePageState extends State<ProfilePage> {
                 ),
                 title: const Text("阅读书签"),
                 trailing: const Icon(Icons.chevron_right),
-                onTap: () => Navigator.push(
+                onTap: () => openOnTablet(
                   context,
-                  MaterialPageRoute(builder: (context) => const BookmarkPage()),
-                ),
+                  const BookmarkPage(),
+                ), // 改为 openOnTablet
               ),
               ListTile(
                 leading: const Icon(Icons.star_outline, color: Colors.orange),
                 title: const Text("我的收藏"),
                 trailing: const Icon(Icons.chevron_right),
-                onTap: () => Navigator.push(
+                onTap: () => openOnTablet(
                   context,
-                  MaterialPageRoute(builder: (context) => const FavoritePage()),
-                ),
+                  const FavoritePage(),
+                ), // 改为 openOnTablet
               ),
               // 上次加的清除缓存
               ListTile(
@@ -2092,23 +2310,16 @@ class _ProfilePageState extends State<ProfilePage> {
                 title: const Text("离线缓存"),
                 subtitle: const Text("管理已保存的帖子"),
                 trailing: const Icon(Icons.chevron_right),
-                onTap: () {
-                  Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                      builder: (context) => const OfflineListPage(),
-                    ),
-                  );
-                },
+                onTap: () => openOnTablet(context, const OfflineListPage()),
               ),
               ListTile(
                 leading: const Icon(Icons.history, color: Colors.blue),
                 title: const Text("浏览足迹"),
                 trailing: const Icon(Icons.chevron_right),
-                onTap: () => Navigator.push(
+                onTap: () => openOnTablet(
                   context,
-                  MaterialPageRoute(builder: (c) => const HistoryPage()),
-                ),
+                  const HistoryPage(),
+                ), // 改为 openOnTablet
               ),
               // 【新增】加载模式入口
               ListTile(

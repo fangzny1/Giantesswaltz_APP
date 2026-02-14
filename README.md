@@ -51,6 +51,8 @@
 
 - 如果在使用中遇到 Bug，欢迎提交 [Issues](../../issues)。
 - 欢迎感兴趣的开发者提交 Pull Request 共同优化。
+## DEEPWIKI
 
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/fangzny1/Giantesswaltz_APP)
 ---
 *Created with ❤️ by [fangzny](https://github.com/fangzny1)*

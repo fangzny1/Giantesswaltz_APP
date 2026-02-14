@@ -24,6 +24,9 @@ import 'package:image_picker/image_picker.dart';
 import 'package:cached_network_image/cached_network_image.dart'; // 引入缓存图片库
 import 'cache_helper.dart'; // 引入缓存助手
 
+const String kAppVersion = "v1.4.0"; // 这是你当前的 App 版本
+const String kUpdateUrl = "https://fangzny-myupdate-gw-app.hf.space/update";
+
 // 全局状态
 final ValueNotifier<String> currentUser = ValueNotifier("未登录");
 // 【新增】当前用户的 UID (用于跳转帖子列表)
@@ -1603,6 +1606,99 @@ class _ProfilePageState extends State<ProfilePage> {
     if (mounted) setState(() {});
   }
 
+  // 检查更新的逻辑
+  Future<void> _checkUpdate(
+    BuildContext context, {
+    bool showToastIfLatest = true,
+  }) async {
+    // 1. 显示加载中提示（如果是手动点击的话）
+    if (showToastIfLatest) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text("正在连接更新服务器..."),
+          duration: Duration(seconds: 1),
+        ),
+      );
+    }
+
+    try {
+      final dio = Dio();
+      // 增加随机数防止缓存
+      final response = await dio.get(
+        '$kUpdateUrl?t=${DateTime.now().millisecondsSinceEpoch}',
+      );
+
+      if (response.statusCode == 200) {
+        final data = response.data;
+        String serverVersion = data['version']; // 例如 "v1.4.0"
+        String downloadUrl = data['url'];
+
+        if (serverVersion != kAppVersion) {
+          // 2. 发现新版本，弹出对话框
+          if (context.mounted) {
+            _showUpdateDialog(context, serverVersion, downloadUrl);
+          }
+        } else {
+          // 3. 已经是最新版
+          if (showToastIfLatest && context.mounted) {
+            ScaffoldMessenger.of(
+              context,
+            ).showSnackBar(SnackBar(content: Text("当前已是最新版本 ($kAppVersion)")));
+          }
+        }
+      }
+    } catch (e) {
+      print("更新检查失败: $e");
+      if (showToastIfLatest && context.mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text("无法连接到更新服务器，请稍后再试")));
+      }
+    }
+  }
+
+  // 弹出更新对话框
+  void _showUpdateDialog(BuildContext context, String version, String url) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.system_update, color: Colors.blue),
+            SizedBox(width: 10),
+            Text("发现新版本"),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text("最新版本：$version"),
+            Text("当前版本：$kAppVersion"),
+            const SizedBox(height: 10),
+            const Text("是否前往 GitHub 下载更新？"),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text("以后再说"),
+          ),
+          FilledButton(
+            onPressed: () async {
+              Navigator.pop(ctx);
+              final uri = Uri.parse(url);
+              if (await canLaunchUrl(uri)) {
+                await launchUrl(uri, mode: LaunchMode.externalApplication);
+              }
+            },
+            child: const Text("立即下载"),
+          ),
+        ],
+      ),
+    );
+  }
+
   void _toggleTheme() async {
     final prefs = await SharedPreferences.getInstance();
     if (currentTheme.value == ThemeMode.light) {
@@ -2392,6 +2488,14 @@ class _ProfilePageState extends State<ProfilePage> {
                 ),
                 trailing: const Icon(Icons.chevron_right),
                 onTap: () => _showDomainSwitchDialog(context),
+              ),
+              // 在 ProfilePage 的 ListView 中
+              ListTile(
+                leading: const Icon(Icons.update, color: Colors.blueAccent),
+                title: const Text("检查更新"),
+                subtitle: const Text("当前版本：$kAppVersion"), // 显示当前版本号
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => _checkUpdate(context), // 点击手动检查
               ),
               // 【新增】关于
               ListTile(

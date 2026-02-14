@@ -6,6 +6,8 @@
 [![Framework](https://img.shields.io/badge/framework-Flutter-blue.svg)](https://flutter.dev)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
+[![DeepWiki](https://img.shields.io/badge/DeepWiki-Indexed-blue?style=for-the-badge&logo=gitbook)](https://deepwiki.com/fangzny1/Giantesswaltz_APP)
+
 ## 🌟 项目亮点
 
 这个项目最初由 AI 辅助构建，并针对 Discuz! X3.4 架构进行了深度定制和改构。它不仅仅是一个网页套壳，而是一个**原生 API 驱动**的高性能应用。

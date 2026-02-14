@@ -6,7 +6,7 @@
 
 A tailored third-party mobile client for **GiantessWaltz (GW Forum)**. Built with Flutter, it aims to provide a much smoother reading experience and powerful offline capabilities compared to the mobile web version.
 
-[![Version](https://img.shields.io/badge/version-v1.3.0-orange.svg)](https://github.com/fangzny1/Giantesswaltz_APP/releases) 
+[![Version](https://img.shields.io/badge/version-v1.4.0-orange.svg)](https://github.com/fangzny1/Giantesswaltz_APP/releases) 
 [![Platform](https://img.shields.io/badge/platform-Android-green.svg)](https://flutter.dev) 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) 
 [![Python Update Server](https://img.shields.io/badge/Update%20Server-FastAPI-blue?logo=python)](https://fangzny-myupdate-gw-app.hf.space/)
@@ -50,6 +50,8 @@ This project was initially assisted by AI and deeply customized for the Discuz! 
 
 - If you encounter any bugs, feel free to submit an [Issue](../../issues).
 - Pull Requests are welcome from developers interested in optimizing the app together.
+## DEEPWIKI
 
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/fangzny1/Giantesswaltz_APP)
 ---
 *Created with ❤️ by [fangzny](https://github.com/fangzny1)*

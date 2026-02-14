@@ -31,7 +31,8 @@
 ## 📥 下载安装 / Installation
 
 1.  前往 [Releases](../../releases) 页面。
-2.  下载最新的 `app-release.apk`。
+2.  下载最新的 `Giantesswaltz_APP+arm64-v8a.apk
+`。
 3.  在安卓设备上安装即可使用。
 
 ## 🛠️ 技术栈 / Tech Stack

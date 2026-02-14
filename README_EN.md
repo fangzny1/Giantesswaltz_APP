@@ -30,7 +30,8 @@ This project was initially assisted by AI and deeply customized for the Discuz! 
 ## 📥 Installation
 
 1.  Go to the [Releases](../../releases) page.
-2.  Download the latest `app-release.apk`.
+2.  Download the latest `Giantesswaltz_APP+arm64-v8a.apk
+`.
 3.  Install it on your Android device to start using it.
 
 ## 🛠️ Tech Stack

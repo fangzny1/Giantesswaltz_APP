@@ -25,7 +25,7 @@ import 'package:cached_network_image/cached_network_image.dart'; // 引入缓存
 import 'cache_helper.dart'; // 引入缓存助手
 import 'package:receive_sharing_intent/receive_sharing_intent.dart';
 
-const String kAppVersion = "v1.4.0"; // 这是你当前的 App 版本
+const String kAppVersion = "v1.4.5"; // 这是你当前的 App 版本
 const String kUpdateUrl = "https://fangzny-myupdate-gw-app.hf.space/update";
 
 // 全局状态

@@ -477,6 +477,18 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
   }
 
   String _cleanApiHtml(String html) {
+    // 【核心修复】处理双重转义的 HTML 实体
+    // 将 &amp;quot; 还原为真正的引号，或者至少还原为 &quot; 供下层解析
+    // 这里我们直接还原成字符，效率最高
+    html = html
+        .replaceAll('&amp;quot;', '"')
+        .replaceAll('&amp;amp;', '&')
+        .replaceAll('&amp;lt;', '<')
+        .replaceAll('&amp;gt;', '>')
+        .replaceAll('&amp;nbsp;', ' ');
+    // 处理正常的转义（如果是单层转义，有些组件可能也识别不佳，可以顺手做了）
+    html = html.replaceAll('&quot;', '"');
+
     return html
         .replaceAll('src="static/', 'src="${currentBaseUrl.value}static/')
         .replaceAll(

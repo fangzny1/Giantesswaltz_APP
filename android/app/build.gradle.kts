@@ -14,14 +14,16 @@ android {
     ndkVersion = flutter.ndkVersion
 
     compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_17
-        targetCompatibility = JavaVersion.VERSION_17
+        sourceCompatibility = JavaVersion.VERSION_21
+        targetCompatibility = JavaVersion.VERSION_21
     }
 
+    // 针对 Kotlin DSL 的新写法，解决警告并修复单引号错误
     kotlinOptions {
-        jvmTarget = JavaVersion.VERSION_17.toString()
+        jvmTarget = "21" // 必须用双引号
     }
-
+   // 如果你之前听我的加了这一段，请把它也改成 21，或者直接删掉它
+   
     defaultConfig {
         // 【关键点】VPN 识别的就是这个 ID，保持不动
         applicationId = "com.example.gw_app"
@@ -49,4 +51,7 @@ android {
 }
 flutter {
     source = "../.."
+}
+kotlin {
+        jvmToolchain(21) 
 }

@@ -87,6 +87,9 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
         .replaceAll('</span>', '');
   }
 
+  // 【新增】定义一个内部显示的标题变量
+  late String _displaySubject;
+
   late AutoScrollController _scrollController;
   bool get isDark => Theme.of(context).brightness == Brightness.dark;
   bool _hasPerformedInitialJump = false;
@@ -138,6 +141,8 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
     super.initState();
     _minPage = widget.initialPage;
     _targetPage = widget.initialPage;
+    // 初始时使用传进来的标题（可能是“跳转中...”，也可能是正常的标题）
+    _displaySubject = widget.subject;
 
     _scrollController = AutoScrollController(
       viewportBoundaryGetter: () =>
@@ -375,8 +380,12 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
 
     final threadInfo = vars['thread'];
     if (threadInfo != null) {
-      if (_landlordUid == null) {
-        _landlordUid = threadInfo['authorid']?.toString();
+      // --- 【核心修复代码：更新标题】 ---
+      String? realSubject = threadInfo['subject']?.toString();
+      if (realSubject != null && realSubject.isNotEmpty) {
+        setState(() {
+          _displaySubject = realSubject;
+        });
       }
       int allReplies =
           int.tryParse(threadInfo['allreplies']?.toString() ?? '0') ?? 0;
@@ -614,30 +623,48 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
   }
 
   void _onReply(String? pid) {
-    if (_fid == null || _formhash == null) {
+    // 1. 检查必要参数
+    if (_fid == null) {
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(const SnackBar(content: Text("缺少必要信息，请刷新重试")));
+      ).showSnackBar(const SnackBar(content: Text("缺少版块ID，请刷新重试")));
       return;
     }
+
+    // 2. 构建基础 URL
+    // 使用 currentBaseUrl.value 获取当前域名
+    String baseUrl = currentBaseUrl.value;
+    String targetUrl =
+        "${baseUrl}forum.php?mod=post&action=reply&fid=$_fid&tid=${widget.tid}";
+
+    // 3. 【关键】如果是引用回复 (点击了某楼层)
+    if (pid != null && pid.isNotEmpty) {
+      // 加上 repquote 参数，这样服务器才知道你在回复谁
+      targetUrl += "&repquote=$pid&extra=page%3D1&page=1";
+    }
+
+    // 4. 加上 mobile=no 确保加载电脑版页面（方便嗅探脚本工作）
+    targetUrl += "&mobile=no";
+
+    print("🚀 [Detail] 准备跳转回复页: $targetUrl");
+
+    // 5. 跳转
     Navigator.push(
       context,
       MaterialPageRoute(
         builder: (context) => ReplyNativePage(
-          tid: widget.tid,
+          targetUrl: targetUrl, // 把拼好的 URL 传进去，不要传空字符串了
           fid: _fid!,
-          pid: pid,
-          formhash: _formhash!,
-          posttime: _posttime,
-          minChars: _postMinChars,
-          maxChars: _postMaxChars,
-          baseUrl: currentBaseUrl.value,
+          tid: widget.tid,
           userCookies: _userCookies,
+          baseUrl: baseUrl,
         ),
       ),
     ).then((success) {
-      if (success == true)
+      // 发送成功后刷新列表
+      if (success == true) {
         _loadPage(_totalPages > 0 ? _totalPages : _targetPage);
+      }
     });
   }
 
@@ -1137,8 +1164,9 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
                       floating: true,
                       pinned: false,
                       snap: true,
+                      // 【修改点】将 widget.subject 换成 _displaySubject
                       title: Text(
-                        widget.subject,
+                        _displaySubject,
                         style: const TextStyle(fontSize: 16),
                       ),
                       centerTitle: false,
@@ -2211,24 +2239,81 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
     );
   }
 
-  Widget _buildClickableImage(String url) {
-    if (url.isEmpty) return const SizedBox();
-    String fullUrl = url.startsWith('http') ? url : "$currentBaseUrl.value$url";
-    return RetryableImage(
-      imageUrl: fullUrl,
-      cacheManager: globalImageCache,
-      headers: {
+  // 【新增】智能 Header 生成器
+  Map<String, String> _getHeadersForUrl(String url) {
+    // 1. 获取当前论坛的主机名 (如 giantesswaltz.org)
+    String currentHost = Uri.parse(currentBaseUrl.value).host;
+
+    // 2. 判断是否是站内图片
+    // 如果 URL 包含当前域名，或者是相对路径（不以 http 开头），或者是备用域名
+    bool isInternal =
+        url.contains(currentHost) ||
+        !url.startsWith('http') ||
+        url.contains('giantesswaltz.org') ||
+        url.contains('gtswaltz.org');
+
+    if (isInternal) {
+      // 站内图片：全副武装
+      return {
         'Cookie': _userCookies,
         'User-Agent': kUserAgent,
         'Referer': currentBaseUrl.value,
-      },
+      };
+    } else {
+      // 站外图片：净身出户 (只带 UA，防止被对方防盗链策略拦截)
+      return {'User-Agent': kUserAgent};
+    }
+  }
+
+  Widget _buildClickableImage(String url) {
+    if (url.isEmpty) return const SizedBox();
+
+    // 1. 处理相对路径
+    String fullUrl = url.startsWith('http')
+        ? url
+        : "${currentBaseUrl.value}$url";
+
+    // 2. 【核心修复】彻底清洗 HTML 实体转义
+    // 有时候会遇到 &amp;amp; 这种多重转义，循环替换直到没有为止
+    while (fullUrl.contains('&amp;')) {
+      fullUrl = fullUrl.replaceAll('&amp;', '&');
+    }
+
+    // 3. 【新增优化】针对部分外链，去掉 URL 参数以获取高清原图
+    // 逻辑：如果是外链，且包含 ?，尝试去掉 ? 后面的内容
+    String currentHost = Uri.parse(currentBaseUrl.value).host;
+    bool isInternal =
+        fullUrl.contains(currentHost) ||
+        fullUrl.contains('giantesswaltz.org') ||
+        fullUrl.contains('gtswaltz.org');
+
+    if (!isInternal && fullUrl.contains('?')) {
+      // 这里的逻辑是：如果 URL 看起来像是一个图片文件 (.jpg, .png)，后面跟了参数，就去掉参数
+      // 这样可以解决 natalie.mu 等网站缩略图参数报错的问题，也能拿到更高清的图
+      String urlNoParams = fullUrl.split('?').first;
+      String ext = urlNoParams.toLowerCase();
+      if (ext.endsWith('.jpg') ||
+          ext.endsWith('.png') ||
+          ext.endsWith('.jpeg') ||
+          ext.endsWith('.gif') ||
+          ext.endsWith('.webp')) {
+        print("✂️ [Image] 自动剥离外链参数，获取原图: $urlNoParams");
+        fullUrl = urlNoParams;
+      }
+    }
+
+    // 4. 获取动态 Header (上一轮加的逻辑)
+    Map<String, String> dynamicHeaders = _getHeadersForUrl(fullUrl);
+
+    return RetryableImage(
+      imageUrl: fullUrl,
+      cacheManager: globalImageCache,
+      headers: dynamicHeaders,
       onTap: (u) => Navigator.push(
         context,
         MaterialPageRoute(
-          builder: (c) => ImagePreviewPage(
-            imageUrl: u,
-            headers: {'Cookie': _userCookies, 'User-Agent': kUserAgent},
-          ),
+          builder: (c) =>
+              ImagePreviewPage(imageUrl: u, headers: dynamicHeaders),
         ),
       ),
     );

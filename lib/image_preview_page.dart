@@ -1,10 +1,14 @@
 import 'dart:typed_data';
+import 'dart:io'; // 用于 File
 import 'package:flutter/material.dart';
+import 'package:giantesswaltz_app/forum_model.dart';
 import 'package:photo_view/photo_view.dart';
 import 'package:dio/dio.dart';
-import 'package:gal/gal.dart'; // 【改动1】引入新库
+import 'package:gal/gal.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter_cache_manager/flutter_cache_manager.dart';
+import 'main.dart'; // 【引入】访问 currentBaseUrl
+import 'login_page.dart'; // 【引入】访问 kUserAgent
 
 class ImagePreviewPage extends StatefulWidget {
   final String imageUrl;
@@ -25,22 +29,43 @@ class ImagePreviewPage extends StatefulWidget {
 class _ImagePreviewPageState extends State<ImagePreviewPage> {
   bool _isSaving = false;
 
+  // 【核心修复】智能获取 Header
+  // 即使上层传错了，这里也能最后一道防线修正
+  Map<String, String> get _safeHeaders {
+    String url = widget.imageUrl;
+    String currentHost = Uri.parse(currentBaseUrl.value).host;
+
+    // 判断是否是自家域名
+    bool isInternal =
+        url.contains(currentHost) ||
+        !url.startsWith('http') ||
+        url.contains('giantesswaltz.org') ||
+        url.contains('gtswaltz.org');
+
+    if (isInternal) {
+      // 站内图：使用传入的完整 Headers (含 Cookie, Referer)
+      return widget.headers;
+    } else {
+      // 站外图：清洗 Headers，只留 UA，防止防盗链拦截
+      return {'User-Agent': kUserAgent};
+    }
+  }
+
   Future<void> _saveImage() async {
-    // Gal 库会自动处理权限，所以我们不需要手动请求 Permission.storage 了
     setState(() => _isSaving = true);
 
     try {
       // 1. 下载图片数据
+      // 【关键】这里必须使用 _safeHeaders，否则外链下载会 403
       var response = await Dio().get(
         widget.imageUrl,
         options: Options(
           responseType: ResponseType.bytes,
-          headers: widget.headers,
+          headers: _safeHeaders,
         ),
       );
 
-      // 2. 【改动2】使用 Gal 保存图片到相册
-      // format: name 这一行是可选的，用来给图片命名
+      // 2. 保存到相册
       await Gal.putImageBytes(
         Uint8List.fromList(response.data),
         name: "GN_${DateTime.now().millisecondsSinceEpoch}",
@@ -52,7 +77,6 @@ class _ImagePreviewPageState extends State<ImagePreviewPage> {
         ).showSnackBar(const SnackBar(content: Text("✅ 图片已保存到相册")));
       }
     } on GalException catch (e) {
-      // Gal 专门的异常处理（比如用户拒绝权限）
       if (mounted) {
         ScaffoldMessenger.of(
           context,
@@ -71,6 +95,9 @@ class _ImagePreviewPageState extends State<ImagePreviewPage> {
 
   @override
   Widget build(BuildContext context) {
+    // 获取清洗后的 Headers
+    final Map<String, String> realHeaders = _safeHeaders;
+
     return Scaffold(
       backgroundColor: Colors.black,
       appBar: AppBar(
@@ -97,9 +124,10 @@ class _ImagePreviewPageState extends State<ImagePreviewPage> {
         ],
       ),
       body: PhotoView(
+        // 【关键】ImageProvider 也要用清洗后的 Headers
         imageProvider: CachedNetworkImageProvider(
           widget.imageUrl,
-          headers: widget.headers,
+          headers: realHeaders,
           cacheManager: widget.cacheManager,
         ),
         loadingBuilder: (context, event) => Center(
@@ -109,12 +137,19 @@ class _ImagePreviewPageState extends State<ImagePreviewPage> {
                 : event.cumulativeBytesLoaded / (event.expectedTotalBytes ?? 1),
           ),
         ),
-        errorBuilder: (context, error, stackTrace) => const Center(
+        errorBuilder: (context, error, stackTrace) => Center(
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Icon(Icons.broken_image, color: Colors.grey, size: 50),
-              Text("加载失败", style: TextStyle(color: Colors.grey)),
+              const Icon(Icons.broken_image, color: Colors.grey, size: 50),
+              const SizedBox(height: 10),
+              const Text("加载失败", style: TextStyle(color: Colors.grey)),
+              const SizedBox(height: 5),
+              // 增加一个调试提示，方便看是不是 Header 导致的
+              Text(
+                widget.imageUrl.contains("giantesswaltz") ? "(站内图)" : "(外链图)",
+                style: const TextStyle(color: Colors.grey, fontSize: 10),
+              ),
             ],
           ),
         ),

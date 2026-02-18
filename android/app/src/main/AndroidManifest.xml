@@ -35,7 +35,7 @@
         <activity
             android:name=".MainActivity"
             android:exported="true"
-            android:launchMode="singleTop"
+            android:launchMode="singleTask" 
             android:taskAffinity=""
             android:theme="@style/LaunchTheme"
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
@@ -49,6 +49,38 @@
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
+             <!-- 1. 处理直接点击链接 (Deep Linking) -->
+            <intent-filter android:autoVerify="true">
+                 <action android:name="android.intent.action.VIEW" />
+                 <category android:name="android.intent.category.DEFAULT" />
+                 <category android:name="android.intent.category.BROWSABLE" />
+        <!-- 支持的域名 1 -->
+                 <data android:scheme="https" android:host="giantesswaltz.org" android:pathPrefix="/forum.php" />
+                 <data android:scheme="https" android:host="giantesswaltz.org" android:pathPattern=".*tid=.*" />
+        <!-- 支持的域名 2 -->
+                 <data android:scheme="https" android:host="gtswaltz.org" android:pathPrefix="/forum.php" />
+                  <data android:scheme="https" android:host="gtswaltz.org" android:pathPattern=".*tid=.*" />
+                </intent-filter>
+    <!-- 新加：分享接收 (给 receive_sharing_intent 用) -->
+    <intent-filter>
+        <action android:name="android.intent.action.SEND" />
+        <category android:name="android.intent.category.DEFAULT" />
+        <data android:mimeType="text/plain" />
+    </intent-filter>
+
+    <intent-filter>
+        <action android:name="android.intent.action.SEND" />
+        <category android:name="android.intent.category.DEFAULT" />
+        <data android:mimeType="image/*" />
+    </intent-filter>
+
+    <intent-filter>
+        <action android:name="android.intent.action.SEND_MULTIPLE" />
+        <category android:name="android.intent.category.DEFAULT" />
+        <data android:mimeType="*/*" />
+    </intent-filter>
+
+
         </activity>
         <meta-data
             android:name="flutterEmbedding"

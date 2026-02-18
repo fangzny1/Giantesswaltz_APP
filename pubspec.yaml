@@ -56,7 +56,9 @@ dependencies:
   path_provider: ^2.0.0
   flutter_html: ^3.0.0-beta.2
   printing: ^5.11.0 # 用于调用系统打印/保存PDF
-  pdf: ^3.10.0      # 配合 printing 使用           
+  pdf: ^3.10.0      # 配合 printing 使用
+  app_links: ^6.3.2 # 现代且稳定的深层链接库
+  receive_sharing_intent: ^1.8.1
   flutter_test:
     sdk: flutter
 

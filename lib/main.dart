@@ -19,10 +19,11 @@ import 'bookmark_page.dart';
 import 'user_detail_page.dart'; // 用于跳转
 import 'dart:io';
 import 'package:url_launcher/url_launcher.dart';
-
+import 'package:app_links/app_links.dart'; // 引入库
 import 'package:image_picker/image_picker.dart';
 import 'package:cached_network_image/cached_network_image.dart'; // 引入缓存图片库
 import 'cache_helper.dart'; // 引入缓存助手
+import 'package:receive_sharing_intent/receive_sharing_intent.dart';
 
 const String kAppVersion = "v1.4.0"; // 这是你当前的 App 版本
 const String kUpdateUrl = "https://fangzny-myupdate-gw-app.hf.space/update";
@@ -221,12 +222,181 @@ class MainScreen extends StatefulWidget {
 }
 
 class _MainScreenState extends State<MainScreen> {
+  late AppLinks _appLinks;
+  StreamSubscription<Uri>? _linkSubscription;
+  StreamSubscription<List<SharedMediaFile>>?
+  _intentDataStreamSubscription; // 改名更清晰
+
+  // 【新增】防抖变量
+  String? _lastOpenedTid;
+  DateTime? _lastOpenTime;
   int _selectedIndex = 0;
+  @override
+  void initState() {
+    super.initState();
+
+    // 【核心修复】使用 WidgetsBinding 确保在第一帧加载后再初始化
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      print("🚀 [System] 界面首帧加载完成，开始初始化监听器...");
+      _initDeepLinks();
+      _initSharingIntent();
+    });
+  }
+
   final List<Widget> _pages = [
     ForumHomePage(key: forumKey),
     const SearchPage(),
     const ProfilePage(),
   ];
+  // 1. 初始化深度链接 (点击链接直接唤起) —— 保持不变
+  void _initDeepLinks() {
+    _appLinks = AppLinks();
+    // 监听 App 在后台时的点击
+    _linkSubscription = _appLinks.uriLinkStream.listen((uri) {
+      print("🔗 [DeepLink] 后台捕获链接: $uri");
+      _handleUri(uri);
+    }, onError: (err) => print("❌ [DeepLink] 监听出错: $err"));
+
+    // 处理冷启动 (App 彻底关闭时的点击)
+    _appLinks.getInitialLink().then((uri) {
+      if (uri != null) {
+        print("🔗 [DeepLink] 冷启动捕获链接: $uri");
+        _handleUri(uri);
+      }
+    });
+  }
+
+  // 2. 初始化分享意图 (选中文字/链接/图片 等分享到 App) —— 已更新为最新 API
+  void _initSharingIntent() {
+    // 订阅后台/前台分享流
+    _intentDataStreamSubscription = ReceiveSharingIntent.instance
+        .getMediaStream()
+        .listen((List<SharedMediaFile> value) {
+          if (value.isNotEmpty) {
+            print("📥 [Share] 实时捕获分享: ${value.length} 项");
+            _handleSharedContent(value);
+          }
+        }, onError: (err) => print("❌ [Share] 分享流监听出错: $err"));
+
+    // 处理冷启动分享（app 从关闭状态被分享打开）
+    ReceiveSharingIntent.instance
+        .getInitialMedia()
+        .then((List<SharedMediaFile>? value) {
+          if (value != null && value.isNotEmpty) {
+            print("📥 [Share] 冷启动捕获分享: ${value.length} 项");
+            _handleSharedContent(value);
+          }
+        })
+        .catchError((err) {
+          print("❌ [Share] getInitialMedia 错误: $err");
+        });
+  }
+
+  // 新增：统一处理分享内容（支持文本/链接/媒体）
+  void _handleSharedContent(List<SharedMediaFile> files) {
+    for (var file in files) {
+      final path = file.path ?? '';
+      if (path.isEmpty) continue;
+
+      switch (file.type) {
+        case SharedMediaType.text:
+          // 分享的是纯文本（可能包含链接）
+          print("📝 [Share] 捕获文本: $path");
+          _handleSharedText(path);
+          break;
+
+        case SharedMediaType.url:
+          // 分享的是 URL（链接），也当作文本处理（因为你的 _handleSharedText 能解析 tid）
+          print("🔗 [Share] 捕获 URL: $path");
+          _handleSharedText(path);
+          break;
+
+        case SharedMediaType.image:
+        case SharedMediaType.video:
+          print("🖼️ [Share] 捕获媒体文件: $path (类型: ${file.type.name})");
+          // 如果你以后想支持直接发帖图片/视频，可以在这里处理
+          // 目前你的需求主要是链接，所以可以忽略或提示
+          // e.g., ScaffoldMessenger.of(context).showSnackBar(... "收到图片/视频，但当前仅支持链接跳转");
+          break;
+
+        case SharedMediaType.file:
+          print("📁 [Share] 捕获通用文件: $path");
+          // 对于文件，如果 path 是文本内容或可解析为链接，也可以尝试
+          // _handleSharedText(path); // 可选：如果文件内容是文本/URL
+          break;
+
+        default:
+          // 防止未来 enum 扩展导致崩溃
+          print("⚠️ [Share] 未知类型: ${file.type} - path: $path");
+          // 兜底当作文本处理（最安全）
+          _handleSharedText(path);
+          break;
+      }
+    }
+  }
+
+  void _handleUri(Uri uri) {
+    String url = uri.toString();
+    String? tid = _extractTidFromUrl(url);
+    if (tid != null) {
+      _navigateToThread(tid);
+    }
+  }
+
+  void _handleSharedText(String text) {
+    String? tid = _extractTidFromUrl(text);
+    if (tid != null) {
+      _navigateToThread(tid);
+    }
+  }
+
+  // 辅助函数：从 URL 中提取 tid (增强版正则)
+  String? _extractTidFromUrl(String url) {
+    if (url.isEmpty) return null;
+
+    // 处理被转义的情况 (比如分享过来的链接带 %3D 等)
+    String decodedUrl = Uri.decodeComponent(url);
+
+    // 匹配 tid=12345 (兼容 ?tid= 或 &tid=)
+    RegExp regExp = RegExp(r'tid=(\d+)');
+    Match? match = regExp.firstMatch(decodedUrl);
+    if (match != null) return match.group(1);
+
+    // 匹配 thread-12345-1-1.html
+    RegExp regExpStatic = RegExp(r'thread-(\d+)-');
+    Match? matchStatic = regExpStatic.firstMatch(decodedUrl);
+    if (matchStatic != null) return matchStatic.group(1);
+
+    print("⚠️ [Parser] 无法从链接提取 TID: $decodedUrl");
+    return null;
+  }
+
+  // 【核心修复：带防抖的跳转】
+  void _navigateToThread(String tid) {
+    if (!mounted) return;
+
+    // 如果 2秒内 尝试打开同一个 TID，直接拦截，防止打开两次
+    final now = DateTime.now();
+    if (_lastOpenedTid == tid &&
+        _lastOpenTime != null &&
+        now.difference(_lastOpenTime!).inSeconds < 2) {
+      print("🚫 [Nav] 拦截重复跳转: $tid");
+      return;
+    }
+
+    _lastOpenedTid = tid;
+    _lastOpenTime = now;
+
+    print("🎯 [Nav] 真正执行跳转: $tid");
+
+    Future.delayed(const Duration(milliseconds: 500), () {
+      if (mounted) {
+        adaptivePush(context, ThreadDetailPage(tid: tid, subject: "正在加载..."));
+      }
+    });
+  }
+
+  // _extractTidFromUrl 保持你修正后的版本即可
 
   @override
   Widget build(BuildContext context) {

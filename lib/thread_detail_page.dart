@@ -381,12 +381,16 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
     final threadInfo = vars['thread'];
     if (threadInfo != null) {
       // --- 【核心修复代码：更新标题】 ---
-      String? realSubject = threadInfo['subject']?.toString();
+      // 1. 【关键步骤】先从 JSON 里把真正的标题拿出来
+      String realSubject = threadInfo['subject']?.toString() ?? widget.subject;
+      String authorName = threadInfo['author']?.toString() ?? "未知";
+
       if (realSubject != null && realSubject.isNotEmpty) {
         setState(() {
           _displaySubject = realSubject;
         });
       }
+
       int allReplies =
           int.tryParse(threadInfo['allreplies']?.toString() ?? '0') ?? 0;
       int ppp = int.tryParse(vars['ppp']?.toString() ?? '10') ?? 10;
@@ -394,9 +398,13 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
       // ===========================
       // 【新增】在这里加入历史记录保存
       // ===========================
-      String authorName = threadInfo['author']?.toString() ?? "未知";
+
       // 这里的 addHistory 是 fire-and-forget (不需 await)，不阻塞界面渲染
-      HistoryManager.addHistory(widget.tid, widget.subject, authorName);
+      HistoryManager.addHistory(
+        widget.tid,
+        realSubject ?? widget.subject,
+        authorName,
+      );
       print("📝 已添加历史记录: ${widget.subject}");
       // ===========================
     }
@@ -935,7 +943,7 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
     String subjectSuffix = _isNovelMode ? " (小说)" : "";
     final newMark = BookmarkItem(
       tid: widget.tid,
-      subject: widget.subject.replaceAll(" (小说)", "") + subjectSuffix,
+      subject: _displaySubject.replaceAll(" (小说)", "") + subjectSuffix,
       author: _posts.isNotEmpty ? _posts.first.author : "未知",
       authorId: _landlordUid ?? "",
       page: pageToSave,
@@ -1652,7 +1660,8 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
                 await OfflineManager().savePage(
                   tid: widget.tid,
                   page: _targetPage,
-                  subject: widget.subject,
+                  // 【核心修复】使用 _displaySubject
+                  subject: _displaySubject,
                   author: _posts.isNotEmpty ? _posts[0].author : "未知",
                   authorId: _landlordUid ?? "",
                   jsonContent: _currentRawJson!,

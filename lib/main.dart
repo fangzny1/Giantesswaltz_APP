@@ -390,6 +390,7 @@ class _MainScreenState extends State<MainScreen> {
     print("🎯 [Nav] 真正执行跳转: $tid");
 
     Future.delayed(const Duration(milliseconds: 500), () {
+      if (!mounted) return;
       if (mounted) {
         adaptivePush(context, ThreadDetailPage(tid: tid, subject: "正在加载..."));
       }

@@ -495,7 +495,9 @@ class _MainScreenState extends State<MainScreen> {
 
                     // --- 手机/左侧列表内容 ---
                     Widget mainListContent = Scaffold(
-                      backgroundColor: Colors.transparent,
+                      backgroundColor: wallpaperPath != null
+                          ? Colors.transparent
+                          : null,
                       extendBody:
                           wallpaperPath != null && transparentBarsEnabled.value,
                       body: IndexedStack(
@@ -569,7 +571,9 @@ class _MainScreenState extends State<MainScreen> {
                     // --- 平板双栏横屏 ---
                     // 注意：这里不再需要 PopScope 了，因为外层已经拦截了
                     return Scaffold(
-                      backgroundColor: Colors.transparent,
+                      backgroundColor: wallpaperPath != null
+                          ? Colors.transparent
+                          : null,
                       body: Row(
                         children: [
                           ClipRect(
@@ -619,7 +623,10 @@ class _MainScreenState extends State<MainScreen> {
                           const VerticalDivider(thickness: 1, width: 1),
                           Expanded(
                             child: Container(
-                              color: Colors.transparent,
+                              // 【修复 3】有壁纸透明，没壁纸用当前主题的背景色
+                              color: wallpaperPath != null
+                                  ? Colors.transparent
+                                  : Theme.of(context).scaffoldBackgroundColor,
                               child: ValueListenableBuilder<Widget?>(
                                 valueListenable: tabletRightRootPage,
                                 builder: (context, rootPage, _) {
@@ -2487,8 +2494,10 @@ class _ProfilePageState extends State<ProfilePage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      // 如果有壁纸，Scaffold 背景透明
-      backgroundColor: Colors.transparent, // 关键：让 ProfilePage 本身透明
+      // 【修复 4】个人中心原本被写死了 Colors.transparent，改回判断
+      backgroundColor: customWallpaperPath.value != null
+          ? Colors.transparent
+          : Theme.of(context).colorScheme.surface, // 或者设为 null
       appBar: AppBar(
         title: const Text("个人中心"),
         backgroundColor: Colors.transparent, // AppBar 也透明

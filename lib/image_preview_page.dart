@@ -123,38 +123,42 @@ class _ImagePreviewPageState extends State<ImagePreviewPage> {
                 ),
         ],
       ),
-      body: PhotoView(
-        // 【关键】ImageProvider 也要用清洗后的 Headers
-        imageProvider: CachedNetworkImageProvider(
-          widget.imageUrl,
-          headers: realHeaders,
-          cacheManager: widget.cacheManager,
-        ),
-        loadingBuilder: (context, event) => Center(
-          child: CircularProgressIndicator(
-            value: event == null
-                ? null
-                : event.cumulativeBytesLoaded / (event.expectedTotalBytes ?? 1),
+      body: Hero(
+        tag: widget.imageUrl, // 必须和上一页的 tag 完全一致
+        child: PhotoView(
+          // 【关键】ImageProvider 也要用清洗后的 Headers
+          imageProvider: CachedNetworkImageProvider(
+            widget.imageUrl,
+            headers: realHeaders,
+            cacheManager: widget.cacheManager,
           ),
-        ),
-        errorBuilder: (context, error, stackTrace) => Center(
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              const Icon(Icons.broken_image, color: Colors.grey, size: 50),
-              const SizedBox(height: 10),
-              const Text("加载失败", style: TextStyle(color: Colors.grey)),
-              const SizedBox(height: 5),
-              // 增加一个调试提示，方便看是不是 Header 导致的
-              Text(
-                widget.imageUrl.contains("giantesswaltz") ? "(站内图)" : "(外链图)",
-                style: const TextStyle(color: Colors.grey, fontSize: 10),
-              ),
-            ],
+          loadingBuilder: (context, event) => Center(
+            child: CircularProgressIndicator(
+              value: event == null
+                  ? null
+                  : event.cumulativeBytesLoaded /
+                        (event.expectedTotalBytes ?? 1),
+            ),
           ),
+          errorBuilder: (context, error, stackTrace) => Center(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const Icon(Icons.broken_image, color: Colors.grey, size: 50),
+                const SizedBox(height: 10),
+                const Text("加载失败", style: TextStyle(color: Colors.grey)),
+                const SizedBox(height: 5),
+                // 增加一个调试提示，方便看是不是 Header 导致的
+                Text(
+                  widget.imageUrl.contains("giantesswaltz") ? "(站内图)" : "(外链图)",
+                  style: const TextStyle(color: Colors.grey, fontSize: 10),
+                ),
+              ],
+            ),
+          ),
+          minScale: PhotoViewComputedScale.contained,
+          maxScale: PhotoViewComputedScale.covered * 3.0,
         ),
-        minScale: PhotoViewComputedScale.contained,
-        maxScale: PhotoViewComputedScale.covered * 3.0,
       ),
     );
   }

@@ -7,7 +7,7 @@
 
 一个为 **GiantessWaltz (GW论坛)** 量身定制的第三方移动客户端。采用 Flutter 开发，旨在提供远超手机网页版的流畅阅读体验与强大的离线功能。
 
-[![Version](https://img.shields.io/badge/version-v1.4.0-orange.svg)](https://github.com/fangzny1/Giantesswaltz_APP/releases)
+[![Version](https://img.shields.io/badge/version-v1.4.8-orange.svg)](https://github.com/fangzny1/Giantesswaltz_APP/releases)
 [![Platform](https://img.shields.io/badge/platform-Android-green.svg)](https://flutter.dev)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Python Update Server](https://img.shields.io/badge/Update%20Server-FastAPI-blue?logo=python)](https://fangzny-myupdate-gw-app.hf.space/)

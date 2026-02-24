@@ -1,3 +1,4 @@
+import 'dart:ui' as import_ui;
 import 'package:flutter/material.dart';
 import 'package:flutter_cache_manager/flutter_cache_manager.dart';
 import 'package:giantesswaltz_app/history_page.dart';
@@ -24,8 +25,11 @@ import 'package:image_picker/image_picker.dart';
 import 'package:cached_network_image/cached_network_image.dart'; // 引入缓存图片库
 import 'cache_helper.dart'; // 引入缓存助手
 import 'package:receive_sharing_intent/receive_sharing_intent.dart';
+import 'package:file_picker/file_picker.dart';
+import 'dart:ui' as ui;
+import 'package:flutter/services.dart';
 
-const String kAppVersion = "v1.4.5"; // 这是你当前的 App 版本
+const String kAppVersion = "v1.4.8"; // 这是你当前的 App 版本
 const String kUpdateUrl = "https://fangzny-myupdate-gw-app.hf.space/update";
 
 // 全局状态
@@ -77,14 +81,19 @@ void openOnTablet(BuildContext context, Widget page) {
   }
 }
 
-// 2. 右侧点击 (帖子详情)
+// 2. 右侧点击 (帖子详情/全站热点)
 void adaptivePush(BuildContext context, Widget page) {
   if (_isTabletMode(context)) {
-    // 横屏平板：在右侧导航入栈
+    // 检查右侧导航器是否存在
     if (tabletNavigatorKey.currentState != null) {
+      // 存在：正常入栈 (Push)
       tabletNavigatorKey.currentState!.push(
         MaterialPageRoute(builder: (c) => page),
       );
+    } else {
+      // 【核心修复】不存在 (说明右侧是空的)：
+      // 直接调用 openOnTablet 把这个页面作为右侧的“第一页”初始化出来
+      openOnTablet(context, page);
     }
   } else {
     // 竖屏或手机：普通跳转
@@ -226,7 +235,7 @@ class _MainScreenState extends State<MainScreen> {
   StreamSubscription<Uri>? _linkSubscription;
   StreamSubscription<List<SharedMediaFile>>?
   _intentDataStreamSubscription; // 改名更清晰
-
+  DateTime? _lastPressedAt;
   // 【新增】防抖变量
   String? _lastOpenedTid;
   DateTime? _lastOpenTime;
@@ -397,200 +406,267 @@ class _MainScreenState extends State<MainScreen> {
     });
   }
 
-  // _extractTidFromUrl 保持你修正后的版本即可
-
   @override
   Widget build(BuildContext context) {
-    return ValueListenableBuilder<String?>(
-      valueListenable: customWallpaperPath,
-      builder: (context, wallpaperPath, child) {
-        return LayoutBuilder(
-          builder: (context, constraints) {
-            // =========== 【核心修改在这里】 ===========
-            // 只有当宽度够大，且屏幕方向是横屏时，才启用分栏
-            bool isTablet =
-                constraints.maxWidth > 600 &&
-                MediaQuery.of(context).orientation == Orientation.landscape;
-            // =======================================
+    // 【核心修复】将 PopScope 放到最外层，全局拦截物理返回键和全面屏侧滑手势
+    return PopScope(
+      canPop: false, // 坚决拦截
+      onPopInvoked: (didPop) async {
+        if (didPop) return;
 
-            // 左侧手机版脚手架 (保持不变)
-            Widget mainScaffold = Scaffold(
-              backgroundColor: (wallpaperPath != null && !isTablet)
-                  ? Colors.transparent
-                  : null,
-              extendBody: wallpaperPath != null && transparentBarsEnabled.value,
-              body: Stack(
-                children: [
-                  if (wallpaperPath != null)
-                    Positioned.fill(
-                      child: Image.file(
-                        File(wallpaperPath),
-                        fit: BoxFit.cover,
-                        errorBuilder: (_, __, ___) => const SizedBox(),
-                      ),
-                    ),
-                  if (wallpaperPath != null)
-                    Positioned.fill(
-                      child: ValueListenableBuilder<ThemeMode>(
-                        valueListenable: currentTheme,
-                        builder: (context, mode, _) {
-                          bool isDark = mode == ThemeMode.dark;
-                          if (mode == ThemeMode.system) {
-                            isDark =
-                                MediaQuery.of(context).platformBrightness ==
-                                Brightness.dark;
-                          }
-                          return Container(
-                            color: isDark
-                                ? Colors.black.withOpacity(0.6)
-                                : Colors.white.withOpacity(0.3),
-                          );
-                        },
-                      ),
-                    ),
-                  IndexedStack(index: _selectedIndex, children: _pages),
-                ],
+        // 1. 如果是平板模式，且右侧详情页还可以返回，则优先返回右侧详情页
+        if (_isTabletMode(context) &&
+            tabletNavigatorKey.currentState != null &&
+            tabletNavigatorKey.currentState!.canPop()) {
+          tabletNavigatorKey.currentState!.pop();
+          return;
+        }
+
+        // 2. 手机模式 或 平板的根目录：执行双击退出逻辑
+        final now = DateTime.now();
+        if (_lastPressedAt == null ||
+            now.difference(_lastPressedAt!) > const Duration(seconds: 2)) {
+          _lastPressedAt = now;
+
+          // 清除可能残留的旧提示
+          ScaffoldMessenger.of(context).clearSnackBars();
+
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: const Text("再按一次退出", textAlign: TextAlign.center),
+              behavior: SnackBarBehavior.floating, // 悬浮样式
+              width: 160,
+              duration: const Duration(seconds: 2),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(20),
               ),
-              bottomNavigationBar: isTablet
-                  ? null
-                  : ValueListenableBuilder<bool>(
-                      valueListenable: transparentBarsEnabled,
-                      builder: (context, enabled, _) {
-                        final bool useTransparent =
-                            wallpaperPath != null && enabled;
-                        return NavigationBar(
-                          backgroundColor: useTransparent
-                              ? Colors.transparent
-                              : (wallpaperPath != null
-                                    ? (Theme.of(context).brightness ==
-                                              Brightness.dark
-                                          ? Colors.black.withOpacity(0.4)
-                                          : Colors.white.withOpacity(0.6))
-                                    : null),
-                          elevation: wallpaperPath != null ? 0 : 3,
-                          selectedIndex: _selectedIndex,
-                          onDestinationSelected: (int index) =>
-                              setState(() => _selectedIndex = index),
-                          destinations: const [
-                            NavigationDestination(
-                              icon: Icon(Icons.home_outlined),
-                              selectedIcon: Icon(Icons.home),
-                              label: '大厅',
-                            ),
-                            NavigationDestination(
-                              icon: Icon(Icons.search),
-                              label: '搜索',
-                            ),
-                            NavigationDestination(
-                              icon: Icon(Icons.person_outline),
-                              selectedIcon: Icon(Icons.person),
-                              label: '我的',
-                            ),
-                          ],
-                        );
-                      },
-                    ),
-            );
+            ),
+          );
+          return; // 成功拦截并提示
+        }
 
-            if (!isTablet) return mainScaffold;
+        // 3. 2秒内连续触发了两次返回，彻底退出 App
+        SystemNavigator.pop();
+      },
+      // 下面包裹原本的所有 UI 逻辑
+      child: ValueListenableBuilder<String?>(
+        valueListenable: customWallpaperPath,
+        builder: (context, wallpaperPath, child) {
+          return Stack(
+            children: [
+              // 1. 全局背景层
+              if (wallpaperPath != null)
+                Positioned.fill(
+                  child: Image.file(
+                    File(wallpaperPath),
+                    fit: BoxFit.cover,
+                    errorBuilder: (_, __, ___) => const SizedBox(),
+                  ),
+                ),
+              // 2. 全局遮罩层 (适配暗黑模式)
+              if (wallpaperPath != null)
+                Positioned.fill(
+                  child: ValueListenableBuilder<ThemeMode>(
+                    valueListenable: currentTheme,
+                    builder: (context, mode, _) {
+                      bool isDark = mode == ThemeMode.dark;
+                      if (mode == ThemeMode.system) {
+                        isDark =
+                            MediaQuery.of(context).platformBrightness ==
+                            Brightness.dark;
+                      }
+                      return Container(
+                        color: isDark
+                            ? Colors.black.withOpacity(0.6)
+                            : Colors.white.withOpacity(0.3),
+                      );
+                    },
+                  ),
+                ),
 
-            // === 平板双栏布局 ===
-            return Scaffold(
-              // 【新增】拦截物理返回键
-              // 如果右侧能返回，就右侧返回；否则不处理（系统会退出或挂起）
-              body: PopScope(
-                canPop: false,
-                onPopInvoked: (didPop) async {
-                  if (didPop) return;
-                  // 检查右侧导航器是否可以后退
-                  if (tabletNavigatorKey.currentState != null &&
-                      tabletNavigatorKey.currentState!.canPop()) {
-                    tabletNavigatorKey.currentState!.pop();
-                  } else {
-                    // 如果右侧到底了，或者没得退，则允许系统处理（退出App）
-                    // 这里的逻辑可以根据需要调整，比如提示再按一次退出
-                    if (context.mounted) Navigator.of(context).pop();
-                  }
-                },
-                child: Row(
-                  children: [
-                    // 左侧导航条
-                    NavigationRail(
-                      selectedIndex: _selectedIndex,
-                      onDestinationSelected: (int index) =>
-                          setState(() => _selectedIndex = index),
-                      labelType: NavigationRailLabelType.all,
-                      destinations: const [
-                        NavigationRailDestination(
-                          icon: Icon(Icons.home_outlined),
-                          selectedIcon: Icon(Icons.home),
-                          label: Text('大厅'),
-                        ),
-                        NavigationRailDestination(
-                          icon: Icon(Icons.search),
-                          label: Text('搜索'),
-                        ),
-                        NavigationRailDestination(
-                          icon: Icon(Icons.person_outline),
-                          selectedIcon: Icon(Icons.person),
-                          label: Text('我的'),
-                        ),
-                      ],
-                    ),
-                    const VerticalDivider(thickness: 1, width: 1),
+              // 3. 响应式布局内容
+              Positioned.fill(
+                child: LayoutBuilder(
+                  builder: (context, constraints) {
+                    bool isTablet =
+                        constraints.maxWidth > 600 &&
+                        MediaQuery.of(context).orientation ==
+                            Orientation.landscape;
 
-                    // 左侧列表区
-                    SizedBox(width: 380, child: mainScaffold),
-
-                    const VerticalDivider(thickness: 1, width: 1),
-
-                    // === 右侧：详情展示区 (核心修改) ===
-                    Expanded(
-                      child: Container(
-                        color: Theme.of(context).scaffoldBackgroundColor,
-                        child: ValueListenableBuilder<Widget?>(
-                          valueListenable: tabletRightRootPage, // 监听根页面变化
-                          builder: (context, rootPage, _) {
-                            if (rootPage == null) {
-                              return const Center(
-                                child: Column(
-                                  mainAxisAlignment: MainAxisAlignment.center,
-                                  children: [
-                                    Icon(
-                                      Icons.touch_app,
-                                      size: 64,
-                                      color: Colors.grey,
+                    // --- 手机/左侧列表内容 ---
+                    Widget mainListContent = Scaffold(
+                      backgroundColor: Colors.transparent,
+                      extendBody:
+                          wallpaperPath != null && transparentBarsEnabled.value,
+                      body: IndexedStack(
+                        index: _selectedIndex,
+                        children: _pages,
+                      ),
+                      // 手机底栏 (平板不显示)
+                      bottomNavigationBar: isTablet
+                          ? null
+                          : ValueListenableBuilder<bool>(
+                              valueListenable: transparentBarsEnabled,
+                              builder: (context, enabled, _) {
+                                final bool useTransparent =
+                                    wallpaperPath != null && enabled;
+                                return ClipRRect(
+                                  child: BackdropFilter(
+                                    filter: useTransparent
+                                        ? import_ui.ImageFilter.blur(
+                                            sigmaX: 10,
+                                            sigmaY: 10,
+                                          )
+                                        : import_ui.ImageFilter.blur(
+                                            sigmaX: 0,
+                                            sigmaY: 0,
+                                          ),
+                                    child: NavigationBar(
+                                      backgroundColor: useTransparent
+                                          ? Colors.transparent
+                                          : (wallpaperPath != null
+                                                ? (Theme.of(
+                                                            context,
+                                                          ).brightness ==
+                                                          Brightness.dark
+                                                      ? Colors.black
+                                                            .withOpacity(0.2)
+                                                      : Colors.white
+                                                            .withOpacity(0.4))
+                                                : null),
+                                      elevation: wallpaperPath != null ? 0 : 3,
+                                      selectedIndex: _selectedIndex,
+                                      onDestinationSelected: (int index) =>
+                                          setState(
+                                            () => _selectedIndex = index,
+                                          ),
+                                      destinations: const [
+                                        NavigationDestination(
+                                          icon: Icon(Icons.home_outlined),
+                                          selectedIcon: Icon(Icons.home),
+                                          label: '大厅',
+                                        ),
+                                        NavigationDestination(
+                                          icon: Icon(Icons.search),
+                                          label: '搜索',
+                                        ),
+                                        NavigationDestination(
+                                          icon: Icon(Icons.person_outline),
+                                          selectedIcon: Icon(Icons.person),
+                                          label: '我的',
+                                        ),
+                                      ],
                                     ),
-                                    SizedBox(height: 16),
-                                    Text(
-                                      "请在左侧选择板块或帖子",
-                                      style: TextStyle(color: Colors.grey),
-                                    ),
-                                  ],
-                                ),
-                              );
-                            }
-                            // 嵌套 Navigator！
-                            // 加上 Key 是为了当 rootPage 变了(换板块了)，强制重建 Navigator，清空历史
-                            return Navigator(
-                              key: tabletNavigatorKey, // 绑定全局 Key
-                              onGenerateRoute: (settings) {
-                                return MaterialPageRoute(
-                                  builder: (context) => rootPage,
+                                  ),
                                 );
                               },
-                            );
-                          },
-                        ),
+                            ),
+                    );
+
+                    // 手机竖屏：直接显示
+                    if (!isTablet) return mainListContent;
+
+                    // --- 平板双栏横屏 ---
+                    // 注意：这里不再需要 PopScope 了，因为外层已经拦截了
+                    return Scaffold(
+                      backgroundColor: Colors.transparent,
+                      body: Row(
+                        children: [
+                          ClipRect(
+                            child: BackdropFilter(
+                              filter: import_ui.ImageFilter.blur(
+                                sigmaX: 10.0,
+                                sigmaY: 10.0,
+                              ),
+                              child: NavigationRail(
+                                backgroundColor: wallpaperPath != null
+                                    ? (Theme.of(context).brightness ==
+                                              Brightness.dark
+                                          ? Colors.black.withOpacity(0.2)
+                                          : Colors.white.withOpacity(0.4))
+                                    : null,
+                                selectedIndex: _selectedIndex,
+                                onDestinationSelected: (int index) =>
+                                    setState(() => _selectedIndex = index),
+                                labelType: NavigationRailLabelType.all,
+                                indicatorColor: wallpaperPath != null
+                                    ? Theme.of(context)
+                                          .colorScheme
+                                          .secondaryContainer
+                                          .withOpacity(0.8)
+                                    : null,
+                                destinations: const [
+                                  NavigationRailDestination(
+                                    icon: Icon(Icons.home_outlined),
+                                    selectedIcon: Icon(Icons.home),
+                                    label: Text('大厅'),
+                                  ),
+                                  NavigationRailDestination(
+                                    icon: Icon(Icons.search),
+                                    label: Text('搜索'),
+                                  ),
+                                  NavigationRailDestination(
+                                    icon: Icon(Icons.person_outline),
+                                    selectedIcon: Icon(Icons.person),
+                                    label: Text('我的'),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                          const VerticalDivider(thickness: 1, width: 1),
+                          SizedBox(width: 380, child: mainListContent),
+                          const VerticalDivider(thickness: 1, width: 1),
+                          Expanded(
+                            child: Container(
+                              color: Colors.transparent,
+                              child: ValueListenableBuilder<Widget?>(
+                                valueListenable: tabletRightRootPage,
+                                builder: (context, rootPage, _) {
+                                  if (rootPage == null) {
+                                    return const Center(
+                                      child: Column(
+                                        mainAxisAlignment:
+                                            MainAxisAlignment.center,
+                                        children: [
+                                          Icon(
+                                            Icons.touch_app,
+                                            size: 64,
+                                            color: Colors.grey,
+                                          ),
+                                          SizedBox(height: 16),
+                                          Text(
+                                            "请在左侧选择板块或帖子",
+                                            style: TextStyle(
+                                              color: Colors.grey,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    );
+                                  }
+                                  return Navigator(
+                                    key: tabletNavigatorKey,
+                                    onGenerateRoute: (settings) {
+                                      return MaterialPageRoute(
+                                        builder: (context) => rootPage,
+                                      );
+                                    },
+                                  );
+                                },
+                              ),
+                            ),
+                          ),
+                        ],
                       ),
-                    ),
-                  ],
+                    );
+                  },
                 ),
               ),
-            );
-          },
-        );
-      },
+            ],
+          );
+        },
+      ),
     );
   }
 }
@@ -1579,13 +1655,11 @@ class _ForumHomePageState extends State<ForumHomePage> {
               itemBuilder: (context, index) {
                 final item = _hotThreads[index];
                 return GestureDetector(
-                  onTap: () => Navigator.push(
+                  onTap: () => adaptivePush(
                     context,
-                    MaterialPageRoute(
-                      builder: (c) => ThreadDetailPage(
-                        tid: item['tid'],
-                        subject: item['subject'],
-                      ),
+                    ThreadDetailPage(
+                      tid: item['tid'],
+                      subject: item['subject'],
                     ),
                   ),
                   child: Container(
@@ -2243,13 +2317,18 @@ class _ProfilePageState extends State<ProfilePage> {
     );
   }
 
-  // 【修复版】选择背景图片并永久保存
+  // 【修复版】选择背景图片（改用 FilePicker 以适配小米/澎湃等国产系统）
   Future<void> _pickWallpaper(BuildContext context) async {
-    final ImagePicker picker = ImagePicker();
-    final XFile? image = await picker.pickImage(source: ImageSource.gallery);
+    try {
+      // 使用 FilePicker，它调用的是系统文件选择器，兼容性比 ImagePicker 更好
+      FilePickerResult? result = await FilePicker.platform.pickFiles(
+        type: FileType.image, // 限制只能选图片
+      );
 
-    if (image != null) {
-      try {
+      if (result != null && result.files.single.path != null) {
+        final String originalPath = result.files.single.path!;
+        final File originalFile = File(originalPath);
+
         final prefs = await SharedPreferences.getInstance();
 
         // 1. 获取永久存储目录 (Documents)
@@ -2258,20 +2337,29 @@ class _ProfilePageState extends State<ProfilePage> {
         final File permanentFile = File('${appDir.path}/$fileName');
 
         // 2. 将选择的图片复制到永久目录
-        // 这一步是关键！防止被 CacheHelper 清理掉
-        await File(image.path).copy(permanentFile.path);
+        // FilePicker 选出来的文件通常在缓存区，必须拷走，否则过几天会被系统删掉
+        await originalFile.copy(permanentFile.path);
 
         // 3. 记录这个永久路径
         await prefs.setString('custom_wallpaper', permanentFile.path);
-        customWallpaperPath.value = permanentFile.path;
+
+        // 4. 更新全局状态
+        setState(() {
+          customWallpaperPath.value = permanentFile.path;
+        });
 
         if (context.mounted) {
           ScaffoldMessenger.of(
             context,
-          ).showSnackBar(const SnackBar(content: Text("背景设置成功！(已永久保存)")));
+          ).showSnackBar(const SnackBar(content: Text("背景设置成功！(已兼容国产系统)")));
         }
-      } catch (e) {
-        print("背景保存失败: $e");
+      }
+    } catch (e) {
+      print("背景选择失败: $e");
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text("设置失败: $e")));
       }
     }
   }

@@ -99,6 +99,10 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
   bool _isLoadingMore = false;
   bool _isLoadingPrev = false;
 
+  int _ppp = 10; // 每页显示贴数，默认10，从API获取
+  int _currentVisibleFloor = 1; // 当前视口最上方显示的楼层号
+  bool _isJumping = false; // 是否正在执行跨页跳转
+
   bool _isOnlyLandlord = false;
   bool _isReaderMode = false;
   bool _isNovelMode = false;
@@ -126,7 +130,7 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
   int _postMinChars = 0;
   int _postMaxChars = 0;
   String _userCookies = "";
-
+  int _totalPostsCount = 0; // 全局变量
   String? _currentRawJson;
 
   final Map<String, GlobalKey> _floorKeys = {};
@@ -374,6 +378,11 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
     _fid = vars['fid']?.toString();
     _formhash = vars['formhash']?.toString();
 
+    // 更新每页数量
+    if (vars['ppp'] != null) {
+      _ppp = int.tryParse(vars['ppp'].toString()) ?? 10;
+    }
+
     if (vars['postminchars'] != null) {
       _postMinChars = int.tryParse(vars['postminchars'].toString()) ?? 0;
     }
@@ -384,6 +393,8 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
       // 1. 【关键步骤】先从 JSON 里把真正的标题拿出来
       String realSubject = threadInfo['subject']?.toString() ?? widget.subject;
       String authorName = threadInfo['author']?.toString() ?? "未知";
+      _totalPostsCount =
+          (int.tryParse(threadInfo['allreplies']?.toString() ?? '0') ?? 0) + 1;
 
       if (realSubject != null && realSubject.isNotEmpty) {
         setState(() {
@@ -766,35 +777,24 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
   }
 
   void _toggleOnlyLandlord() {
-    // 如果还没获取到楼主 ID，尝试从当前显示的第一帖里抓一个
     if (_landlordUid == null && _posts.isNotEmpty) {
       _landlordUid = _posts.first.authorId;
     }
-
-    if (_landlordUid == null) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text("暂未获取到楼主信息")));
-      return;
-    }
+    if (_landlordUid == null) return;
 
     setState(() {
       _isOnlyLandlord = !_isOnlyLandlord;
-      // 逻辑同步：如果关闭只看楼主，自然也得关掉小说模式
-      if (!_isOnlyLandlord) _isNovelMode = false;
-
-      // 【关键】切换模式必须重置所有状态
-      _posts = [];
-      _targetPage = 1;
+      _posts = []; // 清空数据
+      _targetPage = 1; // 重置到第一页
       _minPage = 1;
-      _totalPages = 1;
       _isLoading = true;
       _hasPerformedInitialJump = false;
     });
 
-    if (_isFabOpen) _toggleFab();
+    if (_scrollController.hasClients) {
+      _scrollController.jumpTo(0);
+    }
 
-    // 重新加载第一页，这时 _isOnlyLandlord 为 true，URL 会带上作者 ID
     _loadPage(1, resetScroll: true);
   }
 
@@ -1128,6 +1128,36 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
     );
   }
 
+  void _updateCurrentFloorValue() {
+    // 如果正在拖动滑块，或者列表为空，就不计算了
+    if (!_scrollController.hasClients || _posts.isEmpty || _isScrubbingScroll)
+      return;
+
+    double offset = _scrollController.offset;
+    double maxScroll = _scrollController.position.maxScrollExtent;
+    // 简单的线性插值计算
+    double scrollPercent = (offset / maxScroll).clamp(0.0, 1.0);
+
+    // 当前页的起始楼层 (例如第2页开始就是11楼)
+    int startFloor = (_targetPage - 1) * 10;
+
+    // 估算当前看的是第几条 post
+    int currentPostIndex = (scrollPercent * _posts.length).round();
+
+    // 最终结果：起始楼层 + 当前页偏移
+    int floorOnScreen = startFloor + currentPostIndex;
+
+    // 更新 Slider 变量
+    if ((_dragValue ?? 0).round() != floorOnScreen) {
+      setState(() {
+        _dragValue = floorOnScreen.toDouble().clamp(
+          0.0,
+          (_totalPostsCount - 1).toDouble(),
+        );
+      });
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     Color bgColor = _isReaderMode
@@ -1156,6 +1186,11 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
               _hideController.forward();
             });
           }
+          // --- 【新增】实时更新进度条值的逻辑 ---
+          // 当用户停止滚动或者正在滚动时，计算当前大概在第几楼
+          if (notification is ScrollUpdateNotification) {
+            _updateCurrentFloorValue();
+          }
           return true;
         },
         child: GestureDetector(
@@ -1171,6 +1206,7 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
               }
             });
           },
+
           child: Stack(
             children: [
               CustomScrollView(
@@ -1237,29 +1273,27 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
         begin: const Offset(0, 1),
         end: Offset.zero,
       ).animate(_hideController),
-      // 1. 最外层只用一个 Material 提供阴影和背景
       child: Material(
-        elevation: 20, // 稍微加深阴影
+        elevation: 20,
         color: Theme.of(context).colorScheme.surface,
-        // 顶部加个圆角，看起来更像一个面板
         shape: const RoundedRectangleBorder(
           borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
         ),
         child: SafeArea(
           top: false,
           child: Column(
-            mainAxisSize: MainAxisSize.min, // 关键：只占用必要的高度
+            mainAxisSize: MainAxisSize.min,
             children: [
               // === 第一部分：进度条 ===
               SizedBox(
-                height: 40, // 限制进度条高度
+                height: 40,
                 child: Row(
                   children: [
                     const SizedBox(width: 16),
                     Expanded(
                       child: SliderTheme(
                         data: SliderTheme.of(context).copyWith(
-                          trackHeight: 4.0, // 轨道稍微细一点，更精致
+                          trackHeight: 4.0,
                           thumbShape: const RoundSliderThumbShape(
                             enabledThumbRadius: 8.0,
                           ),
@@ -1274,42 +1308,85 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
                         child: AnimatedBuilder(
                           animation: _scrollController,
                           builder: (context, child) {
-                            int count = _posts.length;
-                            if (count == 0)
-                              return const Slider(value: 0, onChanged: null);
-                            double uiVal =
-                                (_isScrubbingScroll && _dragValue != null)
-                                ? _dragValue!
-                                : (_dragValue ?? 0.0).clamp(
-                                    0.0,
-                                    (count - 1).toDouble(),
-                                  );
+                            // 1. 计算总楼层数 (如果还没加载到总数，暂用当前列表长度)
+                            int totalCount = _totalPostsCount > 0
+                                ? _totalPostsCount
+                                : (_posts.isNotEmpty ? _posts.length : 1);
+
+                            // 2. 确保滑块值在合法范围内
+                            double uiVal = (_dragValue ?? 0.0).clamp(
+                              0.0,
+                              (totalCount - 1).toDouble(),
+                            );
 
                             return Slider(
                               value: uiVal,
                               min: 0.0,
-                              max: (count - 1).toDouble(),
-                              divisions: count > 1 ? count - 1 : 1,
+                              max: (totalCount - 1).toDouble(),
+                              divisions: totalCount > 1 ? totalCount - 1 : 1,
                               label: "${uiVal.round() + 1}楼",
                               onChangeStart: (v) => setState(() {
                                 _isScrubbingScroll = true;
                                 _dragValue = v;
                               }),
                               onChanged: (v) {
+                                // 拖动时只更新 UI，不触发加载
                                 setState(() => _dragValue = v);
-                                _scrollController.scrollToIndex(
-                                  v.round(),
-                                  preferPosition: AutoScrollPosition.begin,
-                                  duration: const Duration(milliseconds: 50),
-                                );
                               },
                               onChangeEnd: (v) {
                                 setState(() => _isScrubbingScroll = false);
-                                _scrollController.scrollToIndex(
-                                  v.round(),
-                                  preferPosition: AutoScrollPosition.begin,
-                                  duration: const Duration(milliseconds: 300),
+
+                                // 【这里定义 targetFloor，解决了你的报错】
+                                int targetFloor = v.round() + 1;
+
+                                // 估算目标页码 (Discuz 默认每页 10 楼)
+                                int ppp = 10;
+                                int jumpToPage =
+                                    ((targetFloor - 1) / ppp).floor() + 1;
+
+                                print(
+                                  "🎯 跳转目标: $targetFloor楼 -> 第 $jumpToPage 页",
                                 );
+
+                                if (jumpToPage != _targetPage) {
+                                  // 情况 A：跨页跳转 -> 清空数据，重新加载那一页
+                                  setState(() {
+                                    _posts = []; // 清空防跳变
+                                    _isLoading = true;
+                                  });
+                                  // 重置滚动位置到顶部
+                                  if (_scrollController.hasClients)
+                                    _scrollController.jumpTo(0);
+
+                                  _loadPage(jumpToPage, resetScroll: true);
+                                } else {
+                                  // 情况 B：就在当前页 -> 寻找对应的楼层并滚动
+                                  int indexInList = _posts.indexWhere((p) {
+                                    // 提取楼层号里的数字进行比对
+                                    String rawFloor = p.floor.replaceAll(
+                                      RegExp(r'[^0-9]'),
+                                      '',
+                                    );
+                                    return rawFloor == targetFloor.toString();
+                                  });
+
+                                  if (indexInList != -1) {
+                                    _scrollController.scrollToIndex(
+                                      indexInList,
+                                      preferPosition: AutoScrollPosition.begin,
+                                      duration: const Duration(
+                                        milliseconds: 500,
+                                      ),
+                                    );
+                                  } else {
+                                    // 如果没找到（可能是还没加载完），简单跳到顶部或底部
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      const SnackBar(
+                                        content: Text("该楼层在当前页未找到，可能已被屏蔽"),
+                                      ),
+                                    );
+                                  }
+                                }
                               },
                             );
                           },
@@ -1346,13 +1423,12 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
                 color: Theme.of(context).dividerColor.withOpacity(0.1),
               ),
 
-              // === 第二部分：操作按钮 ===
+              // === 第二部分：操作按钮 (保持不变) ===
               Container(
                 height: 56,
                 padding: const EdgeInsets.symmetric(horizontal: 12),
                 child: Row(
                   children: [
-                    // 1. 模拟输入框 (圆角矩形)
                     Expanded(
                       child: GestureDetector(
                         onTap: () => _onReply(null),
@@ -1386,18 +1462,13 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
                         ),
                       ),
                     ),
-
                     const SizedBox(width: 12),
-
-                    // 2. 点赞 (带动画效果的图标)
                     IconButton(
                       icon: const Icon(Icons.thumb_up_alt_outlined),
                       iconSize: 22,
                       tooltip: "支持/顶帖",
                       onPressed: _handleRecommend,
                     ),
-
-                    // 3. 收藏
                     IconButton(
                       icon: Icon(
                         _isFavorited
@@ -1409,12 +1480,8 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
                       tooltip: "收藏",
                       onPressed: _handleFavorite,
                     ),
-
-                    // 4. 更多菜单
                     IconButton(
-                      icon: const Icon(
-                        Icons.grid_view_rounded,
-                      ), // 换个图标，更像“更多功能”
+                      icon: const Icon(Icons.grid_view_rounded),
                       iconSize: 22,
                       onPressed: _toggleFab,
                     ),
@@ -1981,9 +2048,14 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
                   children: [
                     GestureDetector(
                       onTap: () => _jumpToUser(post),
-                      child: CircleAvatar(
-                        backgroundImage: NetworkImage(post.avatarUrl),
-                        radius: 18,
+                      // 【修改点】包裹 Hero
+                      child: Hero(
+                        tag:
+                            "avatar_${post.authorId}_${post.pid}", // 关键：加上 pid 保证唯一
+                        child: CircleAvatar(
+                          backgroundImage: NetworkImage(post.avatarUrl),
+                          radius: 18,
+                        ),
                       ),
                     ),
                     const SizedBox(width: 12),
@@ -2326,15 +2398,19 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
     // 4. 获取动态 Header (上一轮加的逻辑)
     Map<String, String> dynamicHeaders = _getHeadersForUrl(fullUrl);
 
-    return RetryableImage(
-      imageUrl: fullUrl,
-      cacheManager: globalImageCache,
-      headers: dynamicHeaders,
-      onTap: (u) => Navigator.push(
-        context,
-        MaterialPageRoute(
-          builder: (c) =>
-              ImagePreviewPage(imageUrl: u, headers: dynamicHeaders),
+    return Hero(
+      tag: fullUrl, // 使用 URL 作为唯一 Tag
+      child: RetryableImage(
+        imageUrl: fullUrl,
+        cacheManager: globalImageCache,
+        headers: dynamicHeaders,
+        onTap: (u) => Navigator.push(
+          context,
+          // 下面这行稍微改一下，把 MaterialPageRoute 改成 PageRouteBuilder 会更丝滑，不过默认的也行
+          MaterialPageRoute(
+            builder: (c) =>
+                ImagePreviewPage(imageUrl: u, headers: dynamicHeaders),
+          ),
         ),
       ),
     );

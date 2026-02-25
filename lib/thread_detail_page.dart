@@ -1776,13 +1776,6 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
           const SizedBox(height: 12),
           if (!_isNovelMode) ...[
             _buildFabItem(
-              icon: _isOnlyLandlord ? Icons.people : Icons.person,
-              label: _isOnlyLandlord ? "看全部" : "只看楼主",
-              color: _isOnlyLandlord ? Colors.orange : null,
-              onTap: _toggleOnlyLandlord,
-            ),
-            const SizedBox(height: 12),
-            _buildFabItem(
               icon: _isReaderMode ? Icons.view_list : Icons.article,
               label: _isReaderMode ? "列表" : "纯净阅读",
               onTap: _toggleReaderMode,

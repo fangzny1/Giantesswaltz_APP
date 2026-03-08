@@ -120,6 +120,7 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
   bool _isBarsVisible = true;
 
   late int _minPage;
+  late int _maxPage; // 【新增】记录当前列表加载的最大页码
   int _targetPage = 1;
   int _totalPages = 1;
 
@@ -143,7 +144,9 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
   @override
   void initState() {
     super.initState();
+
     _minPage = widget.initialPage;
+    _maxPage = widget.initialPage; // 【新增】
     _targetPage = widget.initialPage;
     // 初始时使用传进来的标题（可能是“跳转中...”，也可能是正常的标题）
     _displaySubject = widget.subject;
@@ -468,16 +471,32 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
     }
 
     setState(() {
-      if (_targetPage == widget.initialPage && _posts.isEmpty) {
+      if (_posts.isEmpty) {
+        // 这是刚进页面或者发生了大跨度跳转（UI层的对话框跳转清空了_posts）
         _posts = newPosts;
+        _minPage = _targetPage;
+        _maxPage = _targetPage;
       } else if (_targetPage < _minPage) {
+        // 向上加载（加载上一页），插入到最前面
+        newPosts.removeWhere(
+          (p) => _posts.any((old) => old.pid == p.pid),
+        ); // 终极防御：绝不塞入重复PID
         _posts.insertAll(0, newPosts);
         _minPage = _targetPage;
+      } else if (_targetPage > _maxPage) {
+        // 向下加载（加载下一页），追加到最后面
+        for (var p in newPosts) {
+          if (!_posts.any((old) => old.pid == p.pid)) _posts.add(p);
+        }
+        _maxPage = _targetPage;
       } else {
+        // 加载了列表范围中间的页（比如刷新、异常重试时），安全合并即可，不修改min/max
         for (var p in newPosts) {
           if (!_posts.any((old) => old.pid == p.pid)) _posts.add(p);
         }
       }
+      _isLoadingPrev = false; // 确保清除加载状态
+      _isLoadingMore = false;
     });
 
     if (widget.initialTargetFloor != null || widget.initialTargetPid != null) {
@@ -619,11 +638,12 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
     if (now.difference(_lastAutoPageTurn).inMilliseconds < 800) return;
 
     if (position.pixels >= position.maxScrollExtent - 50) {
-      if (_targetPage < _totalPages) {
+      // 【修改点】滑动到底部时，对比 _maxPage
+      if (_maxPage < _totalPages) {
         _lastAutoPageTurn = now;
         if (!_isLoadingMore) setState(() => _isLoadingMore = true);
         WidgetsBinding.instance.addPostFrameCallback(
-          (_) => _loadPage(_targetPage + 1),
+          (_) => _loadPage(_maxPage + 1), // 加载底部以下的页
         );
       }
     }
@@ -631,26 +651,28 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
 
   void _loadNext() {
     if (_isLoading || _isLoadingMore) return;
-    if (_targetPage >= _totalPages) {
+    // 【修改点】向下加载永远比对 _maxPage
+    if (_maxPage >= _totalPages) {
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(const SnackBar(content: Text("已经是最后一页了")));
       return;
     }
     setState(() => _isLoadingMore = true);
-    _loadPage(_targetPage + 1);
+    _loadPage(_maxPage + 1); // 加载底部以下的页
   }
 
   void _loadPrev() {
     if (_isLoading || _isLoadingPrev) return;
-    if (_targetPage <= 1) {
+    // 【修改点】向上加载永远比对 _minPage
+    if (_minPage <= 1) {
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(const SnackBar(content: Text("已经是第一页了")));
       return;
     }
     setState(() => _isLoadingPrev = true);
-    _loadPage(_targetPage - 1);
+    _loadPage(_minPage - 1); // 加载顶部以上的页
   }
 
   void _onReply(String? pid) {

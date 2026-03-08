@@ -39,82 +39,149 @@ class _FavoritePageState extends State<FavoritePage> {
     _loadFavorites();
   }
 
+  bool _isFetchingAll = false; // 防止重复并发加载
   // ==========================================
-  // 【核心优化】支持自动续命的加载逻辑
+  // 【核心优化】后台自动静默获取所有分页数据
   // ==========================================
-  Future<void> _loadFavorites({bool isRetry = false}) async {
-    setState(() {
-      _isLoading = true;
-      _errorMsg = "";
-    });
+  Future<void> _loadFavorites({bool isRetry = false, int startPage = 1}) async {
+    if (_isFetchingAll && startPage == 1 && !isRetry) return;
+    _isFetchingAll = true;
 
-    final String url =
-        '${currentBaseUrl.value}home.php?mod=space&do=favorite&view=me&mobile=no';
-
-    try {
-      String html = await HttpService().getHtml(url);
-
-      // 1. 检查是否撞到了 Cloudflare
-      if (html.contains("challenges.cloudflare.com") ||
-          html.contains("Verify you are human")) {
-        // 如果没重试过，尝试续命一下（有时是因为 Cookie 太旧导致 CF 触发）
-        if (!isRetry) {
-          await HttpService().reviveSession();
-          return _loadFavorites(isRetry: true);
-        }
-        setState(() {
-          _isLoading = false;
-          _errorMsg = "触发安全验证，请在主页手动刷新";
-        });
-        return;
-      }
-
-      // 2. 检查是否掉登录 (这是你原来的逻辑，我做增强)
-      // 如果 HTML 里包含 login 或者没有找到 favorite_ul 列表，通常说明没登录或 Cookie 只有一半
-      bool isInvalid =
-          html.contains("尚未登录") ||
-          html.contains('id="ls_username"') || // 桌面版登录框特征
-          (html.contains("login") && !html.contains("favorite_ul"));
-
-      if (isInvalid) {
-        if (!isRetry) {
-          print("💨 [Favorite] 检测到登录失效，尝试自动续命...");
-          // 显示一个小提示
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(
-                content: Text("正在同步收藏夹数据..."),
-                duration: Duration(milliseconds: 800),
-              ),
-            );
-          }
-
-          await HttpService().reviveSession();
-          // 续命后重试
-          return _loadFavorites(isRetry: true);
-        } else {
-          setState(() {
-            _isLoading = false;
-            _errorMsg = "登录状态失效，请重新登录";
-          });
-          return;
-        }
-      }
-
-      // 3. 解析 HTML
-      _parseHtml(html);
-    } catch (e) {
-      // 网络错误也试一次续命
-      if (!isRetry) {
-        await HttpService().reviveSession();
-        return _loadFavorites(isRetry: true);
-      }
-      print("❌ 收藏夹加载异常: $e");
+    if (startPage == 1) {
       setState(() {
-        _isLoading = false;
-        _errorMsg = "加载失败，请检查网络";
+        _isLoading = true;
+        _errorMsg = "";
+        if (!isRetry) _favorites = []; // 重试时不丢失已加载数据
       });
     }
+
+    int currentPage = startPage;
+    bool hasNextPage = true;
+
+    while (hasNextPage && mounted) {
+      final String url =
+          '${currentBaseUrl.value}home.php?mod=space&do=favorite&view=me&mobile=no&page=$currentPage';
+
+      try {
+        String html = await HttpService().getHtml(url);
+
+        // 1. 检查是否撞到了 Cloudflare
+        if (html.contains("challenges.cloudflare.com") ||
+            html.contains("Verify you are human")) {
+          if (!isRetry) {
+            await HttpService().reviveSession();
+            _isFetchingAll = false;
+            return _loadFavorites(isRetry: true, startPage: currentPage);
+          }
+          if (currentPage == 1) {
+            setState(() {
+              _isLoading = false;
+              _errorMsg = "当前线路触发了安全验证，请在浏览器或主页强力加载一次。";
+            });
+          }
+          break;
+        }
+
+        // 2. 检查是否掉登录
+        if (html.contains("尚未登录") ||
+            (html.contains("login") && !html.contains("favorite_ul"))) {
+          if (!isRetry) {
+            print("💨 [Favorite] 检测到登录失效，尝试全局续命...");
+            if (currentPage == 1 && mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(
+                  content: Text("正在同步收藏夹数据..."),
+                  duration: Duration(milliseconds: 800),
+                ),
+              );
+            }
+            await HttpService().reviveSession();
+            _isFetchingAll = false;
+            return _loadFavorites(isRetry: true, startPage: currentPage);
+          } else {
+            if (currentPage == 1) {
+              setState(() {
+                _isLoading = false;
+                _errorMsg = "登录态同步失败，请尝试重新登录";
+              });
+            }
+            break;
+          }
+        }
+
+        // 3. 数据解析逻辑（融合原 _parseHtml 逻辑，直接追加数据）
+        var document = html_parser.parse(html);
+        List<FavoriteItem> newItems = [];
+
+        var items = document.querySelectorAll('ul[id="favorite_ul"] li');
+        for (var item in items) {
+          try {
+            var link = item.querySelector('a[href*="tid="]');
+            if (link == null) continue;
+
+            String title = link.text.trim();
+            String href = link.attributes['href'] ?? "";
+            String tid = RegExp(r'tid=(\d+)').firstMatch(href)?.group(1) ?? "";
+            String desc = item.querySelector('.xg1')?.text ?? "";
+            String favid = "";
+            var delLink = item.querySelector('a[href*="op=delete"]');
+            if (delLink != null) {
+              String delHref = delLink.attributes['href'] ?? "";
+              favid =
+                  RegExp(r'favid=(\d+)').firstMatch(delHref)?.group(1) ?? "";
+            }
+
+            if (tid.isNotEmpty) {
+              newItems.add(
+                FavoriteItem(
+                  tid: tid,
+                  title: title,
+                  description: desc,
+                  favid: favid,
+                ),
+              );
+            }
+          } catch (e) {
+            continue;
+          }
+        }
+
+        // 局部更新 UI 列表
+        if (mounted) {
+          setState(() {
+            _favorites.addAll(newItems);
+            if (currentPage == 1) {
+              _isLoading = false;
+              if (_favorites.isEmpty) _errorMsg = "收藏夹空空如也";
+            }
+          });
+        }
+
+        // 4. 检查是否有下一页
+        var nextBtn = document.querySelector('.pg .nxt');
+        if (nextBtn != null) {
+          currentPage++; // 有下一页，继续 while 循环
+          isRetry = false; // 翻页成功后清除重试标记，允许下一页在出错时进行重试
+        } else {
+          hasNextPage = false; // 到底了，退出循环
+        }
+      } catch (e) {
+        print("❌ 收藏夹加载异常: $e");
+        if (!isRetry) {
+          await HttpService().reviveSession();
+          _isFetchingAll = false;
+          return _loadFavorites(isRetry: true, startPage: currentPage);
+        }
+        if (currentPage == 1 && mounted) {
+          setState(() {
+            _isLoading = false;
+            _errorMsg = "加载失败，请检查网络连接";
+          });
+        }
+        break; // 中断加载循环
+      }
+    }
+    _isFetchingAll = false; // 全部任务完成
   }
 
   void _parseHtml(String html) {

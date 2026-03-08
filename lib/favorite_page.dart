@@ -6,6 +6,9 @@ import 'forum_model.dart';
 import 'http_service.dart';
 import 'main.dart'; // 访问 currentBaseUrl
 import 'dart:io';
+// 在顶部 import 区域补充这两个（如果有就不用管）
+import 'package:dio/dio.dart';
+import 'login_page.dart'; // 访问 kUserAgent
 
 class FavoriteItem {
   final String tid;
@@ -32,7 +35,7 @@ class _FavoritePageState extends State<FavoritePage> {
   List<FavoriteItem> _favorites = [];
   bool _isLoading = true;
   String _errorMsg = "";
-
+  String _formhash = ""; // 【新增】用来保存删除必须的密钥
   @override
   void initState() {
     super.initState();
@@ -65,6 +68,19 @@ class _FavoritePageState extends State<FavoritePage> {
       try {
         String html = await HttpService().getHtml(url);
 
+        // --- 【新增代码：偷取 formhash】 ---
+        if (_formhash.isEmpty) {
+          var match = RegExp(
+            r'name="formhash" value="([^"]+)"',
+          ).firstMatch(html);
+          if (match != null) {
+            _formhash = match.group(1)!;
+          } else {
+            var match2 = RegExp(r'formhash=([a-zA-Z0-9]{8})').firstMatch(html);
+            if (match2 != null) _formhash = match2.group(1)!;
+          }
+        }
+        // -----------------------------------
         // 1. 检查是否撞到了 Cloudflare
         if (html.contains("challenges.cloudflare.com") ||
             html.contains("Verify you are human")) {
@@ -236,29 +252,80 @@ class _FavoritePageState extends State<FavoritePage> {
   }
 
   // ==========================================
-  // 【优化】删除收藏逻辑
+  // 【优化】通过 POST 提交表单完成删除，并实现本地秒删
   // ==========================================
   Future<void> _deleteFavorite(String favid) async {
     if (favid.isEmpty) return;
 
-    // 显示简单的加载提示
+    // 依然使用原有 UI 提示
     ScaffoldMessenger.of(
       context,
     ).showSnackBar(const SnackBar(content: Text("正在取消收藏...")));
 
-    // 构造删除 URL
+    // 构造请求 URL (保留 inajax=1 返回精简 XML)
     final String url =
         "${currentBaseUrl.value}home.php?mod=spacecp&ac=favorite&op=delete&favid=$favid&type=all&inajax=1";
 
     try {
-      // 发起删除请求
-      await HttpService().getHtml(url);
-      // 成功后本地刷新
-      _loadFavorites();
+      // 1. 准备请求头
+      final prefs = await SharedPreferences.getInstance();
+      String cookie = prefs.getString('saved_cookie_string') ?? "";
+
+      var dio = Dio();
+
+      // 2. 完美模拟你在网页端抓取到的表单 (POST Payload)
+      var formData = FormData.fromMap({
+        'referer':
+            '${currentBaseUrl.value}home.php?mod=space&do=favorite&view=me',
+        'deletesubmit': 'true',
+        'deletesubmitbtn': 'true', // 确认按钮
+        'formhash': _formhash, // 最核心的安全密钥
+        'handlekey': 'a_delete_$favid',
+      });
+
+      // 3. 发送 POST 请求
+      var response = await dio.post(
+        url,
+        data: formData,
+        options: Options(
+          headers: {
+            'Cookie': cookie,
+            'User-Agent': kUserAgent,
+            'Referer':
+                '${currentBaseUrl.value}home.php?mod=space&do=favorite&view=me',
+          },
+        ),
+      );
+
+      // 4. 判断并实现 UI 层的“秒删”
+      String respStr = response.data.toString();
+      // Discuz 成功时通常返回包含 succeed 或 "操作成功" 的数据
+      if (respStr.contains("succeed") ||
+          respStr.contains("成功") ||
+          respStr.contains("删除")) {
+        if (mounted) {
+          setState(() {
+            // 直接在本地列表中剔除这一项，瞬间刷新 UI，再也不用苦等重新加载！
+            _favorites.removeWhere((item) => item.favid == favid);
+            if (_favorites.isEmpty) _errorMsg = "收藏夹空空如也";
+          });
+          // 隐藏之前的 SnackBar 并提示成功
+          ScaffoldMessenger.of(context).hideCurrentSnackBar();
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(const SnackBar(content: Text("已取消收藏")));
+        }
+      } else {
+        throw "服务器未返回成功标志";
+      }
     } catch (e) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text("删除失败")));
+      print("删除异常: $e");
+      if (mounted) {
+        ScaffoldMessenger.of(context).hideCurrentSnackBar();
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text("取消失败，请检查网络或刷新重试")));
+      }
     }
   }
 

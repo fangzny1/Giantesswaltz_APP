@@ -1,11 +1,13 @@
 import 'dart:convert';
 import 'dart:io';
+import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_widget_from_html/flutter_widget_from_html.dart';
 import 'package:giantesswaltz_app/cloudflare_solver.dart';
 import 'package:giantesswaltz_app/history_manager.dart';
+import 'package:html/parser.dart' as html_parser;
 import 'package:url_launcher/url_launcher.dart'; // 现在已正确使用
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:cached_network_image/cached_network_image.dart';
@@ -447,12 +449,26 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
           p['attachments'],
         );
         String attachHtml = "<br/>";
+        String fileHtml = ""; // 【新增】专门存放普通文件的 HTML
+
         attachments.forEach((key, attach) {
-          String fullImgUrl = "${attach['url']}${attach['attachment']}";
-          attachHtml +=
-              '<img src="$fullImgUrl" style="max-width:100%;" /><br/>';
+          // Discuz API 中，isimage 为 "1" 或 "-1" 是图片，"0" 是普通文件
+          String isImage = attach['isimage']?.toString() ?? "0";
+          String fullUrl = "${attach['url']}${attach['attachment']}";
+
+          if (isImage == "1" || isImage == "-1") {
+            // 是图片，照常拼接
+            attachHtml += '<img src="$fullUrl" style="max-width:100%;" /><br/>';
+          } else {
+            // 【新增】是普通附件 (如 txt, zip 等)
+            String filename = attach['filename']?.toString() ?? "未知附件";
+            String size = attach['attachsize']?.toString() ?? "未知大小";
+            // 我们塞入一个自定义的 <gn-file> 标签，等下让 Flutter 把它变成漂亮的按钮
+            fileHtml +=
+                '<gn-file url="$fullUrl" name="$filename" size="$size"></gn-file><br/>';
+          }
         });
-        content += attachHtml;
+        content += attachHtml + fileHtml; // 合并图片和附件
       }
 
       newPosts.add(
@@ -839,23 +855,81 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
       return;
     }
     try {
-      String url;
       if (_isFavorited && _favid != null) {
-        url =
-            "${currentBaseUrl.value}home.php?mod=spacecp&ac=favorite&op=delete&favid=$_favid&type=all";
-      } else {
-        final String? addUrl = await _fetchFavoriteAddUrl();
-        if (addUrl == null) return;
-        url = addUrl;
-      }
-      await HttpService().getHtml(url);
-      if (mounted) {
+        // ==========================================
+        // 【核心修复】取消收藏必须用 POST 和 formhash
+        // ==========================================
         ScaffoldMessenger.of(
           context,
-        ).showSnackBar(SnackBar(content: Text(_isFavorited ? "已取消收藏" : "已收藏")));
-        _refreshFavoriteStatus();
+        ).showSnackBar(const SnackBar(content: Text("正在取消收藏...")));
+
+        final String url =
+            "${currentBaseUrl.value}home.php?mod=spacecp&ac=favorite&op=delete&favid=$_favid&type=all&inajax=1";
+
+        // 构造和 favorite_page 一模一样的表单数据
+        var formData = FormData.fromMap({
+          'referer':
+              '${currentBaseUrl.value}home.php?mod=space&do=favorite&view=me',
+          'deletesubmit': 'true',
+          'deletesubmitbtn': 'true',
+          'formhash': _formhash ?? "", // 使用详情页自带的 formhash
+          'handlekey': 'a_delete_$_favid',
+        });
+
+        var response = await Dio().post(
+          url,
+          data: formData,
+          options: Options(
+            headers: {
+              'Cookie': _userCookies,
+              'User-Agent': kUserAgent,
+              'Referer':
+                  '${currentBaseUrl.value}home.php?mod=space&do=favorite&view=me',
+            },
+          ),
+        );
+
+        String respStr = response.data.toString();
+        if (respStr.contains("succeed") ||
+            respStr.contains("成功") ||
+            respStr.contains("删除")) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).hideCurrentSnackBar();
+            ScaffoldMessenger.of(
+              context,
+            ).showSnackBar(const SnackBar(content: Text("已取消收藏")));
+            setState(() {
+              _isFavorited = false;
+              _favid = null; // 删掉后清空凭证
+            });
+          }
+        } else {
+          throw "服务器未返回成功标志";
+        }
+      } else {
+        // ==========================================
+        // 原有的添加收藏逻辑
+        // ==========================================
+        final String? addUrl = await _fetchFavoriteAddUrl();
+        if (addUrl == null) return;
+        await HttpService().getHtml(addUrl);
+        if (mounted) {
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(const SnackBar(content: Text("已收藏")));
+          // 关键：收藏成功后，重新查一遍列表，把刚刚生成的 favid 拿过来，以便后续可以立刻取消
+          _refreshFavoriteStatus();
+        }
       }
-    } catch (_) {}
+    } catch (e) {
+      print("收藏操作异常: $e");
+      if (mounted) {
+        ScaffoldMessenger.of(context).hideCurrentSnackBar();
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text("操作失败，请检查网络")));
+      }
+    }
   }
 
   Future<String?> _fetchFavoriteAddUrl() async {
@@ -870,7 +944,32 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
         '${currentBaseUrl.value}home.php?mod=space&do=favorite&view=me&mobile=no',
       );
       if (html.contains('tid=${widget.tid}')) {
-        setState(() => _isFavorited = true);
+        // 【核心修复】不仅要点亮星星，还要把这个帖子的 favid 偷出来用于取消
+        var document = html_parser.parse(html);
+        var items = document.querySelectorAll('ul[id="favorite_ul"] li');
+
+        for (var item in items) {
+          var link = item.querySelector('a[href*="tid=${widget.tid}"]');
+          if (link != null) {
+            var delLink = item.querySelector('a[href*="op=delete"]');
+            if (delLink != null) {
+              String delHref = delLink.attributes['href'] ?? "";
+              var match = RegExp(r'favid=(\d+)').firstMatch(delHref);
+              if (match != null) {
+                if (mounted) {
+                  setState(() {
+                    _isFavorited = true;
+                    _favid = match.group(1);
+                  });
+                }
+                print("🔍 [Detail] 成功获取当前帖子的 favid: $_favid");
+                break;
+              }
+            }
+          }
+        }
+      } else {
+        if (mounted) setState(() => _isFavorited = false);
       }
     } catch (_) {}
   }
@@ -2187,6 +2286,106 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
 
                     // ==================== 2. 组件构建器 (解决图标和按钮) ====================
                     customWidgetBuilder: (element) {
+                      // ---> 【新增】解析普通附件并生成下载卡片 <---
+                      if (element.localName == 'gn-file') {
+                        String url = element.attributes['url'] ?? '';
+                        String name = element.attributes['name'] ?? '附件';
+                        String size = element.attributes['size'] ?? '';
+
+                        bool isDark =
+                            Theme.of(context).brightness == Brightness.dark;
+                        return Container(
+                          margin: const EdgeInsets.symmetric(vertical: 8),
+                          child: InkWell(
+                            borderRadius: BorderRadius.circular(8),
+                            onTap: () async {
+                              // 调用系统外部浏览器下载，这样会自动保存到手机的 Downloads 目录
+                              if (url.isNotEmpty) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(content: Text("正在调用系统下载: $name")),
+                                );
+                                await launchUrl(
+                                  Uri.parse(url),
+                                  mode: LaunchMode.externalApplication,
+                                );
+                              }
+                            },
+                            child: Container(
+                              padding: const EdgeInsets.all(12),
+                              decoration: BoxDecoration(
+                                color: isDark
+                                    ? const Color(0xFF2C2C2C)
+                                    : Colors.blueGrey.withOpacity(0.05),
+                                borderRadius: BorderRadius.circular(8),
+                                border: Border.all(
+                                  color: isDark
+                                      ? Colors.white12
+                                      : Colors.blueGrey.withOpacity(0.2),
+                                ),
+                              ),
+                              child: Row(
+                                children: [
+                                  // 附件图标
+                                  Icon(
+                                    name.endsWith('.txt')
+                                        ? Icons.description_outlined
+                                        : Icons.folder_zip_outlined,
+                                    size: 36,
+                                    color: isDark
+                                        ? Colors.blue[300]
+                                        : Colors.blue[700],
+                                  ),
+                                  const SizedBox(width: 12),
+                                  // 文件名和大小
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        Text(
+                                          name,
+                                          style: const TextStyle(
+                                            fontWeight: FontWeight.bold,
+                                            fontSize: 14,
+                                          ),
+                                          maxLines: 2,
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
+                                        const SizedBox(height: 4),
+                                        Text(
+                                          size,
+                                          style: const TextStyle(
+                                            fontSize: 12,
+                                            color: Colors.grey,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                  // 下载按钮
+                                  Container(
+                                    padding: const EdgeInsets.all(6),
+                                    decoration: BoxDecoration(
+                                      color: isDark
+                                          ? Colors.blue[900]?.withOpacity(0.5)
+                                          : Colors.blue[50],
+                                      shape: BoxShape.circle,
+                                    ),
+                                    child: Icon(
+                                      Icons.download,
+                                      size: 20,
+                                      color: isDark
+                                          ? Colors.blue[200]
+                                          : Colors.blue[800],
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        );
+                      }
+
                       // 屏蔽那个破损的 favicon.ico 图标
                       if (element.localName == 'img') {
                         String src = element.attributes['src'] ?? '';

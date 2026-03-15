@@ -120,7 +120,7 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
   late Animation<double> _fabAnimation;
   late AnimationController _hideController;
   bool _isBarsVisible = true;
-
+  bool _isNoImageMode = false; // 【新增】无图模式开关
   late int _minPage;
   late int _maxPage; // 【新增】记录当前列表加载的最大页码
   int _targetPage = 1;
@@ -405,23 +405,19 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
         setState(() {
           _displaySubject = realSubject;
         });
+        // ===========================
+        // 【新增】在这里加入历史记录保存
+        // ===========================
+        HistoryManager.addHistory(widget.tid, realSubject, authorName);
+        print("📝 已添加历史记录: $realSubject");
       }
 
       int allReplies =
           int.tryParse(threadInfo['allreplies']?.toString() ?? '0') ?? 0;
       int ppp = int.tryParse(vars['ppp']?.toString() ?? '10') ?? 10;
-      _totalPages = ((allReplies + 1) / ppp).ceil();
-      // ===========================
-      // 【新增】在这里加入历史记录保存
-      // ===========================
 
-      // 这里的 addHistory 是 fire-and-forget (不需 await)，不阻塞界面渲染
-      HistoryManager.addHistory(
-        widget.tid,
-        realSubject ?? widget.subject,
-        authorName,
-      );
-      print("📝 已添加历史记录: ${widget.subject}");
+      _totalPages = ((allReplies + 1) / ppp).ceil();
+
       // ===========================
     }
 
@@ -438,8 +434,18 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
       String pid = p['pid']?.toString() ?? "";
       String authorId = p['authorid']?.toString() ?? "";
 
+      // 1. 获取并锁定楼主 UID
       if (_landlordUid == null && (p['first'] == "1" || p['first'] == 1)) {
         _landlordUid = authorId;
+      }
+
+      // ==========================================
+      // 【核心防漏墙：强制本地过滤】
+      // 哪怕服务器 API 不听话，只要开启了“只看楼主”，
+      // 我们直接在本地把不是楼主的楼层扔进垃圾桶！
+      // ==========================================
+      if (_isOnlyLandlord && _landlordUid != null && authorId != _landlordUid) {
+        continue; // 直接跳过这个回复，不把它加进列表里
       }
 
       String content = p['message']?.toString() ?? "";
@@ -449,26 +455,22 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
           p['attachments'],
         );
         String attachHtml = "<br/>";
-        String fileHtml = ""; // 【新增】专门存放普通文件的 HTML
+        String fileHtml = "";
 
         attachments.forEach((key, attach) {
-          // Discuz API 中，isimage 为 "1" 或 "-1" 是图片，"0" 是普通文件
           String isImage = attach['isimage']?.toString() ?? "0";
           String fullUrl = "${attach['url']}${attach['attachment']}";
 
           if (isImage == "1" || isImage == "-1") {
-            // 是图片，照常拼接
             attachHtml += '<img src="$fullUrl" style="max-width:100%;" /><br/>';
           } else {
-            // 【新增】是普通附件 (如 txt, zip 等)
             String filename = attach['filename']?.toString() ?? "未知附件";
             String size = attach['attachsize']?.toString() ?? "未知大小";
-            // 我们塞入一个自定义的 <gn-file> 标签，等下让 Flutter 把它变成漂亮的按钮
             fileHtml +=
                 '<gn-file url="$fullUrl" name="$filename" size="$size"></gn-file><br/>';
           }
         });
-        content += attachHtml + fileHtml; // 合并图片和附件
+        content += attachHtml + fileHtml;
       }
 
       newPosts.add(
@@ -485,7 +487,32 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
         ),
       );
     }
+    // ==========================================
+    // 2. 【核心修复】等 newPosts 弄好了，再来算页数！
+    // ==========================================
+    // ==========================================
+    // 2. 【修复计算逻辑】等 newPosts 弄好了，再来算页数！
+    // ==========================================
+    if (threadInfo != null) {
+      int allReplies =
+          int.tryParse(threadInfo['allreplies']?.toString() ?? '0') ?? 0;
 
+      if (_isOnlyLandlord) {
+        // 【关键修复】判断是否到底，必须用服务器原始返回的数量 (items.length)
+        // 绝不能用过滤后的 newPosts.length 算！
+        if (items.length < _ppp) {
+          _totalPages = _targetPage;
+        } else {
+          _totalPages = _targetPage + 1; // 既然原始数据是满的，说明肯定还有下一页
+        }
+        // 只看楼主的进度条总数暂定为当前已加载的数量
+        _totalPostsCount = _posts.length + newPosts.length;
+      } else {
+        // 普通模式，使用官方返回的总回复数
+        _totalPages = ((allReplies + 1) / _ppp).ceil();
+        _totalPostsCount = allReplies + 1;
+      }
+    }
     setState(() {
       if (_posts.isEmpty) {
         // 这是刚进页面或者发生了大跨度跳转（UI层的对话框跳转清空了_posts）
@@ -576,14 +603,23 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
 
   Future<void> _loadSettings() async {
     final prefs = await SharedPreferences.getInstance();
-    int? colorVal = prefs.getInt('reader_bg_color');
-    if (colorVal != null) {
+
+    if (mounted) {
       setState(() {
-        _readerBgColor = Color(colorVal);
-        _readerTextColor = (_readerBgColor.computeLuminance() < 0.5)
-            ? Colors.white70
-            : Colors.black87;
+        // 1. 【核心修复】无图模式独立读取，不受背景色影响
+        _isNoImageMode = prefs.getBool('no_image_mode') ?? false;
+
+        // 2. 行高也独立读取
         _lineHeight = prefs.getDouble('reader_line_height') ?? 1.4;
+
+        // 3. 背景色单独判断
+        int? colorVal = prefs.getInt('reader_bg_color');
+        if (colorVal != null) {
+          _readerBgColor = Color(colorVal);
+          _readerTextColor = (_readerBgColor.computeLuminance() < 0.5)
+              ? Colors.white70
+              : Colors.black87;
+        }
       });
     }
   }
@@ -1130,6 +1166,27 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
                   ),
                   const SizedBox(height: 10),
 
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text(
+                      "无图模式 (省流)",
+                      style: TextStyle(fontSize: 14),
+                    ),
+                    subtitle: const Text(
+                      "开启后帖子内图片将被替换为点击加载",
+                      style: TextStyle(fontSize: 11, color: Colors.grey),
+                    ),
+                    value: _isNoImageMode,
+                    activeColor: Theme.of(context).primaryColorLight,
+                    onChanged: (val) async {
+                      setSheetState(() => _isNoImageMode = val);
+                      setState(() => _isNoImageMode = val);
+                      final prefs = await SharedPreferences.getInstance();
+                      await prefs.setBool('no_image_mode', val);
+                    },
+                  ),
+                  // 【新增】无图模式开关
+                  const Divider(height: 20),
                   // 1. 字体大小调节
                   _buildSettingRow(
                     icon: Icons.text_fields,
@@ -1250,32 +1307,51 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
   }
 
   void _updateCurrentFloorValue() {
-    // 如果正在拖动滑块，或者列表为空，就不计算了
     if (!_scrollController.hasClients || _posts.isEmpty || _isScrubbingScroll)
       return;
 
     double offset = _scrollController.offset;
     double maxScroll = _scrollController.position.maxScrollExtent;
-    // 简单的线性插值计算
-    double scrollPercent = (offset / maxScroll).clamp(0.0, 1.0);
+    double scrollPercent = maxScroll > 0
+        ? (offset / maxScroll).clamp(0.0, 1.0)
+        : 0.0;
 
-    // 当前页的起始楼层 (例如第2页开始就是11楼)
-    int startFloor = (_targetPage - 1) * 10;
+    // 找到屏幕当前显示的大概是哪一个帖子
+    int currentPostIndex = (scrollPercent * (_posts.length - 1)).round();
 
-    // 估算当前看的是第几条 post
-    int currentPostIndex = (scrollPercent * _posts.length).round();
+    if (currentPostIndex >= 0 && currentPostIndex < _posts.length) {
+      PostItem currentPost = _posts[currentPostIndex];
 
-    // 最终结果：起始楼层 + 当前页偏移
-    int floorOnScreen = startFloor + currentPostIndex;
+      if (_isOnlyLandlord) {
+        // 只看楼主模式：进度条基于索引
+        if ((_dragValue ?? 0).round() != currentPostIndex) {
+          setState(() => _dragValue = currentPostIndex.toDouble());
+        }
+      } else {
+        // 普通模式：从帖子身上剥离出最真实的物理楼层号
+        String rawFloor = currentPost.floor.replaceAll(RegExp(r'[^0-9]'), '');
+        int actualFloor = int.tryParse(rawFloor) ?? 1;
 
-    // 更新 Slider 变量
-    if ((_dragValue ?? 0).round() != floorOnScreen) {
-      setState(() {
-        _dragValue = floorOnScreen.toDouble().clamp(
-          0.0,
-          (_totalPostsCount - 1).toDouble(),
-        );
-      });
+        if ((_dragValue ?? 0).round() != (actualFloor - 1)) {
+          setState(() {
+            _dragValue = (actualFloor - 1).toDouble().clamp(
+              0.0,
+              (_totalPostsCount - 1).toDouble(),
+            );
+          });
+        }
+
+        // 【核心修复】计算当前屏幕上看到的究竟是第几页
+        // 真实楼层 除以 每页容量(_ppp)，得出绝对准确的页码！
+        int pageOnScreen = ((actualFloor - 1) / _ppp).floor() + 1;
+
+        // 只有当页码发生变化时才刷新 UI，防止死循环
+        if (_targetPage != pageOnScreen) {
+          setState(() {
+            _targetPage = pageOnScreen; // 强制纠正底部显示的页码
+          });
+        }
+      }
     }
   }
 
@@ -1429,12 +1505,19 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
                         child: AnimatedBuilder(
                           animation: _scrollController,
                           builder: (context, child) {
-                            // 1. 计算总楼层数 (如果还没加载到总数，暂用当前列表长度)
-                            int totalCount = _totalPostsCount > 0
-                                ? _totalPostsCount
-                                : (_posts.isNotEmpty ? _posts.length : 1);
+                            // 1. 动态确定进度条的最大值
+                            int totalCount = _isOnlyLandlord
+                                ? _posts
+                                      .length // 只看楼主：基于已加载的数量
+                                : (_totalPostsCount > 0
+                                      ? _totalPostsCount
+                                      : (_posts.isNotEmpty
+                                            ? _posts.length
+                                            : 1)); // 普通模式：基于全贴总数
 
-                            // 2. 确保滑块值在合法范围内
+                            if (totalCount == 0)
+                              return const Slider(value: 0, onChanged: null);
+
                             double uiVal = (_dragValue ?? 0.0).clamp(
                               0.0,
                               (totalCount - 1).toDouble(),
@@ -1445,67 +1528,87 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
                               min: 0.0,
                               max: (totalCount - 1).toDouble(),
                               divisions: totalCount > 1 ? totalCount - 1 : 1,
-                              label: "${uiVal.round() + 1}楼",
+
+                              // 2. 动态显示标签
+                              label: _isOnlyLandlord
+                                  ? (_posts.isNotEmpty &&
+                                            uiVal.round() < _posts.length
+                                        ? _posts[uiVal.round()]
+                                              .floor // 只看楼主：直接拿真实楼层号（比如 "15楼"）
+                                        : "${uiVal.round() + 1}")
+                                  : "${uiVal.round() + 1}楼", // 普通模式：按数学公式算
+
                               onChangeStart: (v) => setState(() {
                                 _isScrubbingScroll = true;
                                 _dragValue = v;
                               }),
                               onChanged: (v) {
-                                // 拖动时只更新 UI，不触发加载
                                 setState(() => _dragValue = v);
                               },
                               onChangeEnd: (v) {
                                 setState(() => _isScrubbingScroll = false);
 
-                                // 【这里定义 targetFloor，解决了你的报错】
-                                int targetFloor = v.round() + 1;
-
-                                // 估算目标页码 (Discuz 默认每页 10 楼)
-                                int ppp = 10;
-                                int jumpToPage =
-                                    ((targetFloor - 1) / ppp).floor() + 1;
-
-                                print(
-                                  "🎯 跳转目标: $targetFloor楼 -> 第 $jumpToPage 页",
-                                );
-
-                                if (jumpToPage != _targetPage) {
-                                  // 情况 A：跨页跳转 -> 清空数据，重新加载那一页
-                                  setState(() {
-                                    _posts = []; // 清空防跳变
-                                    _isLoading = true;
-                                  });
-                                  // 重置滚动位置到顶部
-                                  if (_scrollController.hasClients)
-                                    _scrollController.jumpTo(0);
-
-                                  _loadPage(jumpToPage, resetScroll: true);
-                                } else {
-                                  // 情况 B：就在当前页 -> 寻找对应的楼层并滚动
-                                  int indexInList = _posts.indexWhere((p) {
-                                    // 提取楼层号里的数字进行比对
-                                    String rawFloor = p.floor.replaceAll(
-                                      RegExp(r'[^0-9]'),
-                                      '',
-                                    );
-                                    return rawFloor == targetFloor.toString();
-                                  });
-
-                                  if (indexInList != -1) {
+                                if (_isOnlyLandlord) {
+                                  // 只看楼主：直接根据列表索引跳转
+                                  int index = v.round();
+                                  if (index >= 0 && index < _posts.length) {
                                     _scrollController.scrollToIndex(
-                                      indexInList,
+                                      index,
                                       preferPosition: AutoScrollPosition.begin,
                                       duration: const Duration(
-                                        milliseconds: 500,
+                                        milliseconds: 300,
                                       ),
                                     );
+                                  }
+                                } else {
+                                  int targetFloor = v.round() + 1;
+
+                                  // 【核心修复】必须使用 _ppp，绝对不能写死 10！
+                                  int jumpToPage =
+                                      ((targetFloor - 1) / _ppp).floor() + 1;
+
+                                  print(
+                                    "🎯 跳转目标: $targetFloor楼 -> 第 $jumpToPage 页",
+                                  );
+
+                                  // 如果跳的页不在当前已加载的上下边界之内，才清空加载
+                                  if (jumpToPage < _minPage ||
+                                      jumpToPage > _maxPage) {
+                                    setState(() {
+                                      _posts = [];
+                                      _isLoading = true;
+                                    });
+                                    if (_scrollController.hasClients)
+                                      _scrollController.jumpTo(0);
+                                    _loadPage(jumpToPage, resetScroll: true);
                                   } else {
-                                    // 如果没找到（可能是还没加载完），简单跳到顶部或底部
-                                    ScaffoldMessenger.of(context).showSnackBar(
-                                      const SnackBar(
-                                        content: Text("该楼层在当前页未找到，可能已被屏蔽"),
-                                      ),
-                                    );
+                                    // 就在当前内存列表里，直接精准滚动过去
+                                    int indexInList = _posts.indexWhere((p) {
+                                      String rawFloor = p.floor.replaceAll(
+                                        RegExp(r'[^0-9]'),
+                                        '',
+                                      );
+                                      return rawFloor == targetFloor.toString();
+                                    });
+
+                                    if (indexInList != -1) {
+                                      _scrollController.scrollToIndex(
+                                        indexInList,
+                                        preferPosition:
+                                            AutoScrollPosition.begin,
+                                        duration: const Duration(
+                                          milliseconds: 300,
+                                        ),
+                                      );
+                                    } else {
+                                      ScaffoldMessenger.of(
+                                        context,
+                                      ).showSnackBar(
+                                        const SnackBar(
+                                          content: Text("该楼层在当前页未找到，可能已被屏蔽"),
+                                        ),
+                                      );
+                                    }
                                   }
                                 }
                               },
@@ -2585,7 +2688,45 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
     while (fullUrl.contains('&amp;')) {
       fullUrl = fullUrl.replaceAll('&amp;', '&');
     }
-
+    // ==========================================
+    // 【新增】无图模式拦截
+    // ==========================================
+    if (_isNoImageMode) {
+      bool isDark = Theme.of(context).brightness == Brightness.dark;
+      return InkWell(
+        onTap: () {
+          // 点击依然可以强制查看大图
+          Map<String, String> dynamicHeaders = _getHeadersForUrl(fullUrl);
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (c) =>
+                  ImagePreviewPage(imageUrl: fullUrl, headers: dynamicHeaders),
+            ),
+          );
+        },
+        child: Container(
+          width: double.infinity,
+          margin: const EdgeInsets.symmetric(vertical: 8),
+          padding: const EdgeInsets.symmetric(vertical: 24),
+          decoration: BoxDecoration(
+            color: isDark ? Colors.grey[850] : Colors.grey[200],
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: isDark ? Colors.white12 : Colors.black12),
+          ),
+          child: const Column(
+            children: [
+              Icon(Icons.image_not_supported, color: Colors.grey, size: 28),
+              SizedBox(height: 8),
+              Text(
+                "无图模式已开启 (点击强制查看)",
+                style: TextStyle(color: Colors.grey, fontSize: 12),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
     // 3. 【新增优化】针对部分外链，去掉 URL 参数以获取高清原图
     // 逻辑：如果是外链，且包含 ?，尝试去掉 ? 后面的内容
     String currentHost = Uri.parse(currentBaseUrl.value).host;

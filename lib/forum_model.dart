@@ -8,19 +8,17 @@ import 'package:flutter/foundation.dart'; // 引入这个以使用 ValueNotifier
 import 'package:flutter_cache_manager/src/web/file_service.dart';
 import 'package:http/http.dart' as http;
 
-// 【新增】创建一个“有礼貌”的下载器
-// 它会在每张图片下载前强行等待一小会儿，防止触发 DDoS 防护
+// 【优化】解除图片龟速限制，大幅提升多图加载速度
 class PoliteFileService extends HttpFileService {
   @override
   Future<FileServiceResponse> get(
     String url, {
     Map<String, String>? headers,
   }) async {
-    // 关键：每张图下载前，先随机等 300-800 毫秒
-    // 这样 20 张图就不会排山倒海般冲向服务器，能有效避开 Cloudflare 的 burst 探测
-    await Future.delayed(Duration(milliseconds: 300 + (url.length % 500)));
-
-    print("⏳ [PoliteDownload] 正在排队获取: $url");
+    // 只有本站图片做极微小的 50ms 延迟，外链图片全速并发！
+    if (url.contains('giantesswaltz.org') || url.contains('gtswaltz.org')) {
+      await Future.delayed(const Duration(milliseconds: 50));
+    }
     return super.get(url, headers: headers);
   }
 }

@@ -105,6 +105,8 @@ void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   HttpOverrides.global = _MyHttpOverrides();
   final prefs = await SharedPreferences.getInstance();
+  // 【新增】在这里恢复上次的选择
+  HttpService.useHostsMode = prefs.getBool('use_hosts_mode') ?? false;
   // 【新增】读取保存的域名设置
   String? savedUrl = prefs.getString('selected_base_url');
   if (savedUrl != null && savedUrl.isNotEmpty) {
@@ -1846,6 +1848,16 @@ class _ProfilePageState extends State<ProfilePage> {
   void initState() {
     super.initState();
     customWallpaperPath.addListener(_onWallpaperChanged);
+    _loadLoadMode();
+  }
+
+  Future<void> _loadLoadMode() async {
+    final prefs = await SharedPreferences.getInstance();
+    // 默认给 false (原生模式)
+    bool mode = prefs.getBool('use_hosts_mode') ?? false;
+    setState(() {
+      HttpService.useHostsMode = mode;
+    });
   }
 
   @override
@@ -1907,6 +1919,28 @@ class _ProfilePageState extends State<ProfilePage> {
         ).showSnackBar(const SnackBar(content: Text("无法连接到更新服务器，请稍后再试")));
       }
     }
+  }
+
+  Future<void> _toggleHostsMode(bool val) async {
+    // 1. 更新内存状态
+    setState(() {
+      HttpService.useHostsMode = val;
+    });
+
+    // 2. 持久化存储
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('use_hosts_mode', val);
+
+    // 3. 实时反馈
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text("已切换为: ${val ? '直连加速模式' : '默认模式'}"),
+        duration: const Duration(seconds: 1),
+      ),
+    );
+
+    // 4. 可选：如果切换了模式，可以顺手刷新一下首页
+    forumKey.currentState?.refreshData();
   }
 
   // 弹出更新对话框
@@ -2185,6 +2219,52 @@ class _ProfilePageState extends State<ProfilePage> {
         ],
       ),
     );
+  }
+
+  void _showLoadModeDialog(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text("加载模式设置"),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text(
+              "“强力代理模式”使用 Dio 直接请求 API，速度快，但部分地区可能被干扰。\n\n“原生模式”通过内置网页内核加载，兼容性极高，更稳定。",
+            ),
+            const SizedBox(height: 10),
+            RadioListTile<bool>(
+              title: const Text("原生模式 (WebView)"),
+              subtitle: const Text("兼容性好，推荐开启"),
+              value: false,
+              groupValue: useDioProxyLoader.value,
+              onChanged: (val) => _changeLoadMode(ctx, val!),
+            ),
+            RadioListTile<bool>(
+              title: const Text("强力模式 (Dio)"),
+              subtitle: const Text("加载速度快，但可能受干扰"),
+              value: true,
+              groupValue: useDioProxyLoader.value,
+              onChanged: (val) => _changeLoadMode(ctx, val!),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _changeLoadMode(BuildContext context, bool value) async {
+    Navigator.pop(context);
+    useDioProxyLoader.value = value;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('use_dio_proxy', value);
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text("已切换为: ${value ? '强力代理模式' : '原生模式'}")),
+    );
+
+    // 切换后强制刷新一下首页
+    forumKey.currentState?.refreshData();
   }
 
   Future<void> _clearImageCache({bool showLoading = true}) async {
@@ -2701,7 +2781,7 @@ class _ProfilePageState extends State<ProfilePage> {
                   },
                 ),
                 trailing: const Icon(Icons.chevron_right),
-                // onTap: () => _showLoadModeDialog(context),
+                onTap: () => _showLoadModeDialog(context),
               ),
 
               const Divider(),

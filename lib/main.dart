@@ -700,8 +700,15 @@ class _ForumHomePageState extends State<ForumHomePage> {
   void initState() {
     super.initState();
     _initHiddenWebView();
-    // 👇👇👇 一进页面，马上读缓存，不要等网络 👇👇👇
-    _loadHotCache();
+
+    // 【修改点】不要在 initState 里直接做强力请求
+    // 给 Flutter 渲染引擎 500 毫秒的时间完成启动和渲染
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _loadHotCache(); // 先读缓存
+      Future.delayed(const Duration(milliseconds: 800), () {
+        if (mounted) _fetchData(); // 延迟一小会儿再发起网络，避开系统启动时的资源抢占
+      });
+    });
   }
 
   @override
@@ -1306,7 +1313,15 @@ class _ForumHomePageState extends State<ForumHomePage> {
       }
       return;
     }
+    // 【关键修复】只有在确定 API 返回了有效列表时才更新热门，防止用空值覆盖缓存
+    print("🔄 [HotThread] 主页就绪，开始更新热门帖子...");
+    final prefs = await SharedPreferences.getInstance();
+    String validCookie = prefs.getString('saved_cookie_string') ?? "";
 
+    // 延迟一下，让主列表渲染完，避免热门 banner 加载导致的视觉卡顿
+    Future.delayed(const Duration(milliseconds: 500), () {
+      if (mounted) _fetchHotThreads(overrideCookie: validCookie);
+    });
     if (data['Variables'] == null) {
       print("⚠️ 数据解析异常: 缺少 Variables 字段");
       if (mounted) {
@@ -1324,7 +1339,6 @@ class _ForumHomePageState extends State<ForumHomePage> {
     // 1. 更新用户信息
     String newName = variables['member_username'].toString();
     String newUid = variables['member_uid'].toString();
-    final prefs = await SharedPreferences.getInstance();
 
     final String cookiePre = variables['cookiepre']?.toString() ?? '';
     final String apiAuth = variables['auth']?.toString() ?? '';

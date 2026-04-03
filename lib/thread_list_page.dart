@@ -1,3 +1,4 @@
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:giantesswaltz_app/http_service.dart';
 import 'package:webview_flutter/webview_flutter.dart';
@@ -321,6 +322,11 @@ class _ThreadListPageState extends State<ThreadListPage> {
     return ValueListenableBuilder<String?>(
       valueListenable: customWallpaperPath,
       builder: (context, wallpaperPath, _) {
+        // 构造头像 URL
+        // 【核心修复 1】使用 currentBaseUrl.value 代替 kBaseUrl
+        // 【核心修复 2】thread.authorid 已经在第二步定义好了
+        final String avatarUrl =
+            "${currentBaseUrl.value}uc_server/avatar.php?uid=${thread.authorId}&size=middle";
         return Card(
           margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
           elevation: 0,
@@ -330,6 +336,29 @@ class _ThreadListPageState extends State<ThreadListPage> {
                 ).colorScheme.surfaceContainerLow.withOpacity(0.7)
               : Theme.of(context).colorScheme.surfaceContainerLow,
           child: ListTile(
+            // 【新增：头像显示】
+            leading: ClipOval(
+              child: CachedNetworkImage(
+                imageUrl: avatarUrl,
+                width: 40,
+                height: 40,
+                fit: BoxFit.cover,
+                // 加载中的占位图
+                placeholder: (context, url) => Container(
+                  width: 40,
+                  height: 40,
+                  color: Colors.grey.withOpacity(0.2),
+                  child: const Icon(Icons.person, color: Colors.grey),
+                ),
+                // 加载失败（如该用户没头像）显示的图标
+                errorWidget: (context, url, error) => Container(
+                  width: 40,
+                  height: 40,
+                  color: Colors.grey.withOpacity(0.2),
+                  child: const Icon(Icons.person, color: Colors.grey),
+                ),
+              ),
+            ),
             title: Text(
               thread.subject,
               maxLines: 2,

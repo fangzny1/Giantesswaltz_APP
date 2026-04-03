@@ -23,6 +23,20 @@ class _SearchPageState extends State<SearchPage> {
   final TextEditingController _textController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
 
+  // 【核心黑科技】Discuz 静态原图头像直连算法
+  String _getRealAvatarUrl(String? uid, {String size = 'big'}) {
+    if (uid == null || uid.isEmpty || uid == "0") return ""; // 拦截无效 UID
+    // 补齐9位，例如 "33379" -> "000033379"
+    String paddedUid = uid.padLeft(9, '0');
+    // 切割目录
+    String d1 = paddedUid.substring(0, 3);
+    String d2 = paddedUid.substring(3, 5);
+    String d3 = paddedUid.substring(5, 7);
+    String d4 = paddedUid.substring(7, 9);
+    // 直接拼出静态文件路径
+    return "${currentBaseUrl.value}uc_server/data/avatar/$d1/$d2/$d3/${d4}_avatar_$size.jpg";
+  }
+
   List<Thread> _threadResults = [];
   List<Map<String, String>> _userResults = [];
 
@@ -207,22 +221,28 @@ class _SearchPageState extends State<SearchPage> {
   }
 
   void _parseThreads(var document) {
-    // 兼容两种模式：
-    // 1. 电脑版搜索结果 (li.pbw)
-    // 2. 标签/板块列表 (tbody > tr)
-
+    // 1. 尝试解析电脑版搜索结果 (li.pbw)
     var listItems = document.querySelectorAll('li.pbw');
     if (listItems.isNotEmpty) {
       for (var li in listItems) {
         var titleNode = li.querySelector('h3.xs3 a');
         if (titleNode == null) continue;
+
         String title = titleNode.text.trim();
         String href = titleNode.attributes['href'] ?? "";
         String tid = RegExp(r'tid=(\d+)').firstMatch(href)?.group(1) ?? "";
 
         String author = "未知";
+        String authorId = "0"; // 默认 0
         var authorLink = li.querySelector('p a[href*="uid="]');
-        if (authorLink != null) author = authorLink.text.trim();
+        if (authorLink != null) {
+          author = authorLink.text.trim();
+          authorId =
+              RegExp(
+                r'uid=(\d+)',
+              ).firstMatch(authorLink.attributes['href'] ?? "")?.group(1) ??
+              "0";
+        }
 
         if (tid.isNotEmpty && !_threadResults.any((r) => r.tid == tid)) {
           _threadResults.add(
@@ -230,6 +250,7 @@ class _SearchPageState extends State<SearchPage> {
               tid: tid,
               subject: title,
               author: author,
+              authorId: authorId, // 传给模型
               replies: "0",
               views: "0",
               readperm: "0",
@@ -237,42 +258,10 @@ class _SearchPageState extends State<SearchPage> {
           );
         }
       }
-    } else {
-      // 尝试解析表格模式 (标签结果页通常是这种)
-      var rows = document.querySelectorAll('tr');
-      for (var row in rows) {
-        var titleLink =
-            row.querySelector('th a.xst') ?? row.querySelector('th a');
-        if (titleLink == null) continue;
-        // 排除非帖子链接
-        if (!titleLink.attributes.containsKey('href') ||
-            !titleLink.attributes['href']!.contains('tid='))
-          continue;
-
-        String title = titleLink.text.trim();
-        String href = titleLink.attributes['href']!;
-        String tid = RegExp(r'tid=(\d+)').firstMatch(href)?.group(1) ?? "";
-
-        String author = row.querySelector('.by cite a')?.text.trim() ?? "未知";
-        String replies = row.querySelector('.num a')?.text.trim() ?? "0";
-        String views = row.querySelector('.num em')?.text.trim() ?? "0";
-
-        if (tid.isNotEmpty && !_threadResults.any((r) => r.tid == tid)) {
-          _threadResults.add(
-            Thread(
-              tid: tid,
-              subject: title,
-              author: author,
-              replies: replies,
-              views: views,
-              readperm: "0",
-            ),
-          );
-        }
-      }
+      return; // 匹配到普通搜索，直接返回
     }
-    // 2. 【新增】尝试解析标签页结果 (.hotlist li)
-    // 针对 misc.php?mod=tag 返回的结构
+
+    // 2. 尝试解析标签页结果 (.hotlist li)
     var hotListItems = document.querySelectorAll('.hotlist li');
     if (hotListItems.isNotEmpty) {
       for (var li in hotListItems) {
@@ -284,12 +273,19 @@ class _SearchPageState extends State<SearchPage> {
           String href = titleNode.attributes['href'] ?? "";
           String tid = RegExp(r'tid=(\d+)').firstMatch(href)?.group(1) ?? "";
 
-          // 提取作者 (在 list_bottom 的 .z 类里)
           String author = "未知";
-          var authorNode = li.querySelector('.list_bottom .z');
-          if (authorNode != null) author = authorNode.text.trim();
+          String authorId = "0";
+          // 从 list_bottom 的 a 标签提取 uid
+          var authorNode = li.querySelector('.list_bottom a[href*="uid="]');
+          if (authorNode != null) {
+            author = authorNode.text.trim();
+            authorId =
+                RegExp(
+                  r'uid=(\d+)',
+                ).firstMatch(authorNode.attributes['href'] ?? "")?.group(1) ??
+                "0";
+          }
 
-          // 提取回复/查看 (在 list_bottom 的 .y 类里)
           String replies = "0";
           String views = "0";
           var statsNodes = li.querySelectorAll('.list_bottom .y');
@@ -308,6 +304,7 @@ class _SearchPageState extends State<SearchPage> {
                 tid: tid,
                 subject: title,
                 author: author,
+                authorId: authorId,
                 replies: replies,
                 views: views,
                 readperm: "0",
@@ -316,7 +313,6 @@ class _SearchPageState extends State<SearchPage> {
           }
         } catch (_) {}
       }
-      return; // 匹配成功后返回
     }
   }
 
@@ -558,31 +554,69 @@ class _SearchPageState extends State<SearchPage> {
 
   Widget _buildThreadList(String? wallpaperPath) {
     if (_threadResults.isEmpty && !_isLoading)
-      return const Center(child: Text("未找到内容"));
+      return const Center(child: Text("未找到相关帖子"));
     return ListView.builder(
       controller: _scrollController,
       itemCount: _threadResults.length + 1,
       itemBuilder: (ctx, i) {
         if (i == _threadResults.length) return _buildLoadIndicator();
         final item = _threadResults[i];
+
+        // 获取直连大图地址 和 默认兜底头像地址
+        final String avatarUrl = _getRealAvatarUrl(
+          item.authorId,
+          size: 'middle',
+        );
+        final String defaultAvatar =
+            "${currentBaseUrl.value}uc_server/images/noavatar_middle.gif";
+
         return Card(
           margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
           color: wallpaperPath != null ? Colors.white.withOpacity(0.1) : null,
           elevation: 0,
           child: ListTile(
+            // 【核心修复】完美的头像容错机制
+            leading: ClipOval(
+              child: CachedNetworkImage(
+                imageUrl: avatarUrl,
+                width: 40,
+                height: 40,
+                fit: BoxFit.cover,
+                // 1. 正常加载中显示灰色人头
+                placeholder: (context, url) => Container(
+                  color: Colors.grey[200],
+                  child: const Icon(Icons.person, color: Colors.grey),
+                ),
+                // 2. 如果 404 (没上传过头像)，自动切换到默认的 gif 头像
+                errorWidget: (context, url, error) => CachedNetworkImage(
+                  imageUrl: defaultAvatar,
+                  width: 40,
+                  height: 40,
+                  fit: BoxFit.cover,
+                  // 3. 终极兜底：如果连默认头像都加载不出，显示灰色图标
+                  errorWidget: (c, u, e) => Container(
+                    color: Colors.grey[200],
+                    child: const Icon(Icons.person, color: Colors.grey),
+                  ),
+                ),
+              ),
+            ),
             title: Text(
               item.subject,
               maxLines: 2,
+              overflow: TextOverflow.ellipsis,
               style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
             ),
             subtitle: Text(
-              "作者: ${item.author} ${item.replies != '0' ? '· ${item.replies}回' : ''}",
-              style: const TextStyle(fontSize: 12),
+              "作者: ${item.author}",
+              style: const TextStyle(fontSize: 12, color: Colors.grey),
             ),
-            // 修改后：使用 adaptivePush (推入下一页)
-            onTap: () => adaptivePush(
+            onTap: () => Navigator.push(
               context,
-              ThreadDetailPage(tid: item.tid, subject: item.subject),
+              MaterialPageRoute(
+                builder: (c) =>
+                    ThreadDetailPage(tid: item.tid, subject: item.subject),
+              ),
             ),
           ),
         );

@@ -8,6 +8,7 @@ list(APPEND FLUTTER_PLUGIN_LIST
   gal
   permission_handler_windows
   printing
+  share_plus
   url_launcher_windows
 )
 

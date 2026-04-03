@@ -7,6 +7,11 @@ import 'package:flutter/foundation.dart'; // 引入这个以使用 ValueNotifier
 //临时删除旧的常量
 import 'package:flutter_cache_manager/src/web/file_service.dart';
 import 'package:http/http.dart' as http;
+import 'package:dio/dio.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+
+// 1. 全局缓存管理器（改为 late 动态初始化）
+late CacheManager globalImageCache;
 
 // 【优化】解除图片龟速限制，大幅提升多图加载速度
 class PoliteFileService extends HttpFileService {
@@ -137,6 +142,7 @@ class Thread {
   final String tid;
   final String subject;
   final String author;
+  final String authorId;
   final String replies;
   final String views;
   final String readperm;
@@ -145,6 +151,7 @@ class Thread {
     required this.tid,
     required this.subject,
     required this.author,
+    required this.authorId, // 【修复点2】
     required this.replies,
     required this.views,
     required this.readperm,
@@ -154,6 +161,8 @@ class Thread {
   factory Thread.fromJson(Map<String, dynamic> json) {
     return Thread(
       tid: json['tid']?.toString() ?? '',
+      // 【关键映射】API 返回的 JSON 键是全小写的 'authorid'，我们把它赋值给 authorId 变量
+      authorId: json['authorid']?.toString() ?? '0',
       subject: json['subject']?.toString() ?? '无标题',
       author: json['author']?.toString() ?? '匿名',
       replies: json['replies']?.toString() ?? '0',
@@ -239,14 +248,33 @@ class BookmarkItem {
 }
 // lib/forum_model.dart 的最底部
 
-// 【核心修复】定义一个全局单例的缓存管理器
-// 这样我们在 ThreadDetailPage 里用它存图，在 ProfilePage 里也能调用它清缓存
-final globalImageCache = CacheManager(
-  Config(
-    'gn_forum_imageCache_v4', // 换个名字，避免和旧的冲突
-    stalePeriod: const Duration(days: 7),
-    maxNrOfCacheObjects: 1000,
-    // 【实装】使用我们自定义的下载服务
-    fileService: PoliteFileService(),
-  ),
-);
+// // 2. 自定义带超时拦截的 HTTP 客户端 (解决弱网无限转圈问题)
+// class TimeoutHttpClient extends http.BaseClient {
+//   final int timeoutSeconds;
+//   final http.Client _inner = http.Client();
+
+//   TimeoutHttpClient(this.timeoutSeconds);
+
+//   @override
+//   Future<http.StreamedResponse> send(http.BaseRequest request) {
+//     // 强制设置超时时间，如果超时直接掐断，触发图片加载失败(进而显示重试按钮)
+//     return _inner.send(request).timeout(Duration(seconds: timeoutSeconds));
+//   }
+// }
+
+// 3. 初始化缓存引擎 (在 main.dart 启动时调用)
+Future<void> initGlobalImageCache() async {
+  final prefs = await SharedPreferences.getInstance();
+
+  // 读取用户自定义设置 (默认值: 1000张图, 保留7天, 15秒超时)
+  int maxObjects = prefs.getInt('cache_max_objects') ?? 1000;
+  int staleDays = prefs.getInt('cache_stale_days') ?? 7;
+
+  globalImageCache = CacheManager(
+    Config(
+      'gn_forum_imageCache_v5', // 升级到 v5 抛弃之前的旧账
+      stalePeriod: Duration(days: staleDays),
+      maxNrOfCacheObjects: maxObjects,
+    ),
+  );
+}

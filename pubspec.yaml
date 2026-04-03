@@ -59,6 +59,7 @@ dependencies:
   pdf: ^3.10.0      # 配合 printing 使用
   app_links: ^6.3.2 # 现代且稳定的深层链接库
   receive_sharing_intent: ^1.8.1
+  share_plus: ^10.1.0
   flutter_test:
     sdk: flutter
 

@@ -24,6 +24,7 @@ import 'http_service.dart';
 import 'reply_native_page.dart';
 import 'image_preview_page.dart';
 import 'offline_manager.dart';
+import 'package:share_plus/share_plus.dart';
 
 // ==========================================
 // 1. 数据模型定义
@@ -206,28 +207,50 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
   }
 
   // ==========================================
+  // 【新增】高级悬浮提示框 (Toast)
+  // ==========================================
+  void _showToast(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).hideCurrentSnackBar();
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          message,
+          textAlign: TextAlign.center,
+          style: const TextStyle(
+            color: Colors.white,
+            fontSize: 13,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+        behavior: SnackBarBehavior.floating,
+        // 【核心控制】调整 bottom 的值可以控制它悬浮的高度，left/right 控制宽度
+        margin: const EdgeInsets.only(bottom: 120, left: 60, right: 60),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
+        backgroundColor: Theme.of(
+          context,
+        ).colorScheme.primary.withOpacity(0.85),
+        duration: const Duration(seconds: 2),
+        elevation: 0,
+      ),
+    );
+  }
+
+  // ==========================================
   // 【核心修改】增加 isRetry 参数，实现自动续命重试
   // ==========================================
-  Future<void> _loadPage(
-    int page, {
-    bool resetScroll = false,
-    bool isRetry = false,
-  }) async {
+  Future<void> _loadPage(int page, {bool resetScroll = false}) async {
     _targetPage = page;
-    // 如果不是重试状态，才显示加载圈，避免重试时闪烁
-    if (mounted && !isRetry) setState(() => _isLoading = true);
+    if (mounted) setState(() => _isLoading = true);
 
-    // 1. 优先读取离线缓存（保持原逻辑，提升体验）
-    // 注意：如果是重试，说明网络可能通了但Cookie不对，此时不要读缓存，强制走网络
-    if (!isRetry) {
-      String? localData = await OfflineManager().readPage(widget.tid, page);
-      if (localData != null) {
-        print("📦 [Offline] 发现本地持久缓存，优先渲染");
-        try {
-          _processApiResponse(jsonDecode(localData));
-          if (mounted) setState(() => _isLoading = false);
-        } catch (_) {}
-      }
+    // 1. 优先展示临时缓存
+    final prefs = await SharedPreferences.getInstance();
+    final String tempCacheKey = 'thread_temp_cache_${widget.tid}_$page';
+    final String? tempCache = prefs.getString(tempCacheKey);
+    if (tempCache != null && _posts.isEmpty) {
+      try {
+        _processApiResponse(jsonDecode(tempCache));
+      } catch (_) {}
     }
 
     String url =
@@ -236,139 +259,61 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
       url += '&authorid=$_landlordUid';
 
     try {
-      // 2. 发起网络请求
       String responseBody = await HttpService().getHtml(url);
-      // 如果返回的还是 HTML（说明自愈失败了）
-      if (responseBody.trim().startsWith('<!DOCTYPE') ||
-          responseBody.contains('<html')) {
-        setState(() {
-          _isLoading = false;
-          _posts = []; // 清空，触发显示“加载失败”的 UI
-        });
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("Session 同步失败，请尝试下拉刷新或重新登录")),
-        );
-        return;
-      }
-      // 在 _loadPage 内部
-      if (responseBody.contains("to_login")) {
-        setState(() {
-          _isLoading = false;
-          _posts = []; // 依然保持空，但我们要修改 build 函数来显示登录引导
-        });
 
-        // 弹窗提示，并直接跳转
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(const SnackBar(content: Text("登录已过期，请重新登录以继续阅读")));
-
-        // 延迟一下直接弹回登录
-        Future.delayed(const Duration(milliseconds: 500), () {
-          Navigator.push(
-            context,
-            MaterialPageRoute(builder: (c) => const LoginPage()),
-          ).then((val) {
-            if (val == true) _loadPage(1); // 登录成功回来刷新
-          });
-        });
-        return;
-      }
-      // 3. 检查是否被 Cloudflare 拦截
-      if (responseBody.contains('<!DOCTYPE html') ||
-          responseBody.contains('<html')) {
-        // 如果是 HTML，说明可能撞盾了，或者 Cookie 失效导致返回了网页版错误页
-        if (!isRetry) {
-          print("🚨 [AutoRetry] 检测到 HTML 响应（可能是失效或撞盾），尝试自动续命...");
-          await _performAutoRevive(); // 执行续命
-          return _loadPage(
-            page,
-            resetScroll: resetScroll,
-            isRetry: true,
-          ); // 递归重试
-        }
-        throw "Cloudflare Intercepted";
-      }
-
-      // 4. 清洗 JSON
+      // 【核心修复 1：绝对安全的 JSON 剥离】
+      // 如果 Dio 返回的是被双引号包裹的序列化字符串，直接用 jsonDecode 解除包裹
+      // 这比 replaceAll 安全一万倍，再长的小说也不会崩溃！
       responseBody = responseBody.trim();
       if (responseBody.startsWith('"') && responseBody.endsWith('"')) {
-        responseBody = responseBody
-            .substring(1, responseBody.length - 1)
-            .replaceAll('\\"', '"')
-            .replaceAll('\\\\', '\\');
+        responseBody = jsonDecode(responseBody);
       }
 
       final data = jsonDecode(responseBody);
 
-      // 5. 【关键】检查 API 是否返回了“需要登录”或错误
-      // 很多时候服务器不报错，而是返回 Variables 为 null
-      if (data['Variables'] == null) {
-        if (!isRetry) {
-          print("🚨 [AutoRetry] 数据解析为空（Variables=null），Cookie 可能过期，尝试自动续命...");
-          await _performAutoRevive();
-          return _loadPage(page, resetScroll: resetScroll, isRetry: true);
-        }
-      }
-
-      // 如果有明确的 Message 报错
       if (data['Message'] != null && data['Variables'] == null) {
-        String msg = data['Message']['messagestr'] ?? "";
-        // 如果错误是“未定义操作”或者“需要登录”，尝试自动修复
-        if (!isRetry) {
-          print("🚨 [AutoRetry] API 返回错误: $msg，尝试自动续命...");
-          await _performAutoRevive();
-          return _loadPage(page, resetScroll: resetScroll, isRetry: true);
-        }
-        _handleLoginExpired(msg);
+        _handleLoginExpired(data['Message']['messagestr']);
         return;
       }
 
-      // 6. 成功获取数据
+      await prefs.setString(tempCacheKey, responseBody);
       _currentRawJson = responseBody;
       _processApiResponse(data);
 
       if (resetScroll && _scrollController.hasClients)
         _scrollController.jumpTo(0);
     } catch (e) {
-      print("❌ 网络请求失败: $e");
-
-      // 7. 捕获异常时的自动重试
-      if (!isRetry) {
-        print("🚨 [AutoRetry] 发生异常，尝试死马当活马医（续命重试）...");
-        await _performAutoRevive();
-        return _loadPage(page, resetScroll: resetScroll, isRetry: true);
-      }
-
-      if (e.toString().contains("Cloudflare") ||
-          e.toString().contains("Intercepted")) {
-        bool solved = await CloudflareSolver.show(context);
-        if (solved) _loadPage(page);
+      print("❌ API 请求或解析失败: $e");
+      String? offlineData = await OfflineManager().readPage(widget.tid, page);
+      if (offlineData != null && offlineData.isNotEmpty) {
+        try {
+          _currentRawJson = offlineData;
+          _processApiResponse(jsonDecode(offlineData));
+        } catch (err) {
+          print("❌ 离线数据解析失败: $err");
+        }
       } else {
         if (_posts.isEmpty && mounted) {
           ScaffoldMessenger.of(
             context,
-          ).showSnackBar(const SnackBar(content: Text("加载失败，请下拉刷新或检查网络")));
+          ).showSnackBar(const SnackBar(content: Text("加载失败，且无本地缓存")));
         }
       }
-      // 如果抛出了异常
-      setState(() {
-        _isLoading = false;
-        _posts = []; // 确保列表为空
-      });
     } finally {
-      if (mounted) setState(() => _isLoading = false);
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+          _isLoadingMore = false;
+          _isLoadingPrev = false;
+        });
+      }
     }
   }
 
   // 【新增】辅助方法：执行自动续命
   Future<void> _performAutoRevive() async {
     if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text("连接失效，正在自动修复..."),
-          duration: Duration(milliseconds: 1000),
-        ),
-      );
+      _showToast("连接失效，正在自动修复...");
     }
     // 调用 HttpService 的全局续命方法
     await HttpService().reviveSession();
@@ -377,48 +322,31 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
   }
 
   void _processApiResponse(dynamic data) {
+    if (data == null || data['Variables'] == null) return;
     final vars = data['Variables'];
-    if (vars == null) return;
 
-    _fid = vars['fid']?.toString();
-    _formhash = vars['formhash']?.toString();
-
-    // 更新每页数量
-    if (vars['ppp'] != null) {
-      _ppp = int.tryParse(vars['ppp'].toString()) ?? 10;
-    }
-
-    if (vars['postminchars'] != null) {
-      _postMinChars = int.tryParse(vars['postminchars'].toString()) ?? 0;
-    }
-
-    final threadInfo = vars['thread'];
-    if (threadInfo != null) {
-      // --- 【核心修复代码：更新标题】 ---
-      // 1. 【关键步骤】先从 JSON 里把真正的标题拿出来
-      String realSubject = threadInfo['subject']?.toString() ?? widget.subject;
-      String authorName = threadInfo['author']?.toString() ?? "未知";
-      _totalPostsCount =
-          (int.tryParse(threadInfo['allreplies']?.toString() ?? '0') ?? 0) + 1;
-
-      if (realSubject != null && realSubject.isNotEmpty) {
-        setState(() {
-          _displaySubject = realSubject;
-        });
-        // ===========================
-        // 【新增】在这里加入历史记录保存
-        // ===========================
-        HistoryManager.addHistory(widget.tid, realSubject, authorName);
-        print("📝 已添加历史记录: $realSubject");
+    // 【核心修复 2：提取“分类信息” (如AI创作、标签等)】
+    String sortHtml = "";
+    if (vars['threadsortshow'] != null &&
+        vars['threadsortshow']['optionlist'] != null) {
+      var optionList = vars['threadsortshow']['optionlist'];
+      if (optionList is List && optionList.isNotEmpty) {
+        // 构造一个融合 App 主题色的漂亮信息框
+        sortHtml +=
+            "<div style='background-color: rgba(97, 202, 184, 0.1); padding: 12px; border-radius: 8px; margin-bottom: 16px; border: 1px solid rgba(97, 202, 184, 0.3);'>";
+        for (var option in optionList) {
+          String title = option['title']?.toString() ?? "";
+          String value = option['value']?.toString() ?? "";
+          // 过滤掉没用或空的数据，比如价值仅为 "&nbsp;" 的空白符
+          if (title.isNotEmpty &&
+              value.trim().isNotEmpty &&
+              value != "&nbsp;") {
+            sortHtml +=
+                "<p style='margin: 4px 0;'><strong style='color: #61CAB8;'>$title: </strong> <span>$value</span></p>";
+          }
+        }
+        sortHtml += "</div>";
       }
-
-      int allReplies =
-          int.tryParse(threadInfo['allreplies']?.toString() ?? '0') ?? 0;
-      int ppp = int.tryParse(vars['ppp']?.toString() ?? '10') ?? 10;
-
-      _totalPages = ((allReplies + 1) / ppp).ceil();
-
-      // ===========================
     }
 
     var rawPostList = vars['postlist'];
@@ -429,123 +357,79 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
       items = rawPostList.values;
     }
 
+    if (items.isEmpty) {
+      if (_posts.isNotEmpty) return;
+    }
+
+    _fid = vars['fid']?.toString();
+    _formhash = vars['formhash']?.toString();
+    if (vars['postminchars'] != null) {
+      _postMinChars = int.tryParse(vars['postminchars'].toString()) ?? 0;
+    }
+
+    final threadInfo = vars['thread'];
+    if (threadInfo != null) {
+      if (_landlordUid == null)
+        _landlordUid = threadInfo['authorid']?.toString();
+      int allReplies =
+          int.tryParse(threadInfo['allreplies']?.toString() ?? '0') ?? 0;
+      int ppp = int.tryParse(vars['ppp']?.toString() ?? '10') ?? 10;
+      _totalPages = ((allReplies + 1) / ppp).ceil();
+    }
+
     List<PostItem> newPosts = [];
     for (var p in items) {
-      String pid = p['pid']?.toString() ?? "";
-      String authorId = p['authorid']?.toString() ?? "";
-
-      // 1. 获取并锁定楼主 UID
-      if (_landlordUid == null && (p['first'] == "1" || p['first'] == 1)) {
-        _landlordUid = authorId;
-      }
-
-      // ==========================================
-      // 【核心防漏墙：强制本地过滤】
-      // 哪怕服务器 API 不听话，只要开启了“只看楼主”，
-      // 我们直接在本地把不是楼主的楼层扔进垃圾桶！
-      // ==========================================
-      if (_isOnlyLandlord && _landlordUid != null && authorId != _landlordUid) {
-        continue; // 直接跳过这个回复，不把它加进列表里
-      }
-
       String content = p['message']?.toString() ?? "";
+
+      // 【核心合并】如果是第一楼(楼主)，把提取出来的分类信息(AI创作等)拼接在内容最前面
+      if (p['first'] == "1" || p['first'] == 1) {
+        if (sortHtml.isNotEmpty) {
+          content = sortHtml + content;
+        }
+      }
 
       if (p['attachments'] != null && p['attachments'] is Map) {
         Map<String, dynamic> attachments = Map<String, dynamic>.from(
           p['attachments'],
         );
         String attachHtml = "<br/>";
-        String fileHtml = "";
-
         attachments.forEach((key, attach) {
-          String isImage = attach['isimage']?.toString() ?? "0";
-          String fullUrl = "${attach['url']}${attach['attachment']}";
-
-          if (isImage == "1" || isImage == "-1") {
-            attachHtml += '<img src="$fullUrl" style="max-width:100%;" /><br/>';
-          } else {
-            String filename = attach['filename']?.toString() ?? "未知附件";
-            String size = attach['attachsize']?.toString() ?? "未知大小";
-            fileHtml +=
-                '<gn-file url="$fullUrl" name="$filename" size="$size"></gn-file><br/>';
-          }
+          String fullImgUrl = "${attach['url']}${attach['attachment']}";
+          attachHtml +=
+              '<img src="$fullImgUrl" style="max-width:100%;" /><br/>';
         });
-        content += attachHtml + fileHtml;
+        content += attachHtml;
       }
 
       newPosts.add(
         PostItem(
-          pid: pid,
-          author: p['author']?.toString() ?? "匿名",
-          authorId: authorId,
+          pid: p['pid'].toString(),
+          author: p['author'].toString(),
+          authorId: p['authorid'].toString(),
           avatarUrl:
-              "${currentBaseUrl.value}uc_server/avatar.php?uid=$authorId&size=middle",
-          time: _formatTime(p['dateline']?.toString() ?? ""),
+              "${currentBaseUrl.value}uc_server/avatar.php?uid=${p['authorid']}&size=middle",
+          time: p['dateline'].toString(),
           contentHtml: _cleanApiHtml(content),
           floor: "${p['number']}楼",
           device: "",
         ),
       );
     }
-    // ==========================================
-    // 2. 【核心修复】等 newPosts 弄好了，再来算页数！
-    // ==========================================
-    // ==========================================
-    // 2. 【修复计算逻辑】等 newPosts 弄好了，再来算页数！
-    // ==========================================
-    if (threadInfo != null) {
-      int allReplies =
-          int.tryParse(threadInfo['allreplies']?.toString() ?? '0') ?? 0;
 
-      if (_isOnlyLandlord) {
-        // 【关键修复】判断是否到底，必须用服务器原始返回的数量 (items.length)
-        // 绝不能用过滤后的 newPosts.length 算！
-        if (items.length < _ppp) {
-          _totalPages = _targetPage;
+    if (mounted && newPosts.isNotEmpty) {
+      setState(() {
+        if (_targetPage == widget.initialPage && _posts.isEmpty) {
+          _posts = newPosts;
         } else {
-          _totalPages = _targetPage + 1; // 既然原始数据是满的，说明肯定还有下一页
+          for (var p in newPosts) {
+            if (!_posts.any((old) => old.pid == p.pid)) _posts.add(p);
+          }
         }
-        // 只看楼主的进度条总数暂定为当前已加载的数量
-        _totalPostsCount = _posts.length + newPosts.length;
-      } else {
-        // 普通模式，使用官方返回的总回复数
-        _totalPages = ((allReplies + 1) / _ppp).ceil();
-        _totalPostsCount = allReplies + 1;
-      }
-    }
-    setState(() {
-      if (_posts.isEmpty) {
-        // 这是刚进页面或者发生了大跨度跳转（UI层的对话框跳转清空了_posts）
-        _posts = newPosts;
-        _minPage = _targetPage;
-        _maxPage = _targetPage;
-      } else if (_targetPage < _minPage) {
-        // 向上加载（加载上一页），插入到最前面
-        newPosts.removeWhere(
-          (p) => _posts.any((old) => old.pid == p.pid),
-        ); // 终极防御：绝不塞入重复PID
-        _posts.insertAll(0, newPosts);
-        _minPage = _targetPage;
-      } else if (_targetPage > _maxPage) {
-        // 向下加载（加载下一页），追加到最后面
-        for (var p in newPosts) {
-          if (!_posts.any((old) => old.pid == p.pid)) _posts.add(p);
-        }
-        _maxPage = _targetPage;
-      } else {
-        // 加载了列表范围中间的页（比如刷新、异常重试时），安全合并即可，不修改min/max
-        for (var p in newPosts) {
-          if (!_posts.any((old) => old.pid == p.pid)) _posts.add(p);
-        }
-      }
-      _isLoadingPrev = false; // 确保清除加载状态
-      _isLoadingMore = false;
-    });
-
-    if (widget.initialTargetFloor != null || widget.initialTargetPid != null) {
-      Future.delayed(const Duration(milliseconds: 500), () {
-        _scrollToTargetFloor();
       });
+
+      if (_targetPage == 1) {
+        // HistoryManager.addHistory(...)
+      }
     }
   }
 
@@ -654,15 +538,9 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
           resp.contains("已评价") ||
           resp.contains("指数") ||
           resp.contains("成功")) {
-        if (mounted)
-          ScaffoldMessenger.of(
-            context,
-          ).showSnackBar(const SnackBar(content: Text("👍 点赞/顶帖成功！")));
+        if (mounted) _showToast("👍 点赞/顶帖成功！");
       } else if (resp.contains("不能")) {
-        if (mounted)
-          ScaffoldMessenger.of(
-            context,
-          ).showSnackBar(const SnackBar(content: Text("你已经点过赞了")));
+        if (mounted) _showToast("你已经点过赞了");
       } else {
         // 提取错误信息 (CDATA)
         String err = "操作失败";
@@ -705,9 +583,7 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
     if (_isLoading || _isLoadingMore) return;
     // 【修改点】向下加载永远比对 _maxPage
     if (_maxPage >= _totalPages) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text("已经是最后一页了")));
+      _showToast("已经是最后一页了");
       return;
     }
     setState(() => _isLoadingMore = true);
@@ -718,9 +594,7 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
     if (_isLoading || _isLoadingPrev) return;
     // 【修改点】向上加载永远比对 _minPage
     if (_minPage <= 1) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text("已经是第一页了")));
+      _showToast("已经是第一页了");
       return;
     }
     setState(() => _isLoadingPrev = true);
@@ -799,6 +673,21 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
       if (!_isLoading && !_isLoadingMore && _targetPage < _totalPages)
         _loadNext();
     }
+  }
+
+  // ==========================================
+  // 【新增】调用系统原生分享帖子链接
+  // ==========================================
+  void _shareThread() {
+    // 构造当前帖子的完整网页链接
+    final String url =
+        "${currentBaseUrl.value}forum.php?mod=viewthread&tid=${widget.tid}";
+
+    // 调用原生分享
+    Share.share(
+      '分享来自 GiantessWaltz 的帖子：\n《${widget.subject}》\n链接：$url',
+      subject: widget.subject, // 邮件分享时会作为标题
+    );
   }
 
   void _toggleNovelMode() {
@@ -895,9 +784,7 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
         // ==========================================
         // 【核心修复】取消收藏必须用 POST 和 formhash
         // ==========================================
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(const SnackBar(content: Text("正在取消收藏...")));
+        _showToast("正在取消收藏...");
 
         final String url =
             "${currentBaseUrl.value}home.php?mod=spacecp&ac=favorite&op=delete&favid=$_favid&type=all&inajax=1";
@@ -1924,6 +1811,17 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.end,
         children: [
+          // 在 _buildFabMenu 列表里添加
+          _buildFabItem(
+            icon: Icons.share_outlined,
+            label: "分享帖子",
+            color: Colors.blueAccent,
+            onTap: () {
+              _toggleFab(); // 关闭菜单
+              _shareThread(); // 触发分享
+            },
+          ),
+          const SizedBox(height: 12),
           // 【修复后的只看楼主按钮】
           _buildFabItem(
             icon: _isOnlyLandlord ? Icons.people_outline : Icons.person_outline,
@@ -2821,9 +2719,9 @@ class _RetryableImageState extends State<RetryableImage> {
   @override
   Widget build(BuildContext context) {
     String finalUrl = widget.imageUrl;
-    if (_retryCount > 0)
-      finalUrl =
-          "$finalUrl${finalUrl.contains('?') ? '&' : '?'}retry=$_retryCount";
+    if (_retryCount > 0) {
+      finalUrl += (finalUrl.contains('?') ? '&' : '?') + 'retry=$_retryCount';
+    }
 
     return GestureDetector(
       onTap: () => widget.onTap(widget.imageUrl),
@@ -2835,60 +2733,59 @@ class _RetryableImageState extends State<RetryableImage> {
           cacheManager: widget.cacheManager,
           httpHeaders: widget.headers,
           fit: BoxFit.contain,
-          placeholder: (context, url) => Container(
-            height: 200,
-            color: Colors.grey[200],
-            child: const Center(child: CircularProgressIndicator()),
+
+          // 【核心修复】删掉 memCacheWidth 和 maxWidthDiskCache！！！
+          // 让 Flutter 用底层的 C++ 引擎直接光速解码原图
+          placeholder: (ctx, url) => Container(
+            height: 150,
+            color: Colors.grey.withOpacity(0.1),
+            child: const Center(
+              child: SizedBox(
+                width: 20,
+                height: 20,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+            ),
           ),
           errorWidget: (ctx, url, error) {
-            // 【新增调试逻辑】
             return InkWell(
               onTap: () async {
-                try {
-                  // 1. 尝试找到本地缓存的文件路径
-                  var fileInfo = await widget.cacheManager.getFileFromCache(
-                    url,
-                  );
-                  if (fileInfo != null) {
-                    File badFile = fileInfo.file;
-                    // 2. 读取文件开头的一部分内容（通常前100个字符就能看出是不是HTML）
-                    String content = await badFile.readAsString();
-                    print("⚠️ [Image Debug] 发现坏图文件！内容预览:");
-                    print("----------------------------------");
-                    print(
-                      content.length > 200
-                          ? content.substring(0, 200)
-                          : content,
-                    );
-                    print("----------------------------------");
-
-                    if (content.contains("<!DOCTYPE html") ||
-                        content.contains("<html")) {
-                      print("💡 结论：下载到的是网页（防火墙拦截页），不是图片。");
-                    } else if (content.contains("messageval")) {
-                      print("💡 结论：下载到的是 JSON 报错信息（可能掉登录了）。");
-                    }
-                  } else {
-                    print("🚨 [Image Debug] 本地竟然没找到缓存文件？");
-                  }
-                } catch (e) {
-                  print("🛠️ [Image Debug] 读取坏图文件失败（可能是二进制流）: $e");
-                }
-
-                // 执行清理并重试（保持你之前的清理代码）
                 await widget.cacheManager.removeFile(widget.imageUrl);
                 await CachedNetworkImage.evictFromCache(widget.imageUrl);
-                setState(() => _retryCount++);
+                if (mounted) {
+                  setState(() => _retryCount++);
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text("已清理该图片坏块，正在重连..."),
+                      duration: Duration(milliseconds: 800),
+                    ),
+                  );
+                }
               },
               child: Container(
                 height: 120,
                 width: double.infinity,
-                color: Colors.red.withOpacity(0.1),
-                child: const Column(
+                decoration: BoxDecoration(
+                  color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Column(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
-                    Icon(Icons.bug_report, color: Colors.red),
-                    Text("加载失败：可能是网络被拦截\n点击尝试重连", textAlign: TextAlign.center),
+                    const Icon(
+                      Icons.broken_image_outlined,
+                      color: Colors.grey,
+                      size: 32,
+                    ),
+                    const SizedBox(height: 8),
+                    const Text(
+                      "图片加载失败（可能是网络拦截）",
+                      style: TextStyle(fontSize: 12, color: Colors.grey),
+                    ),
+                    Text(
+                      "点击强制重新下载 ($_retryCount)",
+                      style: const TextStyle(fontSize: 11, color: Colors.blue),
+                    ),
                   ],
                 ),
               ),

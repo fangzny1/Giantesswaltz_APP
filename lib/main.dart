@@ -4,6 +4,7 @@ import 'package:flutter_cache_manager/flutter_cache_manager.dart';
 import 'package:giantesswaltz_app/history_page.dart';
 import 'package:giantesswaltz_app/http_service.dart';
 import 'package:giantesswaltz_app/offline_list_page.dart';
+import 'package:giantesswaltz_app/settings_page.dart';
 import 'package:giantesswaltz_app/thread_detail_page.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:webview_flutter/webview_flutter.dart';
@@ -29,7 +30,7 @@ import 'package:file_picker/file_picker.dart';
 import 'dart:ui' as ui;
 import 'package:flutter/services.dart';
 
-const String kAppVersion = "v1.5.0"; // 这是你当前的 App 版本
+const String kAppVersion = "v1.5.2"; // 这是你当前的 App 版本
 const String kUpdateUrl = "https://fangzny-myupdate-gw-app.hf.space/update";
 
 // 全局状态
@@ -130,7 +131,8 @@ void main() async {
     currentTheme.value = ThemeMode.dark;
   else if (themeStr == 'light')
     currentTheme.value = ThemeMode.light;
-
+  // 【新增】启动时初始化自定义图片缓存引擎！
+  await initGlobalImageCache();
   // 【新增】自动清理缓存逻辑
   bool clearImage = prefs.getBool('auto_clear_image_cache') ?? false;
   bool clearText = prefs.getBool('auto_clear_text_cache') ?? false;
@@ -182,14 +184,18 @@ String _safeMergeCookies(String currentCookie, List<String> newCookieHeaders) {
   return finalKv.entries.map((e) => '${e.key}=${e.value}').join('; ');
 }
 
-// 【新增】定义一个 HttpOverrides 类
+// 修改 main.dart 中的 _MyHttpOverrides 类
+
 class _MyHttpOverrides extends HttpOverrides {
   @override
   HttpClient createHttpClient(SecurityContext? context) {
     return super.createHttpClient(context)
+      // 【核心优化 1】允许同域名下更高的并发连接数（模拟浏览器并发）
+      ..maxConnectionsPerHost = 12
+      // 【核心优化 2】延长空闲连接的存活时间，避免频繁重新建立耗时的 SSL/TLS 握手
+      ..idleTimeout = const Duration(seconds: 30)
       ..badCertificateCallback =
-          (X509Certificate cert, String host, int port) =>
-              true; // 允许自签名证书，减少 SSL 报错
+          (X509Certificate cert, String host, int port) => true;
   }
 }
 
@@ -1557,9 +1563,70 @@ class _ForumHomePageState extends State<ForumHomePage> {
                 builder: (context, wallpaperPath, _) {
                   bool useTransparent =
                       wallpaperPath != null && transparentBarsEnabled.value;
-                  return SliverAppBar.large(
-                    title: const Text("GiantessWaltz"),
-                    backgroundColor: useTransparent ? Colors.transparent : null,
+                  return SliverAppBar(
+                    expandedHeight: 110.0, // 增加高度
+                    floating: false,
+                    pinned: true,
+                    backgroundColor: useTransparent
+                        ? Colors.transparent
+                        : Theme.of(context).colorScheme.surface,
+                    elevation: 0,
+                    flexibleSpace: FlexibleSpaceBar(
+                      centerTitle: false,
+                      titlePadding: const EdgeInsets.only(left: 20, bottom: 14),
+                      title: Row(
+                        crossAxisAlignment: CrossAxisAlignment.end,
+                        children: [
+                          const Text(
+                            "发现",
+                            style: TextStyle(
+                              fontWeight: FontWeight.w900,
+                              fontSize: 26,
+                              letterSpacing: 1.2,
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: 3),
+                            child: Text(
+                              "GiantessWaltz",
+                              style: TextStyle(
+                                fontSize: 11,
+                                color: Colors.grey.withOpacity(0.8),
+                                fontStyle: FontStyle.italic,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    actions: [
+                      // 右上角展示当前登录用户的头像
+                      Padding(
+                        padding: const EdgeInsets.only(right: 20.0, top: 10),
+                        child: ValueListenableBuilder<String>(
+                          valueListenable: currentUserAvatar,
+                          builder: (context, avatar, _) {
+                            return CircleAvatar(
+                              radius: 16,
+                              backgroundColor: Theme.of(
+                                context,
+                              ).colorScheme.secondaryContainer,
+                              backgroundImage: avatar.isNotEmpty
+                                  ? CachedNetworkImageProvider(avatar)
+                                  : null,
+                              child: avatar.isEmpty
+                                  ? const Icon(
+                                      Icons.person,
+                                      size: 18,
+                                      color: Colors.grey,
+                                    )
+                                  : null,
+                            );
+                          },
+                        ),
+                      ),
+                    ],
                   );
                 },
               ),
@@ -2611,6 +2678,18 @@ class _ProfilePageState extends State<ProfilePage> {
               );
             },
           ),
+          // 【新增】高级设置入口
+          IconButton(
+            icon: const Icon(Icons.settings_outlined),
+            tooltip: "高级设置",
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (c) => const SettingsPage()),
+              );
+            },
+          ),
+
           const SizedBox(width: 8),
         ],
       ),

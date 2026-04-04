@@ -1,4 +1,7 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
+import 'package:giantesswaltz_app/main.dart';
 import 'offline_manager.dart';
 import 'thread_detail_page.dart';
 
@@ -65,107 +68,130 @@ class _OfflineListPageState extends State<OfflineListPage> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: Text(_isSelectionMode ? "已选 ${_selectedTids.length} 项" : "离线缓存"),
-        actions: [
-          if (_isSelectionMode)
-            IconButton(
-              icon: const Icon(Icons.delete_outline),
-              onPressed: _deleteSelected,
-            )
-          else
-            IconButton(
-              icon: const Icon(Icons.checklist),
-              onPressed: () => setState(() => _isSelectionMode = true),
-              tooltip: "多选管理",
+    return ValueListenableBuilder<String?>(
+      valueListenable: customWallpaperPath,
+      builder: (context, wallpaperPath, _) {
+        return Scaffold(
+          backgroundColor: wallpaperPath != null ? Colors.transparent : null,
+          appBar: AppBar(
+            title: Text(
+              _isSelectionMode ? "已选 ${_selectedTids.length} 项" : "离线缓存",
             ),
-        ],
-        leading: _isSelectionMode
-            ? IconButton(
-                icon: const Icon(Icons.close),
-                onPressed: () => setState(() {
-                  _isSelectionMode = false;
-                  _selectedTids.clear();
-                }),
-              )
-            : null,
-      ),
-      body: _list.isEmpty
-          ? const Center(
-              child: Text("暂无离线帖子", style: TextStyle(color: Colors.grey)),
-            )
-          : ListView.builder(
-              itemCount: _list.length,
-              itemBuilder: (ctx, i) {
-                final item = _list[i];
-                final tid = item['tid'] as String;
-                final isSelected = _selectedTids.contains(tid);
+            actions: [
+              if (_isSelectionMode)
+                IconButton(
+                  icon: const Icon(Icons.delete_outline),
+                  onPressed: _deleteSelected,
+                )
+              else
+                IconButton(
+                  icon: const Icon(Icons.checklist),
+                  onPressed: () => setState(() => _isSelectionMode = true),
+                  tooltip: "多选管理",
+                ),
+            ],
+            leading: _isSelectionMode
+                ? IconButton(
+                    icon: const Icon(Icons.close),
+                    onPressed: () => setState(() {
+                      _isSelectionMode = false;
+                      _selectedTids.clear();
+                    }),
+                  )
+                : null,
+          ),
+          body: Stack(
+            children: [
+              if (wallpaperPath != null) ...[
+                Positioned.fill(
+                  child: Image.file(File(wallpaperPath), fit: BoxFit.cover),
+                ),
+                Positioned.fill(
+                  child: Container(color: Colors.black.withOpacity(0.5)),
+                ),
+              ],
+              _list.isEmpty
+                  ? const Center(
+                      child: Text(
+                        "暂无离线帖子",
+                        style: TextStyle(color: Colors.grey),
+                      ),
+                    )
+                  : ListView.builder(
+                      itemCount: _list.length,
+                      itemBuilder: (ctx, i) {
+                        final item = _list[i];
+                        final tid = item['tid'] as String;
+                        final isSelected = _selectedTids.contains(tid);
 
-                return ListTile(
-                  leading: _isSelectionMode
-                      ? Checkbox(
-                          value: isSelected,
-                          onChanged: (v) {
-                            setState(() {
-                              if (v == true)
-                                _selectedTids.add(tid);
-                              else
-                                _selectedTids.remove(tid);
-                            });
-                          },
-                        )
-                      : CircleAvatar(
-                          backgroundColor: Theme.of(
-                            context,
-                          ).colorScheme.primaryContainer,
-                          child: const Icon(Icons.download_done),
-                        ),
-                  title: Text(
-                    item['subject'] ?? "无标题",
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                  subtitle: Text(
-                    "${item['author']} · 已缓存至第 ${item['max_page']} 页",
-                  ),
-                  trailing: _isSelectionMode
-                      ? null
-                      : const Icon(Icons.chevron_right),
-                  onTap: () {
-                    if (_isSelectionMode) {
-                      setState(() {
-                        if (isSelected)
-                          _selectedTids.remove(tid);
-                        else
-                          _selectedTids.add(tid);
-                      });
-                    } else {
-                      // 跳转阅读
-                      Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (ctx) => ThreadDetailPage(
-                            tid: tid,
-                            subject: item['subject'],
-                            // 【核心修复】传入离线保存的 authorId
-                            initialAuthorId: item['author_id'],
+                        return ListTile(
+                          leading: _isSelectionMode
+                              ? Checkbox(
+                                  value: isSelected,
+                                  onChanged: (v) {
+                                    setState(() {
+                                      if (v == true)
+                                        _selectedTids.add(tid);
+                                      else
+                                        _selectedTids.remove(tid);
+                                    });
+                                  },
+                                )
+                              : CircleAvatar(
+                                  backgroundColor: Theme.of(
+                                    context,
+                                  ).colorScheme.primaryContainer,
+                                  child: const Icon(Icons.download_done),
+                                ),
+                          title: Text(
+                            item['subject'] ?? "无标题",
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
                           ),
-                        ),
-                      );
-                    }
-                  },
-                  onLongPress: () {
-                    if (!_isSelectionMode) {
-                      setState(() {
-                        _isSelectionMode = true;
-                        _selectedTids.add(tid);
-                      });
-                    }
-                  },
-                );
-              },
-            ),
+                          subtitle: Text(
+                            "${item['author']} · 已缓存至第 ${item['max_page']} 页",
+                          ),
+                          trailing: _isSelectionMode
+                              ? null
+                              : const Icon(Icons.chevron_right),
+                          onTap: () {
+                            if (_isSelectionMode) {
+                              setState(() {
+                                if (isSelected)
+                                  _selectedTids.remove(tid);
+                                else
+                                  _selectedTids.add(tid);
+                              });
+                            } else {
+                              // 跳转阅读
+                              Navigator.push(
+                                context,
+                                MaterialPageRoute(
+                                  builder: (ctx) => ThreadDetailPage(
+                                    tid: tid,
+                                    subject: item['subject'],
+                                    // 【核心修复】传入离线保存的 authorId
+                                    initialAuthorId: item['author_id'],
+                                  ),
+                                ),
+                              );
+                            }
+                          },
+                          onLongPress: () {
+                            if (!_isSelectionMode) {
+                              setState(() {
+                                _isSelectionMode = true;
+                                _selectedTids.add(tid);
+                              });
+                            }
+                          },
+                        );
+                      },
+                    ),
+            ],
+          ),
+        );
+      },
     );
   }
 }

@@ -5,7 +5,7 @@ import 'package:webview_flutter/webview_flutter.dart';
 import 'dart:convert';
 import 'dart:io'; // 用于 File
 // 必须引用
-
+import 'package:html/parser.dart' as html_parser; // 确保顶部有这个
 import 'forum_model.dart';
 import 'login_page.dart'; // 引用 kUserAgent
 import 'thread_detail_page.dart';
@@ -322,6 +322,9 @@ class _ThreadListPageState extends State<ThreadListPage> {
     return ValueListenableBuilder<String?>(
       valueListenable: customWallpaperPath,
       builder: (context, wallpaperPath, _) {
+        String rawTitle = thread.subject;
+        String cleanTitle =
+            html_parser.parseFragment(rawTitle).text ?? rawTitle;
         // 构造头像 URL
         // 【核心修复 1】使用 currentBaseUrl.value 代替 kBaseUrl
         // 【核心修复 2】thread.authorid 已经在第二步定义好了
@@ -360,7 +363,7 @@ class _ThreadListPageState extends State<ThreadListPage> {
               ),
             ),
             title: Text(
-              thread.subject,
+              cleanTitle,
               maxLines: 2,
               overflow: TextOverflow.ellipsis,
               style: const TextStyle(fontWeight: FontWeight.bold),

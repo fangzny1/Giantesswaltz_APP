@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_cache_manager/flutter_cache_manager.dart';
 import 'package:giantesswaltz_app/history_page.dart';
 import 'package:giantesswaltz_app/http_service.dart';
+import 'package:giantesswaltz_app/notification_page.dart';
 import 'package:giantesswaltz_app/offline_list_page.dart';
 import 'package:giantesswaltz_app/settings_page.dart';
 import 'package:giantesswaltz_app/thread_detail_page.dart';
@@ -701,6 +702,10 @@ class _ForumHomePageState extends State<ForumHomePage> {
   WebViewController? _hiddenController;
   Timer? _timeoutTimer;
   bool _apiHttpFallbackTried = false;
+  int _totalNotices = 0; // 总提醒数
+
+  // 1. 增加一个状态变量
+  int _newNoticeCount = 0;
 
   @override
   void initState() {
@@ -1341,6 +1346,15 @@ class _ForumHomePageState extends State<ForumHomePage> {
 
     // === 开始解析 Variables ===
     var variables = data['Variables'];
+    // 解析通知数量
+    if (variables['notice'] != null) {
+      int prompt =
+          int.tryParse(variables['notice']['newprompt'].toString()) ?? 0;
+      int pm = int.tryParse(variables['notice']['newpm'].toString()) ?? 0;
+      setState(() {
+        _newNoticeCount = prompt + pm;
+      });
+    }
 
     // 1. 更新用户信息
     String newName = variables['member_username'].toString();
@@ -1600,10 +1614,34 @@ class _ForumHomePageState extends State<ForumHomePage> {
                         ],
                       ),
                     ),
+
                     actions: [
+                      // 新增：通知图标
+                      // 铃铛图标
+                      Padding(
+                        padding: const EdgeInsets.only(top: 10, right: 5),
+                        child: IconButton(
+                          icon: Badge(
+                            isLabelVisible: _newNoticeCount > 0,
+                            label: Text(_newNoticeCount.toString()),
+                            child: const Icon(Icons.notifications_outlined),
+                          ),
+                          onPressed: () {
+                            // 点击后本地立即清空红点，解决你担心的重复提示问题
+                            setState(() => _newNoticeCount = 0);
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (c) => const NotificationPage(),
+                              ),
+                            );
+                          },
+                        ),
+                      ),
                       // 右上角展示当前登录用户的头像
                       Padding(
                         padding: const EdgeInsets.only(right: 20.0, top: 10),
+
                         child: ValueListenableBuilder<String>(
                           valueListenable: currentUserAvatar,
                           builder: (context, avatar, _) {

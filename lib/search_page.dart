@@ -360,7 +360,7 @@ class _SearchPageState extends State<SearchPage> {
                   child: Image.file(File(wallpaperPath), fit: BoxFit.cover),
                 ),
                 Positioned.fill(
-                  child: Container(color: Colors.black.withOpacity(0.5)),
+                  child: Container(color: Colors.black.withOpacity(0.3)),
                 ),
               ],
 
@@ -407,7 +407,7 @@ class _SearchPageState extends State<SearchPage> {
     // 2. 搜帖/搜人模式
     return Column(
       children: [
-        if (!_hasSearched) _buildHistoryView(),
+        if (!_hasSearched) _buildHistoryView(wallpaperPath),
         if (_hasSearched)
           Expanded(
             child: _searchType == 1
@@ -507,11 +507,27 @@ class _SearchPageState extends State<SearchPage> {
     );
   }
 
-  Widget _buildHistoryView() {
+  Widget _buildHistoryView(String? wallpaperPath) {
+    // 传入 wallpaperPath 参数
+    // 获取当前主题的颜色方案
+    final theme = Theme.of(context);
+    final bool isDark = theme.brightness == Brightness.dark;
+
+    // 动态确定文字主颜色
+    // 如果有背景：白天模式用深色(black87)，暗黑模式用浅色(white)
+    // 如果没背景：直接跟随系统主题色 (onSurface)
+    final Color textColor = wallpaperPath != null
+        ? (isDark ? Colors.white : const Color.fromARGB(221, 255, 255, 255))
+        : theme.colorScheme.onSurface;
+
+    final Color subTextColor = wallpaperPath != null
+        ? (isDark ? Colors.white70 : Colors.black54)
+        : Colors.grey;
+
     return Expanded(
       child: _history.isEmpty
-          ? const Center(
-              child: Text("尝试搜索感兴趣的内容", style: TextStyle(color: Colors.grey)),
+          ? Center(
+              child: Text("尝试搜索感兴趣的内容", style: TextStyle(color: subTextColor)),
             )
           : ListView(
               padding: const EdgeInsets.all(20),
@@ -519,12 +535,19 @@ class _SearchPageState extends State<SearchPage> {
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    const Text(
+                    Text(
                       "最近搜索",
-                      style: TextStyle(fontWeight: FontWeight.bold),
+                      style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        color: textColor, // 使用动态颜色
+                      ),
                     ),
                     IconButton(
-                      icon: const Icon(Icons.delete_sweep_outlined, size: 20),
+                      icon: Icon(
+                        Icons.delete_sweep_outlined,
+                        size: 20,
+                        color: textColor.withOpacity(0.7), // 垃圾桶图标同步颜色
+                      ),
                       onPressed: () async {
                         final prefs = await SharedPreferences.getInstance();
                         await prefs.remove('search_history');
@@ -535,17 +558,31 @@ class _SearchPageState extends State<SearchPage> {
                 ),
                 Wrap(
                   spacing: 8,
-                  children: _history
-                      .map(
-                        (h) => ActionChip(
-                          label: Text(h, style: const TextStyle(fontSize: 12)),
-                          onPressed: () {
-                            _textController.text = h;
-                            _doSearch(h);
-                          },
+                  runSpacing: 4,
+                  children: _history.map((h) {
+                    return ActionChip(
+                      label: Text(
+                        h,
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: subTextColor, // 标签文字同步颜色
                         ),
-                      )
-                      .toList(),
+                      ),
+                      // 标签的背景色：如果有壁纸，给一个半透明遮罩感
+                      backgroundColor: wallpaperPath != null
+                          ? (isDark
+                                ? Colors.white.withOpacity(0.1)
+                                : Colors.black.withOpacity(0.05))
+                          : theme.colorScheme.surfaceVariant.withOpacity(0.5),
+                      side: BorderSide(
+                        color: textColor.withOpacity(0.2), // 边框也动态适配
+                      ),
+                      onPressed: () {
+                        _textController.text = h;
+                        _doSearch(h);
+                      },
+                    );
+                  }).toList(),
                 ),
               ],
             ),
@@ -572,7 +609,11 @@ class _SearchPageState extends State<SearchPage> {
 
         return Card(
           margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-          color: wallpaperPath != null ? Colors.white.withOpacity(0.1) : null,
+          color: wallpaperPath != null
+              ? Theme.of(
+                  context,
+                ).colorScheme.surfaceContainerHighest.withOpacity(0.9)
+              : null,
           elevation: 0,
           child: ListTile(
             // 【核心修复】完美的头像容错机制

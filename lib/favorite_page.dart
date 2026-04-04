@@ -358,10 +358,14 @@ class _FavoritePageState extends State<FavoritePage> {
       valueListenable: customWallpaperPath,
       builder: (context, wallpaperPath, _) {
         return Scaffold(
-          backgroundColor: wallpaperPath != null ? Colors.transparent : null,
+          backgroundColor: wallpaperPath != null
+              ? Theme.of(context).colorScheme.surfaceContainerHighest
+              : null,
           appBar: AppBar(
             title: const Text("我的收藏"),
-            backgroundColor: wallpaperPath != null ? Colors.transparent : null,
+            backgroundColor: wallpaperPath != null
+                ? Theme.of(context).colorScheme.surfaceContainerHighest
+                : null,
             actions: [
               IconButton(
                 icon: const Icon(Icons.refresh),
@@ -414,7 +418,11 @@ class _FavoritePageState extends State<FavoritePage> {
         final fav = _favorites[index];
         return Card(
           margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-          color: wallpaperPath != null ? Colors.white.withOpacity(0.1) : null,
+          color: wallpaperPath != null
+              ? Theme.of(
+                  context,
+                ).colorScheme.surfaceContainerHighest.withOpacity(0.5)
+              : null,
           elevation: 0,
           child: ListTile(
             leading: const Icon(Icons.star, color: Colors.orange),

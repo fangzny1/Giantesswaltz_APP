@@ -31,7 +31,7 @@ import 'package:file_picker/file_picker.dart';
 import 'dart:ui' as ui;
 import 'package:flutter/services.dart';
 
-const String kAppVersion = "v1.6.0"; // 这是你当前的 App 版本
+const String kAppVersion = "v1.6.5"; // 这是你当前的 App 版本
 const String kUpdateUrl = "https://fangzny-myupdate-gw-app.hf.space/update";
 
 // 全局状态
@@ -192,7 +192,7 @@ class _MyHttpOverrides extends HttpOverrides {
   HttpClient createHttpClient(SecurityContext? context) {
     return super.createHttpClient(context)
       // 【核心优化 1】允许同域名下更高的并发连接数（模拟浏览器并发）
-      ..maxConnectionsPerHost = 12
+      ..maxConnectionsPerHost = 15
       // 【核心优化 2】延长空闲连接的存活时间，避免频繁重新建立耗时的 SSL/TLS 握手
       ..idleTimeout = const Duration(seconds: 30)
       ..badCertificateCallback =

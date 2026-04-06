@@ -2,6 +2,7 @@ import 'dart:typed_data';
 import 'dart:io'; // 用于 File
 import 'package:flutter/material.dart';
 import 'package:giantesswaltz_app/forum_model.dart';
+import 'package:giantesswaltz_app/image_download_service.dart';
 import 'package:photo_view/photo_view.dart';
 import 'package:dio/dio.dart';
 import 'package:gal/gal.dart';
@@ -55,38 +56,49 @@ class _ImagePreviewPageState extends State<ImagePreviewPage> {
     setState(() => _isSaving = true);
 
     try {
-      // 1. 下载图片数据
-      // 【关键】这里必须使用 _safeHeaders，否则外链下载会 403
-      var response = await Dio().get(
+      // 1. 尝试从全局缓存中直接获取已下载的文件
+      // globalImageCache 是你在 forum_model 里定义的那个带加速的缓存器
+      final FileInfo? fileInfo = await globalImageCache.getFileFromCache(
         widget.imageUrl,
-        options: Options(
-          responseType: ResponseType.bytes,
-          headers: _safeHeaders,
-        ),
       );
 
-      // 2. 保存到相册
-      await Gal.putImageBytes(
-        Uint8List.fromList(response.data),
-        name: "GN_${DateTime.now().millisecondsSinceEpoch}",
-      );
+      File? imageFile;
 
-      if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(const SnackBar(content: Text("✅ 图片已保存到相册")));
+      if (fileInfo != null && await fileInfo.file.exists()) {
+        // 情况 A: 命中缓存，直接用缓存文件
+        print("🚀 [SaveImage] 命中缓存，直接保存本地文件");
+        imageFile = fileInfo.file;
+      } else {
+        // 情况 B: 缓存意外丢失或尚未下载完，则执行下载并存入缓存
+        print("🌐 [SaveImage] 缓存未命中，开始流式下载...");
+        // 使用 cacheManager 的 downloadFile 也会自动走你写的 MyDioFileService 加速
+        final FileInfo downloaded = await globalImageCache.downloadFile(
+          widget.imageUrl,
+          key: widget.imageUrl,
+          authHeaders: _safeHeaders,
+        );
+        imageFile = downloaded.file;
       }
-    } on GalException catch (e) {
+
+      // 2. 将文件保存到相册
+      // 使用 Gal.putImage 直接传入路径，这是最快的方式
+      await Gal.putImage(imageFile.path, album: "GiantessWaltz");
+
       if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text("❌ 保存失败: ${e.type.message}")));
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text("✅ 图片已秒传至相册"),
+            backgroundColor: Colors.green,
+            duration: Duration(seconds: 1),
+          ),
+        );
       }
     } catch (e) {
+      print("❌ 保存失败详情: $e");
       if (mounted) {
         ScaffoldMessenger.of(
           context,
-        ).showSnackBar(SnackBar(content: Text("❌ 下载出错: $e")));
+        ).showSnackBar(SnackBar(content: Text("❌ 保存失败: $e")));
       }
     } finally {
       if (mounted) setState(() => _isSaving = false);

@@ -1,4 +1,6 @@
 // lib/forum_model.dart
+import 'dart:io';
+
 import 'package:flutter_cache_manager/flutter_cache_manager.dart';
 import 'package:flutter/foundation.dart'; // 引入这个以使用 ValueNotifier
 // const String currentBaseUrl.value = 'https://giantesswaltz.org/';
@@ -8,7 +10,9 @@ import 'package:flutter/foundation.dart'; // 引入这个以使用 ValueNotifier
 import 'package:flutter_cache_manager/src/web/file_service.dart';
 import 'package:http/http.dart' as http;
 import 'package:dio/dio.dart';
+import 'package:native_dio_adapter/native_dio_adapter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter_cache_manager_dio/flutter_cache_manager_dio.dart'; // 建议添加这个小插件
 
 // 1. 全局缓存管理器（改为 late 动态初始化）
 late CacheManager globalImageCache;
@@ -270,11 +274,19 @@ Future<void> initGlobalImageCache() async {
   int maxObjects = prefs.getInt('cache_max_objects') ?? 1000;
   int staleDays = prefs.getInt('cache_stale_days') ?? 7;
 
+  // 【核心修改】：创建一个带原生加速的 Dio 实例给缓存管理器使用
+  final acceleratedDio = Dio();
+  if (Platform.isAndroid || Platform.isIOS) {
+    acceleratedDio.httpClientAdapter = NativeAdapter();
+  }
+
   globalImageCache = CacheManager(
     Config(
       'gn_forum_imageCache_v5', // 升级到 v5 抛弃之前的旧账
       stalePeriod: Duration(days: staleDays),
       maxNrOfCacheObjects: maxObjects,
+      // 【关键点】：让图片缓存器通过这个 acceleratedDio 去拉取数据
+      fileService: DioHttpFileService(acceleratedDio),
     ),
   );
 }

@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_widget_from_html/flutter_widget_from_html.dart';
 import 'package:giantesswaltz_app/cloudflare_solver.dart';
 import 'package:giantesswaltz_app/history_manager.dart';
+import 'package:giantesswaltz_app/ultra_reader_page.dart';
 import 'package:html/parser.dart' as html_parser;
 import 'package:url_launcher/url_launcher.dart'; // 现在已正确使用
 import 'package:shared_preferences/shared_preferences.dart';
@@ -2021,10 +2022,19 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
             const SizedBox(height: 12),
           ],
           _buildFabItem(
-            icon: _isNovelMode ? Icons.auto_stories : Icons.menu_book,
-            label: _isNovelMode ? "退出小说" : "小说模式",
-            color: _isNovelMode ? Colors.purpleAccent : null,
-            onTap: _toggleNovelMode,
+            icon: Icons.auto_stories_rounded, // 使用一个更高级的书本图标
+            label: "超级全量模式",
+            color: Colors.deepOrange,
+            onTap: () {
+              _toggleFab(); // 关闭菜单
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (c) =>
+                      UltraReaderPage(tid: widget.tid, title: _displaySubject),
+                ),
+              );
+            },
           ),
 
           const SizedBox(height: 12),
@@ -2728,6 +2738,15 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
   Map<String, String> _getHeadersForUrl(String url) {
     // 1. 获取当前论坛的主机名 (如 giantesswaltz.org)
     String currentHost = Uri.parse(currentBaseUrl.value).host;
+    // 如果是备用站
+    if (url.contains('gtswaltz.org')) {
+      return {
+        'Cookie': _userCookies,
+        'User-Agent': kUserAgent,
+        'Referer': "https://gtswaltz.org/", // 备用站强制要求 Referer 是自己
+        'Connection': 'keep-alive', // 保持连接，不重新握手
+      };
+    }
 
     // 2. 判断是否是站内图片
     // 如果 URL 包含当前域名，或者是相对路径（不以 http 开头），或者是备用域名

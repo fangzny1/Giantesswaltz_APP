@@ -2534,6 +2534,16 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
     );
     _floorKeys[post.floor] = anchorKey;
     final isLandlord = post.authorId == _landlordUid;
+    String finalHtml = post.contentHtml;
+
+    if (isDark) {
+      finalHtml = finalHtml
+          .replaceAll('color:rgb(0, 0, 0)', 'color:#E0E0E0')
+          .replaceAll('color: rgb(0, 0, 0)', 'color:#E0E0E0')
+          .replaceAll('color:#000000', 'color:#E0E0E0')
+          .replaceAll('color="#000000"', 'color="#E0E0E0"')
+          .replaceAll('color="#000"', 'color="#E0E0E0"');
+    }
 
     return AutoScrollTag(
       key: ValueKey(index),
@@ -2631,17 +2641,14 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
                   ),
 
                 SelectionArea(
-                  child: HtmlWidget(
-                    post.contentHtml,
+                  child: // 在 _buildPostCard 和 _buildReaderCard 里面
+                  HtmlWidget(
+                    finalHtml,
                     textStyle: TextStyle(
-                      fontSize: _fontSize - 2,
+                      fontSize: _fontSize - 2, // 或者是 _fontSize
                       height: _lineHeight,
-                      // 确保基础颜色跟随主题
-                      color: Theme.of(context).brightness == Brightness.dark
-                          ? Colors.white70
-                          : Colors.black87,
+                      color: isDark ? Colors.white70 : Colors.black87,
                     ),
-
                     // ==================== 1. 样式构建器 (解决背景和文字冲突) ====================
                     customStylesBuilder: (element) {
                       bool isDark =
@@ -2649,6 +2656,7 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
                       String style = element.attributes['style'] ?? '';
                       String parentStyle =
                           element.parent?.attributes['style'] ?? '';
+
                       // 【核心修复：暗黑模式强除背景】
                       if (isDark) {
                         // 检查元素是否有显式的 style 包含背景色

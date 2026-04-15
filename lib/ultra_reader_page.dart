@@ -383,6 +383,20 @@ class _UltraReaderPageState extends State<UltraReaderPage>
 
     final ch = _chapters[_currentIndex];
 
+    // ====== 【核心且绝对安全的修复】 ======
+    // 直接在字符串层面把绝对黑色的代码替换为浅灰色，完全绕过插件的 CSS 引擎！
+    String finalHtml = ch.content;
+    if (_currentThemeIndex == 2) {
+      // 深邃(暗黑)模式
+      finalHtml = finalHtml
+          .replaceAll('color:rgb(0, 0, 0)', 'color:#BBBBBB')
+          .replaceAll('color: rgb(0, 0, 0)', 'color:#BBBBBB')
+          .replaceAll('color:#000000', 'color:#BBBBBB')
+          .replaceAll('color="#000000"', 'color="#BBBBBB"')
+          .replaceAll('color="#000"', 'color="#BBBBBB"');
+    }
+    // ===================================
+
     return CustomScrollView(
       controller: _scrollController,
       slivers: [
@@ -431,7 +445,7 @@ class _UltraReaderPageState extends State<UltraReaderPage>
         SliverPadding(
           padding: const EdgeInsets.symmetric(horizontal: 16),
           sliver: HtmlWidget(
-            ch.content,
+            finalHtml,
             renderMode: RenderMode.sliverList, // <--- 神级优化点
             textStyle: TextStyle(
               fontSize: _fontSize,

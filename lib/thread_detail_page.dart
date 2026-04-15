@@ -40,7 +40,8 @@ class PostItem {
   final String floor;
   final String device;
   final int page; // 【新增】该楼层所归属的原帖真实页码
-
+  final List<String> tags; // 【新增】标签列表
+  final List<Map<String, String>> metadata; // 【新增】用于存放原作信息等键值对
   PostItem({
     required this.pid,
     required this.author,
@@ -51,6 +52,8 @@ class PostItem {
     required this.floor,
     required this.device,
     required this.page,
+    this.tags = const [], // 默认为空
+    this.metadata = const [], // 默认为空
   });
 }
 
@@ -314,25 +317,36 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
     final vars = data['Variables'];
 
     String sortHtml = "";
+    // --- 【修改点】：提取纯净的标签数据，不再拼接 HTML ---
+    List<String> extractedTags = [];
+    List<Map<String, String>> extractedMetadata = [];
     if (vars['threadsortshow'] != null &&
         vars['threadsortshow']['optionlist'] != null) {
       var optionList = vars['threadsortshow']['optionlist'];
       if (optionList is List && optionList.isNotEmpty) {
-        sortHtml +=
-            "<div style='background-color: rgba(97, 202, 184, 0.1); padding: 12px; border-radius: 8px; margin-bottom: 16px; border: 1px solid rgba(97, 202, 184, 0.3);'>";
         for (var option in optionList) {
           String title = option['title']?.toString() ?? "";
-          String value = option['value']?.toString() ?? "";
-          if (title.isNotEmpty &&
-              value.trim().isNotEmpty &&
-              value != "&nbsp;") {
-            sortHtml +=
-                "<p style='margin: 4px 0;'><strong style='color: #61CAB8;'>$title: </strong> <span>$value</span></p>";
+          String rawValue = option['value']?.toString() ?? "";
+          String type = option['type']?.toString() ?? ""; // 获取字段类型
+
+          if (title.isEmpty || rawValue.trim().isEmpty || rawValue == "&nbsp;")
+            continue;
+
+          // 1. 如果是 checkbox 或 radio，提取为彩色小标签
+          if (type == 'checkbox' || type == 'radio' || type == 'select') {
+            var parts = rawValue
+                .split(RegExp(r'(&nbsp;|\s+)'))
+                .where((t) => t.trim().isNotEmpty);
+            extractedTags.addAll(parts);
+          }
+          // 2. 剩下的 text, url, textarea 全部提取为附加信息表
+          else {
+            extractedMetadata.add({'title': title, 'value': rawValue});
           }
         }
-        sortHtml += "</div>";
       }
     }
+    // ------------------------------------------------
 
     var rawPostList = vars['postlist'];
     Iterable items = [];
@@ -442,6 +456,11 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
           floor: "${p['number']}楼",
           device: "",
           page: apiPage, // 必须记录下楼层所在的原始分页页码！
+          // 【新增】：只有 1 楼 (楼主) 带有标签
+          tags: (p['first'] == "1" || p['first'] == 1) ? extractedTags : [],
+          metadata: (p['first'] == "1" || p['first'] == 1)
+              ? extractedMetadata
+              : [], // 【新增】
         ),
       );
     }
@@ -474,6 +493,202 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
         }
       });
     }
+  }
+
+  // 【新增】：智能标签构建器
+  Widget _buildTagChip(String tag) {
+    bool isDark = Theme.of(context).brightness == Brightness.dark;
+
+    // 重口类型 (猛男粉)
+    final pinkTags = ['猎奇', '番茄酱', '入菊', '气味', '排泄', '消化', 'futa', 'GC', 'GT'];
+    // 清新类型 (青绿色)
+    final tealTags = ['巨大娘', '缩小人', '缩小女', 'Growth', '变物', '温柔', '其他'];
+
+    Color baseColor;
+    bool isOutline = false; // 是否是线框样式（用于 AI、字数等元数据）
+
+    if (pinkTags.any((e) => tag.contains(e))) {
+      baseColor = const Color(0xFFFF66A1); // 猛男粉
+    } else if (tealTags.any((e) => tag.contains(e)) ||
+        RegExp(r'^\+\d+$').hasMatch(tag)) {
+      baseColor = const Color(0xFF58C9B9); // 清新绿 (包含 +1, +7 这种)
+    } else if (tag.contains('AI') || tag.endsWith('字')) {
+      baseColor = isDark ? Colors.grey[400]! : Colors.black87;
+      isOutline = true; // 元数据用线框
+    } else {
+      baseColor = const Color(0xFFFF7A59); // 活力橙 (各种中度XP默认颜色)
+    }
+
+    // 1. 线框样式 (如 AI生成, 56K字)
+    if (isOutline) {
+      return Container(
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+        decoration: BoxDecoration(
+          border: Border.all(color: baseColor, width: 1),
+          borderRadius: BorderRadius.circular(4),
+        ),
+        child: Text(
+          tag,
+          style: TextStyle(
+            color: baseColor,
+            fontSize: 11,
+            fontWeight: FontWeight.bold,
+            height: 1.1,
+          ),
+        ),
+      );
+    }
+
+    // 2. 暗黑模式适配：半透明底 + 彩色高亮字 (不刺眼，极具现代感)
+    if (isDark) {
+      return Container(
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+        decoration: BoxDecoration(
+          color: baseColor.withOpacity(0.15),
+          border: Border.all(color: baseColor.withOpacity(0.3), width: 0.5),
+          borderRadius: BorderRadius.circular(4),
+        ),
+        child: Text(
+          tag,
+          style: TextStyle(
+            color: baseColor,
+            fontSize: 11,
+            fontWeight: FontWeight.bold,
+            height: 1.1,
+          ),
+        ),
+      );
+    }
+
+    // 3. 白天模式适配：实心底 + 纯白字 (完美还原网页原版)
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+      decoration: BoxDecoration(
+        color: baseColor,
+        borderRadius: BorderRadius.circular(4),
+      ),
+      child: Text(
+        tag,
+        style: const TextStyle(
+          color: Colors.white,
+          fontSize: 11,
+          fontWeight: FontWeight.bold,
+          height: 1.1,
+        ),
+      ),
+    );
+  }
+
+  // 【新增】：构建精美的原作/附加信息卡片
+  Widget _buildMetadataCard(List<Map<String, String>> metadata) {
+    if (metadata.isEmpty) return const SizedBox.shrink();
+
+    bool isDark = Theme.of(context).brightness == Brightness.dark;
+
+    // 动态计算适配颜色
+    Color bgColor = isDark
+        ? const Color(0xFF222222)
+        : Colors.blueGrey.withOpacity(0.05);
+    Color borderColor = isDark
+        ? const Color(0xFF333333)
+        : Colors.blueGrey.withOpacity(0.2);
+    Color headerBgColor = isDark
+        ? const Color(0xFF2A2A2A)
+        : Colors.blueGrey.withOpacity(0.12);
+    Color titleColor = isDark ? Colors.grey[500]! : Colors.grey[700]!;
+    Color textColor = isDark ? Colors.grey[300]! : Colors.grey[800]!;
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 16),
+      decoration: BoxDecoration(
+        color: bgColor,
+        border: Border.all(color: borderColor),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // 头部标题栏
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              color: headerBgColor,
+              child: Row(
+                children: [
+                  Icon(
+                    Icons.info_outline,
+                    size: 16,
+                    color: isDark ? Colors.blue[300] : Colors.blue[800],
+                  ),
+                  const SizedBox(width: 6),
+                  Text(
+                    "附加信息",
+                    style: TextStyle(
+                      fontWeight: FontWeight.bold,
+                      fontSize: 13,
+                      color: isDark ? Colors.blue[100] : Colors.blue[900],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            // 信息列表
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+              child: Column(
+                children: metadata.map((item) {
+                  bool isLast = metadata.last == item;
+                  return Column(
+                    children: [
+                      Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          // 左侧属性名
+                          SizedBox(
+                            width: 80,
+                            child: Text(
+                              item['title'] ?? "",
+                              style: TextStyle(color: titleColor, fontSize: 13),
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          // 右侧属性值 (支持解析 HTML 链接)
+                          Expanded(
+                            child: HtmlWidget(
+                              item['value'] ?? "",
+                              textStyle: TextStyle(
+                                fontSize: 13,
+                                color: textColor,
+                              ),
+                              // 强制清除多余的外边距，让排版更紧凑
+                              customStylesBuilder: (element) => {
+                                'margin': '0',
+                                'padding': '0',
+                              },
+                              onTapUrl: (url) async {
+                                await _launchURL(url);
+                                return true;
+                              },
+                            ),
+                          ),
+                        ],
+                      ),
+                      if (!isLast)
+                        Divider(
+                          color: isDark ? Colors.white12 : Colors.black12,
+                          height: 16,
+                        ),
+                    ],
+                  );
+                }).toList(),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   String _cleanApiHtml(String html) {
@@ -2402,6 +2617,19 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
                   ],
                 ),
                 const SizedBox(height: 12),
+                // 【新增】：渲染原作/附加信息卡片（会显示在标签云上方）
+                if (post.metadata.isNotEmpty) _buildMetadataCard(post.metadata),
+                // 【新增】：如果这层楼有标签，就把它渲染出来！
+                if (post.tags.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 12),
+                    child: Wrap(
+                      spacing: 6, // 标签之间的横向间距
+                      runSpacing: 6, // 标签换行后的纵向间距
+                      children: post.tags.map((t) => _buildTagChip(t)).toList(),
+                    ),
+                  ),
+
                 SelectionArea(
                   child: HtmlWidget(
                     post.contentHtml,

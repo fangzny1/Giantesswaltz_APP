@@ -31,7 +31,7 @@ import 'package:file_picker/file_picker.dart';
 import 'dart:ui' as ui;
 import 'package:flutter/services.dart';
 
-const String kAppVersion = "v1.6.5"; // 这是你当前的 App 版本
+const String kAppVersion = "v1.7.0"; // 这是你当前的 App 版本
 const String kUpdateUrl = "https://fangzny-myupdate-gw-app.hf.space/update";
 
 // 全局状态

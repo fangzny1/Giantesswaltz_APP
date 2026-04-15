@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:giantesswaltz_app/ultra_reader_page.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:convert';
 import 'forum_model.dart';
@@ -148,28 +149,51 @@ class _BookmarkPageState extends State<BookmarkPage> {
                               borderRadius: BorderRadius.circular(12),
                               // 【点击】跳转
                               onTap: () {
-                                String? targetFloor;
-                                if (item.savedTime.contains("读至 ")) {
-                                  targetFloor = item.savedTime
-                                      .split("读至 ")
-                                      .last;
-                                }
+                                // 【新增】：判断是否是超级全量模式的书签
+                                if (item.targetFloor != null &&
+                                    item.targetFloor!.startsWith("ultra_")) {
+                                  int ultraIndex = int.parse(
+                                    item.targetFloor!.split("_").last,
+                                  );
 
-                                Navigator.push(
-                                  context,
-                                  MaterialPageRoute(
-                                    builder: (context) => ThreadDetailPage(
-                                      tid: item.tid,
-                                      subject: item.subject,
-                                      initialPage: item.page,
-                                      initialNovelMode: item.isNovelMode,
-                                      initialAuthorId: item.authorId,
-                                      initialTargetFloor:
-                                          item.targetFloor ?? targetFloor,
-                                      initialTargetPid: item.targetPid,
+                                  Navigator.push(
+                                    context,
+                                    MaterialPageRoute(
+                                      builder: (context) => UltraReaderPage(
+                                        tid: item.tid,
+                                        title: item.subject.replaceAll(
+                                          "[全量模式]",
+                                          "",
+                                        ),
+                                        initialIndex: ultraIndex, // 直接跳跃到指定楼层
+                                      ),
                                     ),
-                                  ),
-                                );
+                                  );
+                                } else {
+                                  // 传统的跳转逻辑保持不变
+                                  String? targetFloor;
+                                  if (item.savedTime.contains("读至 ")) {
+                                    targetFloor = item.savedTime
+                                        .split("读至 ")
+                                        .last;
+                                  }
+
+                                  Navigator.push(
+                                    context,
+                                    MaterialPageRoute(
+                                      builder: (context) => ThreadDetailPage(
+                                        tid: item.tid,
+                                        subject: item.subject,
+                                        initialPage: item.page,
+                                        initialNovelMode: item.isNovelMode,
+                                        initialAuthorId: item.authorId,
+                                        initialTargetFloor:
+                                            item.targetFloor ?? targetFloor,
+                                        initialTargetPid: item.targetPid,
+                                      ),
+                                    ),
+                                  );
+                                }
                               },
                               // 【长按】删除
                               onLongPress: () => _confirmDelete(index),

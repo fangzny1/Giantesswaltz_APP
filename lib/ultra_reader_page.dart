@@ -5,6 +5,7 @@ import 'package:html/parser.dart' as html_parser;
 import 'package:dio/dio.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter_widget_from_html/flutter_widget_from_html.dart';
+import 'dart:convert';
 import 'forum_model.dart';
 import 'main.dart';
 
@@ -25,7 +26,6 @@ class ReaderTheme {
   });
 }
 
-// 章节数据模型
 class ReaderChapter {
   final String author;
   final String time;
@@ -41,8 +41,14 @@ class ReaderChapter {
 class UltraReaderPage extends StatefulWidget {
   final String tid;
   final String title;
+  final int initialIndex; // 【新增】支持从书签跳入指定楼层
 
-  const UltraReaderPage({super.key, required this.tid, required this.title});
+  const UltraReaderPage({
+    super.key,
+    required this.tid,
+    required this.title,
+    this.initialIndex = 0,
+  });
 
   @override
   State<UltraReaderPage> createState() => _UltraReaderPageState();
@@ -54,21 +60,17 @@ class _UltraReaderPageState extends State<UltraReaderPage>
   bool _isLoading = true;
   String _errorMsg = "";
 
-  // 状态控制
   double _fontSize = 18.0;
-  int _currentThemeIndex = 1; // 默认护眼(米黄)
+  int _currentThemeIndex = 1;
   bool _isBarsVisible = true;
 
-  // 【单楼层模式】
-  int _currentIndex = 0;
+  late int _currentIndex;
   int _dragChapter = 1;
   bool _isScrubbing = false;
 
-  // 动画与滚动控制器
   late AnimationController _hideController;
   final ScrollController _scrollController = ScrollController();
 
-  // 大厂风格调色盘
   final List<ReaderTheme> _themes = [
     ReaderTheme(
       name: "白昼",
@@ -96,6 +98,7 @@ class _UltraReaderPageState extends State<UltraReaderPage>
   @override
   void initState() {
     super.initState();
+    _currentIndex = widget.initialIndex; // 接入书签初始楼层
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
 
     _hideController = AnimationController(
@@ -168,7 +171,6 @@ class _UltraReaderPageState extends State<UltraReaderPage>
     if (body == null) return;
 
     List<ReaderChapter> temp = [];
-    // 【确实是用 <hr> 分楼层的】
     List<String> blocks = body.innerHtml.split(RegExp(r'<hr[^>]*>'));
 
     for (int i = 0; i < blocks.length; i++) {
@@ -176,10 +178,8 @@ class _UltraReaderPageState extends State<UltraReaderPage>
       if (trimmedBlock.isEmpty || trimmedBlock.contains("Powered by Discuz"))
         continue;
 
-      // 跳过不包含“作者”二字的纯标题垃圾块
       if (i == 0 && !trimmedBlock.contains("作者:")) continue;
 
-      // 使用正则精准提取作者和时间
       String author =
           RegExp(
             r'作者:\s*<\/b>\s*([^&<]+)',
@@ -192,7 +192,6 @@ class _UltraReaderPageState extends State<UltraReaderPage>
           "";
 
       String content = trimmedBlock;
-      // 找到时间后面的第一个 <br>，它之后的内容才是纯正文
       Match? timeMatch = RegExp(
         r'时间:\s*<\/b>.*?(<br\s*\/?>)',
       ).firstMatch(content);
@@ -200,7 +199,6 @@ class _UltraReaderPageState extends State<UltraReaderPage>
         content = content.substring(timeMatch.end).trim();
       }
 
-      // 顺手干掉第一楼可能残留的“标题: xxx”字符串
       content = content
           .replaceFirst(RegExp(r'^<b>标题:\s*<\/b>.*?(<br\s*\/?>)'), '')
           .trim();
@@ -212,35 +210,27 @@ class _UltraReaderPageState extends State<UltraReaderPage>
     if (mounted) {
       setState(() {
         _chapters = temp;
+        // 如果传入的索引超出范围，重置为0
+        if (_currentIndex >= temp.length) _currentIndex = 0;
         _isLoading = false;
       });
     }
-    // 【核心修复】：内容加载后，等排版引擎计算出高度
-    // addPostFrameCallback 会在当前帧渲染完成后立即执行
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) {
-        // 再次触发一次微小的 setState，让进度条知道内容高度已经从 0 变到了真实值
-        setState(() {});
-      }
-    });
   }
 
+  // 【核心性能修复】：去掉 setState，纯通过 AnimationController 控制，杜绝 HtmlWidget 重绘！
   void _toggleBars() {
-    setState(() {
-      _isBarsVisible = !_isBarsVisible;
-      if (_isBarsVisible) {
-        _hideController.forward();
-      } else {
-        _hideController.reverse();
-      }
-    });
+    _isBarsVisible = !_isBarsVisible;
+    if (_isBarsVisible) {
+      _hideController.forward();
+    } else {
+      _hideController.reverse();
+    }
   }
 
   void _goToChapter(int index) {
     if (index < 0 || index >= _chapters.length) return;
 
-    // 【核心修复】：先重置滚动位置，再切换内容索引
-    // jumpTo(0) 会立即同步更新 controller 的偏移量，不会有延迟
+    // 【核心修复】先重置滚动位置，再切换内容
     if (_scrollController.hasClients) {
       _scrollController.jumpTo(0);
     }
@@ -249,11 +239,48 @@ class _UltraReaderPageState extends State<UltraReaderPage>
       _currentIndex = index;
     });
 
-    // 切换章节时，如果菜单没显示，可以考虑自动显示（可选）
-    // 或者确保切换后 UI 立即重绘
+    // 切换章节后强制刷新一下，确保 AnimatedBuilder 重新计算新楼层的高度
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) setState(() {});
     });
+  }
+
+  // 【新增】：保存超级模式专属书签
+  Future<void> _saveUltraBookmark() async {
+    if (_chapters.isEmpty) return;
+
+    final prefs = await SharedPreferences.getInstance();
+    String? jsonStr = prefs.getString('local_bookmarks');
+    List<dynamic> jsonList = [];
+    if (jsonStr != null) jsonList = jsonDecode(jsonStr);
+
+    final newMark = BookmarkItem(
+      tid: widget.tid,
+      subject: "${widget.title} [全量模式]",
+      author: _chapters[_currentIndex].author,
+      authorId: "", // Printable API 不方便抓 authorId，留空不影响
+      page: 1,
+      savedTime:
+          "${DateTime.now().toString().substring(5, 16)} · 读至 第${_currentIndex + 1}楼",
+      isNovelMode: false,
+      // 使用特定前缀标识这是全量模式书签，并带上索引
+      targetFloor: "ultra_$_currentIndex",
+    );
+
+    // 删除同一帖子的旧全量书签
+    jsonList.removeWhere(
+      (e) =>
+          e['tid'] == widget.tid &&
+          e['targetFloor']?.toString().startsWith('ultra_') == true,
+    );
+    jsonList.insert(0, newMark.toJson());
+    await prefs.setString('local_bookmarks', jsonEncode(jsonList));
+
+    if (mounted) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text("✅ 已保存全量专属书签")));
+    }
   }
 
   @override
@@ -285,13 +312,11 @@ class _UltraReaderPageState extends State<UltraReaderPage>
             }
           },
           behavior: HitTestBehavior.opaque,
-          // 【核心修复：SizedBox.expand 强制占满全屏，防止菜单跑到中间去】
           child: SizedBox.expand(
             child: Stack(
               children: [
                 _buildContentArea(theme),
                 _buildTopAppBar(theme),
-                // 绝对定位在最底部
                 Positioned(
                   left: 0,
                   right: 0,
@@ -358,10 +383,10 @@ class _UltraReaderPageState extends State<UltraReaderPage>
 
     final ch = _chapters[_currentIndex];
 
-    // 【核心修复：采用 CustomScrollView + SliverFillRemaining 完美解决高度不够导致的按钮悬空】
     return CustomScrollView(
       controller: _scrollController,
       slivers: [
+        // 头部信息
         SliverPadding(
           padding: EdgeInsets.only(
             top: MediaQuery.of(context).padding.top + 20,
@@ -397,47 +422,48 @@ class _UltraReaderPageState extends State<UltraReaderPage>
                   thickness: 1,
                   height: 16,
                 ),
-
-                HtmlWidget(
-                  ch.content,
-                  textStyle: TextStyle(
-                    fontSize: _fontSize,
-                    height: 1.8,
-                    color: theme.text,
-                    fontFamily: "Serif",
-                  ),
-                  customStylesBuilder: (element) {
-                    if (_currentThemeIndex == 2) {
-                      String style = element.attributes['style'] ?? '';
-                      if (style.contains('background')) {
-                        return {
-                          'background-color': 'transparent !important',
-                          'color': '#BBBBBB !important',
-                        };
-                      }
-                    }
-                    return null;
-                  },
-                ),
               ],
             ),
           ),
         ),
-        // 这一块会将自身高度撑展到屏幕最底部
-        SliverFillRemaining(
-          hasScrollBody: false,
-          fillOverscroll: true,
-          child: Align(
-            alignment: Alignment.bottomCenter,
-            child: Padding(
-              padding: const EdgeInsets.only(
-                top: 40,
-                bottom: 120,
-              ), // bottom:120 是为了给底部控制栏留出空间
+
+        // 【核心性能修复】：利用 RenderMode.sliverList 让 HTML 以切片流的形式渲染，彻底解决超长文卡顿掉帧！
+        SliverPadding(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          sliver: HtmlWidget(
+            ch.content,
+            renderMode: RenderMode.sliverList, // <--- 神级优化点
+            textStyle: TextStyle(
+              fontSize: _fontSize,
+              height: 1.8,
+              color: theme.text,
+              fontFamily: "Serif",
+            ),
+            customStylesBuilder: (element) {
+              if (_currentThemeIndex == 2) {
+                String style = element.attributes['style'] ?? '';
+                if (style.contains('background')) {
+                  return {
+                    'background-color': 'transparent !important',
+                    'color': '#BBBBBB !important',
+                  };
+                }
+              }
+              return null;
+            },
+          ),
+        ),
+
+        // 底部按钮
+        SliverPadding(
+          padding: const EdgeInsets.only(top: 40, bottom: 120),
+          sliver: SliverToBoxAdapter(
+            child: Align(
+              alignment: Alignment.bottomCenter,
               child: _currentIndex < _chapters.length - 1
                   ? OutlinedButton.icon(
                       icon: const Icon(Icons.arrow_downward),
-                      label: const Text("进入下一楼 (或向左滑动屏幕)"),
+                      label: const Text("进入下一楼 (或向左滑动)"),
                       style: OutlinedButton.styleFrom(
                         foregroundColor: theme.primary,
                         side: BorderSide(color: theme.primary.withOpacity(0.5)),
@@ -463,7 +489,7 @@ class _UltraReaderPageState extends State<UltraReaderPage>
   }
 
   Widget _buildBottomBar(ReaderTheme theme) {
-    int maxIndex = _chapters.isEmpty ? 1 : _chapters.length;
+    int maxChapter = _chapters.isEmpty ? 1 : _chapters.length;
 
     return SlideTransition(
       position: Tween<Offset>(
@@ -485,29 +511,34 @@ class _UltraReaderPageState extends State<UltraReaderPage>
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
+            // 【核心重构：本楼层内部详细进度条】
             AnimatedBuilder(
               animation: _scrollController,
               builder: (context, child) {
                 double currentOffset = 0.0;
                 double maxScroll = 0.0;
+                bool canScroll = false;
 
+                // 安全获取当前楼层的高度极限
                 if (_scrollController.hasClients &&
                     _scrollController.position.hasContentDimensions) {
                   currentOffset = _scrollController.offset;
                   maxScroll = _scrollController.position.maxScrollExtent;
+                  if (maxScroll > 0) canScroll = true;
                 }
 
-                // 计算百分比：如果 maxScroll 为 0，说明内容不足一屏，进度应为 100%
-                double progress = 0.0;
-                if (maxScroll > 0) {
-                  progress = (currentOffset / maxScroll).clamp(0.0, 1.0);
-                } else if (_scrollController.hasClients) {
-                  // 内容不足一屏且已加载，视为 100%
-                  progress = 1.0;
-                }
+                // 进度条的值，如果内容不足一屏，滑块固定在最左边(0.0)
+                double sliderValue = canScroll
+                    ? currentOffset.clamp(0.0, maxScroll)
+                    : 0.0;
+                // 计算百分比
+                int progressPercent = canScroll
+                    ? ((currentOffset / maxScroll) * 100).clamp(0, 100).toInt()
+                    : 100;
 
                 return Row(
                   children: [
+                    // 切到上一楼
                     IconButton(
                       icon: Icon(
                         Icons.chevron_left,
@@ -519,6 +550,8 @@ class _UltraReaderPageState extends State<UltraReaderPage>
                           ? () => _goToChapter(_currentIndex - 1)
                           : null,
                     ),
+
+                    // 楼层内进度滑块
                     Expanded(
                       child: SliderTheme(
                         data: SliderTheme.of(context).copyWith(
@@ -527,59 +560,73 @@ class _UltraReaderPageState extends State<UltraReaderPage>
                           thumbColor: theme.primary,
                           trackHeight: 3.0,
                           thumbShape: const RoundSliderThumbShape(
-                            enabledThumbRadius: 10,
+                            enabledThumbRadius: 9,
                           ),
                         ),
                         child: Slider(
-                          value: currentOffset.clamp(
-                            0.0,
-                            maxScroll > 0 ? maxScroll : 0.01,
-                          ),
+                          value: sliderValue,
                           min: 0.0,
-                          max: maxScroll > 0 ? maxScroll : 0.01,
-                          onChanged: maxScroll > 0
+                          // 如果不可滚动，给一个微小的值防止报错
+                          max: canScroll ? maxScroll : 0.01,
+                          label: "$progressPercent%",
+                          onChanged: canScroll
                               ? (v) {
+                                  // 【丝滑秘诀】：手指拖动时，瞬间修改页面的像素位置，极其跟手
                                   _scrollController.jumpTo(v);
                                 }
                               : null,
                         ),
                       ),
                     ),
+
+                    // 切到下一楼
                     IconButton(
                       icon: Icon(
                         Icons.chevron_right,
-                        color: _currentIndex < maxIndex - 1
+                        color: _currentIndex < maxChapter - 1
                             ? theme.primary
                             : theme.text.withOpacity(0.2),
                       ),
-                      onPressed: _currentIndex < maxIndex - 1
+                      onPressed: _currentIndex < maxChapter - 1
                           ? () => _goToChapter(_currentIndex + 1)
                           : null,
                     ),
-                    Padding(
-                      padding: const EdgeInsets.only(right: 16),
+
+                    // 百分比文字显示
+                    SizedBox(
+                      width: 45,
                       child: Text(
-                        "${(progress * 100).toInt()}%",
+                        "$progressPercent%",
                         style: TextStyle(
                           color: theme.text.withOpacity(0.7),
                           fontSize: 12,
                           fontWeight: FontWeight.bold,
                         ),
+                        textAlign: TextAlign.center,
                       ),
                     ),
+                    const SizedBox(width: 8),
                   ],
                 );
               },
             ),
-            // ... 目录和设置按钮保持不变 ...
+
+            // 下方功能按钮
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceAround,
               children: [
+                // 在目录按钮上显示总进度，方便用户随时知道自己在第几楼
                 _buildBottomBtn(
                   Icons.menu_book,
-                  "目录 (${_currentIndex + 1}/$maxIndex)",
+                  "目录 (${_currentIndex + 1}/$maxChapter)",
                   theme,
                   () => _showTOCSheet(theme),
+                ),
+                _buildBottomBtn(
+                  Icons.bookmark_add,
+                  "书签",
+                  theme,
+                  _saveUltraBookmark,
                 ),
                 _buildBottomBtn(
                   Icons.settings,

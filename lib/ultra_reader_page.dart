@@ -66,7 +66,7 @@ class _UltraReaderPageState extends State<UltraReaderPage>
 
   late int _currentIndex;
   int _dragChapter = 1;
-
+  double? _draggingValue; // 记录拖动中的临时值
   late AnimationController _hideController;
   final ScrollController _scrollController = ScrollController();
 
@@ -513,7 +513,7 @@ class _UltraReaderPageState extends State<UltraReaderPage>
               animation: _scrollController,
               builder: (context, child) {
                 double currentOffset = 0.0;
-                double maxScroll = 0.01;
+                double maxScroll = 1.0;
 
                 if (_scrollController.hasClients &&
                     _scrollController.position.hasContentDimensions) {
@@ -521,12 +521,12 @@ class _UltraReaderPageState extends State<UltraReaderPage>
                   maxScroll = _scrollController.position.maxScrollExtent;
                 }
 
-                // 计算当前的百分比
-                int progressPercent = (currentOffset / maxScroll * 100)
-                    .clamp(0, 100)
-                    .toInt();
+                // 计算显示百分比：如果正在拖动，用拖动值算；否则用实际偏移算
+                double displayValue = _draggingValue ?? currentOffset;
+                int progressPercent = (maxScroll > 0)
+                    ? (displayValue / maxScroll * 100).clamp(0, 100).toInt()
+                    : 100;
 
-                bool _isScrubbingScroll;
                 return Row(
                   children: [
                     IconButton(
@@ -546,22 +546,28 @@ class _UltraReaderPageState extends State<UltraReaderPage>
                           activeTrackColor: theme.primary,
                           inactiveTrackColor: theme.text.withOpacity(0.2),
                           thumbColor: theme.primary,
+                          trackHeight: 3.0,
                         ),
                         child: Slider(
-                          // 【核心修复1】：如果正在拖动，我们使用拖动的值，不接受 scrollController 的反馈
-                          value: currentOffset.clamp(0.0, maxScroll),
+                          // 如果正在拖动，滑块位置跟着手指走（_draggingValue）
+                          // 否则滑块位置跟着页面走（currentOffset）
+                          value: displayValue.clamp(0.0, maxScroll),
                           min: 0.0,
                           max: maxScroll,
-                          // 【核心修复2】：onChangeStart 时标记正在拖拽
-                          onChangeStart: (v) => _isScrubbingScroll = true,
                           onChanged: (v) {
-                            // 【核心修复3】：绝对不要在这里写 setState() ！！！
-                            // 直接操作 position 改变位置，AnimatedBuilder 会局部刷新滑块，
-                            // 这样正文内容完全不会重绘，效率提升 100 倍。
-                            _scrollController.position.jumpTo(v);
+                            // 【关键】只更新滑块和文字，不让页面滚动！
+                            setState(() {
+                              _draggingValue = v;
+                            });
                           },
-                          // 【核心修复4】：松手时释放保护
-                          onChangeEnd: (v) => _isScrubbingScroll = false,
+                          onChangeEnd: (v) {
+                            // 【关键】松开手后，执行一次性跳转
+                            _scrollController.jumpTo(v);
+                            setState(() {
+                              _draggingValue =
+                                  null; // 清空临时值，交还给 ScrollController 控制
+                            });
+                          },
                         ),
                       ),
                     ),
@@ -576,12 +582,12 @@ class _UltraReaderPageState extends State<UltraReaderPage>
                           ? () => _goToChapter(_currentIndex + 1)
                           : null,
                     ),
+                    // 这里显示的百分比会随着手指滑动实时变化
                     Text(
                       "$progressPercent%",
-                      style: TextStyle(
+                      style: const TextStyle(
                         fontSize: 12,
                         fontWeight: FontWeight.bold,
-                        color: theme.text,
                       ),
                     ),
                     const SizedBox(width: 16),

@@ -2894,6 +2894,18 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
   }
 
   Widget _buildReaderCard(PostItem post) {
+    bool isDark = Theme.of(context).brightness == Brightness.dark;
+
+    // ====== 【核心且绝对安全的修复】 ======
+    String finalHtml = post.contentHtml;
+    if (isDark) {
+      finalHtml = finalHtml
+          .replaceAll('color:rgb(0, 0, 0)', 'color:#E0E0E0')
+          .replaceAll('color: rgb(0, 0, 0)', 'color:#E0E0E0')
+          .replaceAll('color:#000000', 'color:#E0E0E0')
+          .replaceAll('color="#000000"', 'color="#E0E0E0"')
+          .replaceAll('color="#000"', 'color="#E0E0E0"');
+    }
     int index = _posts.indexOf(post);
     final GlobalKey anchorKey = _pidKeys.putIfAbsent(
       post.pid,
@@ -2930,7 +2942,7 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
             ),
             const SizedBox(height: 10),
             HtmlWidget(
-              post.contentHtml,
+              finalHtml,
               textStyle: TextStyle(
                 fontSize: _fontSize,
                 height: _lineHeight,

@@ -2832,6 +2832,15 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
           .replaceAll('color="#000000"', 'color="#E0E0E0"')
           .replaceAll('color="#000"', 'color="#E0E0E0"');
     }
+    // --- 【暴力修复：强行拆除 dzcode 表格包装】 ---
+    // 1. 识别并去掉开头和结尾的 table/tr/td 标签，保留中间的精华内容
+    // 这里的正则会匹配所有带有 dzcode_table 类的表格并将其解包
+    finalHtml = finalHtml.replaceAll(RegExp(r'<table[^>]*>'), '');
+    finalHtml = finalHtml.replaceAll(RegExp(r'<tr[^>]*>'), '');
+    finalHtml = finalHtml.replaceAll(RegExp(r'<td[^>]*>'), '');
+    finalHtml = finalHtml.replaceAll('</table>', '');
+    finalHtml = finalHtml.replaceAll('</tr>', '');
+    finalHtml = finalHtml.replaceAll('</td>', '');
 
     return [
       // A. 头部：作者信息、标签、头像 (SliverToBoxAdapter)
@@ -2945,6 +2954,7 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
             // 1. 处理图片点击预览
             if (element.localName == 'img') {
               String src = element.attributes['src'] ?? '';
+
               // 【核心修改】：遇到这种难搞的缩略图，直接转为“外部下载卡片”
               if (src.contains('mod=image')) {
                 // 1. 强力清洗链接

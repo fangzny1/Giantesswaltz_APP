@@ -391,6 +391,13 @@ class _UltraReaderPageState extends State<UltraReaderPage>
           .replaceAll('color="#000000"', 'color="#BBBBBB"')
           .replaceAll('color="#000"', 'color="#BBBBBB"');
     }
+    // 1. 强力拆除 dzcode 表格包装，解决横向超出屏幕问题
+    finalHtml = finalHtml.replaceAll(RegExp(r'<table[^>]*>'), '');
+    finalHtml = finalHtml.replaceAll(RegExp(r'<tr[^>]*>'), '');
+    finalHtml = finalHtml.replaceAll(RegExp(r'<td[^>]*>'), '');
+    finalHtml = finalHtml.replaceAll('</table>', '');
+    finalHtml = finalHtml.replaceAll('</tr>', '');
+    finalHtml = finalHtml.replaceAll('</td>', '');
 
     return CustomScrollView(
       controller: _scrollController,

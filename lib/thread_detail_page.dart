@@ -6,6 +6,7 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_widget_from_html/flutter_widget_from_html.dart';
 import 'package:giantesswaltz_app/cloudflare_solver.dart';
+import 'package:giantesswaltz_app/gallery_reader_page.dart';
 import 'package:giantesswaltz_app/history_manager.dart';
 import 'package:giantesswaltz_app/ultra_reader_page.dart';
 import 'package:html/parser.dart' as html_parser;
@@ -150,7 +151,7 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
 
   DateTime _lastAutoPageTurn = DateTime.fromMillisecondsSinceEpoch(0);
   bool _isScrubbingScroll = false;
-  double? _dragValue;
+
   // 【新增】用于物理锚点定位
   double _exactFloor = 1.0; // 精确到小数点的当前楼层（如 3.5 代表第3楼看了一半）
   double _internalFraction = 0.0; // 记录楼层内部的百分比进度
@@ -1345,6 +1346,44 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
                   ),
                   // 【新增】无图模式开关
                   const Divider(height: 20),
+
+                  // ====== 【新增：沉浸画廊模式入口】 ======
+                  ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: Container(
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: Theme.of(context).colorScheme.primaryContainer,
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Icon(
+                        Icons.collections,
+                        color: Theme.of(context).colorScheme.primary,
+                      ),
+                    ),
+                    title: const Text(
+                      "画廊阅读模式 (沉浸看图)",
+                      style: TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                    subtitle: const Text(
+                      "提取全帖图片，支持左右翻页与双指缩放",
+                      style: TextStyle(fontSize: 11, color: Colors.grey),
+                    ),
+                    trailing: const Icon(Icons.chevron_right),
+                    onTap: () {
+                      Navigator.pop(context); // 先关闭底部弹窗
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (c) => GalleryReaderPage(
+                            tid: widget.tid,
+                            title: _displaySubject,
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                  const Divider(height: 10),
                   // 1. 字体大小调节
                   _buildSettingRow(
                     icon: Icons.text_fields,

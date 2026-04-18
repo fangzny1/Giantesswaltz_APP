@@ -2665,6 +2665,154 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
     );
   }
 
+  Widget _buildThumbnailFileCard(String url, String keyName) {
+    bool isDark = Theme.of(context).brightness == Brightness.dark;
+
+    return Container(
+      margin: const EdgeInsets.symmetric(vertical: 10),
+      child: InkWell(
+        onTap: () {
+          // 点击依然可以进预览页看图
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (c) => ImagePreviewPage(
+                imageUrl: url,
+                headers: _getHeadersForUrl(url),
+              ),
+            ),
+          );
+        },
+        child: Container(
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: isDark
+                ? Colors.teal.withOpacity(0.1)
+                : Colors.teal.withOpacity(0.05),
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: Colors.teal.withOpacity(0.3)),
+          ),
+          child: Row(
+            children: [
+              const Icon(Icons.image_search, color: Colors.teal, size: 30),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      "预览缩略图 ($keyName.png)",
+                      style: const TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 13,
+                        color: Colors.teal,
+                      ),
+                    ),
+                    const Text(
+                      "点击解析并查看原图",
+                      style: TextStyle(fontSize: 11, color: Colors.grey),
+                    ),
+                  ],
+                ),
+              ),
+              const Icon(Icons.open_in_new, size: 18, color: Colors.grey),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildExternalThumbnailCard(String url, String key) {
+    bool isDark = Theme.of(context).brightness == Brightness.dark;
+
+    return Container(
+      margin: const EdgeInsets.symmetric(vertical: 12),
+      child: InkWell(
+        onTap: () async {
+          // 直接唤起系统外部浏览器
+          if (await canLaunchUrl(Uri.parse(url))) {
+            await launchUrl(
+              Uri.parse(url),
+              mode: LaunchMode.externalApplication,
+            );
+          }
+        },
+        child: Container(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: isDark
+                ? Colors.blueGrey.withOpacity(0.1)
+                : Colors.blueGrey.withOpacity(0.05),
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(
+              color: Colors.blueGrey.withOpacity(0.3),
+              width: 1,
+            ),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  const Icon(
+                    Icons.handyman_outlined,
+                    color: Colors.blueGrey,
+                    size: 20,
+                  ),
+                  const SizedBox(width: 8),
+                  Text(
+                    "帖子缩略图 (二进制数据)",
+                    style: TextStyle(
+                      fontWeight: FontWeight.bold,
+                      fontSize: 14,
+                      color: isDark
+                          ? Colors.blueGrey[200]
+                          : Colors.blueGrey[800],
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 10),
+              const Text(
+                "由于论坛机制，此图片无法在 App 内直接预览。",
+                style: TextStyle(fontSize: 12, color: Colors.grey),
+              ),
+              const SizedBox(height: 4),
+              const Text(
+                "操作：点击在浏览器打开 -> 另存为文件 -> 将后缀名由 .txt 改为 .png 即可查看。",
+                style: TextStyle(
+                  fontSize: 11,
+                  color: Colors.orange,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              const SizedBox(height: 12),
+              Container(
+                padding: const EdgeInsets.symmetric(vertical: 6),
+                width: double.infinity,
+                decoration: BoxDecoration(
+                  color: Colors.blueAccent.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(5),
+                ),
+                child: const Center(
+                  child: Text(
+                    "在外部浏览器中打开并解析",
+                    style: TextStyle(
+                      color: Colors.blueAccent,
+                      fontSize: 12,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   List<Widget> _buildPostSlivers(PostItem post) {
     bool isDark = Theme.of(context).brightness == Brightness.dark;
     bool isLandlord = post.authorId == _landlordUid;
@@ -2797,6 +2945,25 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
             // 1. 处理图片点击预览
             if (element.localName == 'img') {
               String src = element.attributes['src'] ?? '';
+              // 【核心修改】：遇到这种难搞的缩略图，直接转为“外部下载卡片”
+              if (src.contains('mod=image')) {
+                // 1. 强力清洗链接
+                String cleanedUrl = src;
+                while (cleanedUrl.contains('&amp;'))
+                  cleanedUrl = cleanedUrl.replaceAll('&amp;', '&');
+                if (!cleanedUrl.startsWith('http'))
+                  cleanedUrl = "${currentBaseUrl.value}$cleanedUrl";
+
+                // 2. 提取 Key 方便用户对照
+                var keyMatch = RegExp(
+                  r'key=([a-zA-Z0-9]+)',
+                ).firstMatch(cleanedUrl);
+                String keyName = keyMatch?.group(1) ?? "unknown";
+
+                // 返回一个纯粹的“外部工具卡片”
+                return _buildExternalThumbnailCard(cleanedUrl, keyName);
+              }
+
               if (src.contains('favicon.ico'))
                 return const SizedBox.shrink(); // 屏蔽小图标
               if (src.isNotEmpty) return _buildClickableImage(src); // 调用下方的预览逻辑

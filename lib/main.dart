@@ -1518,11 +1518,16 @@ class _ForumHomePageState extends State<ForumHomePage> {
         _apiHttpFallbackTried = true;
         final String timestamp = DateTime.now().millisecondsSinceEpoch
             .toString();
-        await _hiddenController!.loadRequest(
-          Uri.parse(
-            'http://$currentBaseUrl.value/api/mobile/index.php?version=4&module=forumindex&t=$timestamp',
-          ),
-        );
+
+        // ====== 【核心修复】 ======
+        // 必须用大括号 ${} 把变量包起来，或者用 replaceFirst 替换协议
+        // 之前错误的写法导致 URL 变成了 ValueNotifier 的内存地址
+        String fallbackUrl =
+            '${currentBaseUrl.value.replaceFirst("https://", "http://")}api/mobile/index.php?version=4&module=forumindex&t=$timestamp';
+
+        print("🔄 [Fallback] 尝试 HTTP 降级请求: $fallbackUrl");
+
+        await _hiddenController!.loadRequest(Uri.parse(fallbackUrl));
         return;
       }
 
@@ -1650,8 +1655,12 @@ class _ForumHomePageState extends State<ForumHomePage> {
                               backgroundColor: Theme.of(
                                 context,
                               ).colorScheme.secondaryContainer,
+                              // 【核心修复】：挂上加速器
                               backgroundImage: avatar.isNotEmpty
-                                  ? CachedNetworkImageProvider(avatar)
+                                  ? CachedNetworkImageProvider(
+                                      avatar,
+                                      cacheManager: globalImageCache,
+                                    )
                                   : null,
                               child: avatar.isEmpty
                                   ? const Icon(
@@ -1820,8 +1829,10 @@ class _ForumHomePageState extends State<ForumHomePage> {
                               children: [
                                 CircleAvatar(
                                   radius: 9,
-                                  backgroundImage: NetworkImage(
+                                  // 【核心修复】：换成加速器
+                                  backgroundImage: CachedNetworkImageProvider(
                                     "${currentBaseUrl.value}uc_server/avatar.php?uid=${item['authorid']}&size=small",
+                                    cacheManager: globalImageCache,
                                   ),
                                 ),
                                 const SizedBox(width: 6),
@@ -1892,6 +1903,7 @@ class _ForumHomePageState extends State<ForumHomePage> {
                     ? CachedNetworkImage(
                         imageUrl: forum.icon!,
                         fit: BoxFit.cover, // 填满圆形
+                        cacheManager: globalImageCache,
                         placeholder: (context, url) => Center(
                           child: CircularProgressIndicator(strokeWidth: 2),
                         ),
@@ -2757,8 +2769,12 @@ class _ProfilePageState extends State<ProfilePage> {
                             backgroundColor: Theme.of(
                               context,
                             ).colorScheme.primaryContainer,
+                            // 【核心修复】：挂上加速器
                             backgroundImage: (isLogin && avatarUrl.isNotEmpty)
-                                ? CachedNetworkImageProvider(avatarUrl)
+                                ? CachedNetworkImageProvider(
+                                    avatarUrl,
+                                    cacheManager: globalImageCache,
+                                  )
                                 : null,
                             child: (!isLogin || avatarUrl.isEmpty)
                                 ? const Icon(Icons.person, size: 50)

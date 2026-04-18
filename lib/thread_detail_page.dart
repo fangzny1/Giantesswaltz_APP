@@ -107,7 +107,7 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
   bool _isLoading = true;
   bool _isLoadingMore = false;
   bool _isLoadingPrev = false;
-
+  int? _pendingFloorJump; // 记录需要“空降”的目标楼层号
   int _ppp = 10; // 每页显示贴数，默认10，从API获取
   int _currentVisibleFloor = 1; // 当前视口最上方显示的楼层号
   bool _isJumping = false; // 是否正在执行跨页跳转
@@ -151,7 +151,9 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
   DateTime _lastAutoPageTurn = DateTime.fromMillisecondsSinceEpoch(0);
   bool _isScrubbingScroll = false;
   double? _dragValue;
-
+  // 【新增】用于物理锚点定位
+  double _exactFloor = 1.0; // 精确到小数点的当前楼层（如 3.5 代表第3楼看了一半）
+  double _internalFraction = 0.0; // 记录楼层内部的百分比进度
   @override
   void initState() {
     super.initState();
@@ -490,6 +492,12 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
               .toList();
           _posts.insertAll(0, toInsert);
           _minPage = reqPage;
+        }
+        // 【核心修复】：如果有还没执行的定位指令，等列表渲染完（100ms）后飞过去
+        if (_pendingFloorJump != null) {
+          Future.delayed(const Duration(milliseconds: 100), () {
+            _doPreciseScroll(_pendingFloorJump!, fraction: _internalFraction);
+          });
         }
       });
     }
@@ -1456,8 +1464,9 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
     );
   }
 
+  // 【核心黑科技】：完全脱离高度计算，只扫描屏幕内渲染的楼层
   void _updateCurrentFloorValue() {
-    // 【核心修复】如果正在加载更多、正在向上加载、或者用户正在手拉进度条，严禁更新进度条数值
+    // 如果正在拖动侧边条、正在加载、或者控制器还没准备好，不执行扫描
     if (!_scrollController.hasClients ||
         _posts.isEmpty ||
         _isScrubbingScroll ||
@@ -1465,26 +1474,54 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
         _isLoadingPrev)
       return;
 
-    // 获取当前的滚动偏移
-    double offset = _scrollController.offset;
+    // 视线基准线：屏幕顶部往下 100 像素的位置
+    final double anchorY = MediaQuery.of(context).padding.top + 100.0;
 
-    // 估算当前屏幕顶部的帖子索引 (假设平均高度是 200)
-    // 虽然不精准，但我们要找的是这个索引指向的帖子的 .page 属性
-    int index = (_scrollController.offset / 200).floor().clamp(
-      0,
-      _posts.length - 1,
-    );
+    int? activeFloor;
+    double activeFraction = 0.0;
 
-    // 从帖子对象直接拿真实的页码
-    int pageOnScreen = _posts[index].page;
+    for (int i = 0; i < _posts.length; i++) {
+      final key = _pidKeys[_posts[i].pid];
+      if (key == null || key.currentContext == null) continue;
 
-    // 只有当页码真的变了，且不在加载状态时，才更新 UI
-    if (pageOnScreen != _targetPage) {
-      setState(() {
-        _targetPage = pageOnScreen;
-        // 这里的 _dragValue 也要同步，否则 Slider 的圆点会跳动
-        _dragValue = pageOnScreen.toDouble();
-      });
+      // 关键修复：先获取 RenderObject
+      final dynamic renderObject = key.currentContext!.findRenderObject();
+
+      // 检查是否为 RenderBox 且已经完成排版
+      if (renderObject is RenderBox && renderObject.hasSize) {
+        // 获取组件相对于屏幕顶部的 y 坐标
+        double y = renderObject.localToGlobal(Offset.zero).dy;
+        double h = renderObject.size.height;
+
+        // 判断该楼层是否跨过了我们的“视线基准线”
+        if (y <= anchorY) {
+          activeFloor =
+              int.tryParse(_posts[i].floor.replaceAll(RegExp(r'[^0-9]'), '')) ??
+              (i + 1);
+          // 算出在这一楼内部滑过了多少比例
+          activeFraction = ((anchorY - y) / h).clamp(0.0, 1.0);
+        } else {
+          // 如果这层楼还在基准线下面，说明前面的已经是我们要找的了
+          break;
+        }
+      }
+    }
+
+    if (activeFloor != null) {
+      double newExactFloor = activeFloor + activeFraction;
+
+      // 【防抖】：进度变化超过 0.01 (1%) 时才更新界面，保证性能
+      if ((newExactFloor - _exactFloor).abs() > 0.01) {
+        setState(() {
+          _exactFloor = newExactFloor;
+
+          // 顺便根据当前楼层计算出页码，自动更新底部页码显示
+          int pageOnScreen = ((activeFloor! - 1) / _ppp).floor() + 1;
+          if (_targetPage != pageOnScreen) {
+            _targetPage = pageOnScreen;
+          }
+        });
+      }
     }
   }
 
@@ -1523,248 +1560,309 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
           }
           return true;
         },
-        child: GestureDetector(
-          onTap: () {
-            // 如果你觉得点击整个屏幕任何地方都全屏不合理
-            // 我们可以加一个判断：只有小说模式/纯净模式下，且点击位置不是顶部，才切换显隐
-            setState(() {
-              _isBarsVisible = !_isBarsVisible;
-              if (_isBarsVisible) {
-                _hideController.forward();
-              } else {
-                _hideController.reverse();
-              }
-            });
+        child: NotificationListener<ScrollUpdateNotification>(
+          onNotification: (notification) {
+            // 【新增】：当屏幕正常滑动时，启动扫描仪
+            if (!_isScrubbingScroll) {
+              _updateCurrentFloorValue();
+            }
+            return false; // 继续向上传递事件
           },
+          child: GestureDetector(
+            onTap: () {
+              // 如果你觉得点击整个屏幕任何地方都全屏不合理
+              // 我们可以加一个判断：只有小说模式/纯净模式下，且点击位置不是顶部，才切换显隐
+              setState(() {
+                _isBarsVisible = !_isBarsVisible;
+                if (_isBarsVisible) {
+                  _hideController.forward();
+                } else {
+                  _hideController.reverse();
+                }
+              });
+            },
 
-          child: Stack(
-            children: [
-              CustomScrollView(
-                controller: _scrollController,
-                cacheExtent: 2000.0,
-                // 【核心修复】阅读模式下增加顶部 Padding，防止文字被刘海屏遮挡
-                // 普通模式下由 SliverAppBar 占据顶部，不需要 padding
-                slivers: [
-                  if (!_isReaderMode)
-                    SliverAppBar(
-                      floating: true,
-                      pinned: false,
-                      snap: true,
-                      // 【修改点】将 widget.subject 换成 _displaySubject
-                      title: Text(
-                        _displaySubject,
-                        style: const TextStyle(fontSize: 16),
+            child: Stack(
+              children: [
+                CustomScrollView(
+                  // 【核心修复1】：当呼出侧边条时，彻底锁死底层滚动，防止手势被抢走！
+                  physics: _showSideSlider
+                      ? const NeverScrollableScrollPhysics()
+                      : const BouncingScrollPhysics(),
+                  controller: _scrollController,
+                  cacheExtent: 2000.0,
+                  // 【核心修复】阅读模式下增加顶部 Padding，防止文字被刘海屏遮挡
+                  // 普通模式下由 SliverAppBar 占据顶部，不需要 padding
+                  slivers: [
+                    if (!_isReaderMode)
+                      SliverAppBar(
+                        floating: true,
+                        pinned: false,
+                        snap: true,
+                        // 【修改点】将 widget.subject 换成 _displaySubject
+                        title: Text(
+                          _displaySubject,
+                          style: const TextStyle(fontSize: 16),
+                        ),
+                        centerTitle: false,
+                        elevation: 0,
+                        backgroundColor: bgColor,
+                        surfaceTintColor: Colors.transparent,
                       ),
-                      centerTitle: false,
-                      elevation: 0,
-                      backgroundColor: bgColor,
-                      surfaceTintColor: Colors.transparent,
-                    ),
 
-                  // 阅读模式给一点顶部内边距
-                  if (_isReaderMode)
-                    SliverPadding(
-                      padding: EdgeInsets.only(
-                        top: MediaQuery.of(context).padding.top,
+                    // 阅读模式给一点顶部内边距
+                    if (_isReaderMode)
+                      SliverPadding(
+                        padding: EdgeInsets.only(
+                          top: MediaQuery.of(context).padding.top,
+                        ),
                       ),
-                    ),
 
-                  if (_isReaderMode)
-                    _buildReaderSliver()
-                  else
-                    _buildNativeSliver(),
-                ],
-              ),
-
-              Positioned(
-                left: 0,
-                right: 0,
-                bottom: 0,
-                child: _buildBottomControlBar(),
-              ),
-              if (_isFabOpen)
-                Positioned.fill(
-                  child: GestureDetector(
-                    onTap: _toggleFab,
-                    child: Container(color: Colors.black54),
-                  ),
+                    if (_isReaderMode)
+                      _buildReaderSliver()
+                    else
+                      _buildNativeSliver(),
+                  ],
                 ),
-              _buildFabMenu(),
-              // 2. 【核心修复】右侧滑动条层 (放在 CustomScrollView 之后，它就会浮在上面)
-              if (_showSideSlider)
-                Positioned.fill(
-                  child: GestureDetector(
-                    onTap: () => setState(() => _showSideSlider = false),
-                    behavior: HitTestBehavior.opaque,
-                    child: Container(
-                      color: Colors.black26, // 稍微暗一点更有层次感
-                      child: Stack(
-                        children: [
-                          Positioned(
-                            right: 25,
-                            top: MediaQuery.of(context).size.height * 0.15,
-                            bottom: MediaQuery.of(context).size.height * 0.15,
-                            child: GestureDetector(
-                              onTap: () {}, // 挡住点击，防止关闭
-                              child: Container(
-                                width: 55,
-                                decoration: BoxDecoration(
-                                  color: Theme.of(
-                                    context,
-                                  ).colorScheme.surface.withOpacity(0.95),
-                                  borderRadius: BorderRadius.circular(30),
-                                  boxShadow: [
-                                    BoxShadow(
-                                      color: Colors.black26,
-                                      blurRadius: 10,
-                                    ),
-                                  ],
-                                ),
-                                child: Column(
-                                  children: [
-                                    const Padding(
-                                      padding: EdgeInsets.only(top: 15),
-                                      child: Icon(
-                                        Icons.unfold_more,
-                                        size: 18,
-                                        color: Colors.grey,
-                                      ),
-                                    ),
-                                    Expanded(
-                                      child: RotatedBox(
-                                        quarterTurns: 1, // 1=顶小底大，顺手
-                                        child: SliderTheme(
-                                          data: SliderTheme.of(context).copyWith(
-                                            trackHeight: 2,
-                                            thumbShape:
-                                                const RoundSliderThumbShape(
-                                                  enabledThumbRadius: 15,
-                                                ),
-                                            overlayShape:
-                                                const RoundSliderOverlayShape(
-                                                  overlayRadius: 20,
-                                                ),
-                                          ),
-                                          child: Slider(
-                                            // 这里的值范围是 1 到 总回帖数+1
-                                            value:
-                                                (_dragValue ??
-                                                        _targetPage.toDouble() *
-                                                            _ppp)
-                                                    .clamp(
-                                                      1.0,
-                                                      (_totalPages * _ppp)
-                                                          .toDouble(),
-                                                    ),
-                                            min: 1.0,
-                                            max: (_totalPages * _ppp)
-                                                .toDouble(),
-                                            onChanged: (v) {
-                                              setState(() => _dragValue = v);
-                                            },
-                                            onChangeEnd: (v) async {
-                                              int targetFloor = v.round();
-                                              // 计算这个楼层理论上在哪一页
-                                              int jumpToPage =
-                                                  ((targetFloor - 1) / _ppp)
-                                                      .floor() +
-                                                  1;
 
-                                              setState(() {
-                                                _dragValue = v;
-                                                _isScrubbingScroll = false;
-                                              });
-
-                                              // 判断是否在当前已加载的内存里
-                                              int indexInList = _posts
-                                                  .indexWhere((p) {
-                                                    String raw = p.floor
-                                                        .replaceAll(
-                                                          RegExp(r'[^0-9]'),
-                                                          '',
-                                                        );
-                                                    return raw ==
-                                                        targetFloor.toString();
-                                                  });
-
-                                              if (indexInList != -1) {
-                                                // 情况 A: 在内存里，直接丝滑滚过去
-                                                _scrollController.scrollToIndex(
-                                                  indexInList,
-                                                  preferPosition:
-                                                      AutoScrollPosition.begin,
-                                                  duration: const Duration(
-                                                    milliseconds: 300,
-                                                  ),
-                                                );
-                                              } else {
-                                                // 情况 B: 不在内存，强行跳页加载
-                                                setState(() {
-                                                  _posts.clear();
-                                                  _isLoading = true;
-                                                });
-                                                _loadPage(
-                                                  jumpToPage,
-                                                  resetScroll: true,
-                                                );
-                                                // 注意：如果想跳页后精准定位到那层楼，
-                                                // 可以在 _processApiResponse 里加个判断逻辑
-                                              }
-                                            },
-                                          ),
-                                        ),
-                                      ),
-                                    ),
-                                    const Padding(
-                                      padding: EdgeInsets.only(bottom: 15),
-                                      child: Icon(
-                                        Icons.unfold_less,
-                                        size: 18,
-                                        color: Colors.grey,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            ),
-                          ),
-                          // 滑动时的气泡提示
-                          if (_dragValue != null)
+                Positioned(
+                  left: 0,
+                  right: 0,
+                  bottom: 0,
+                  child: _buildBottomControlBar(),
+                ),
+                if (_isFabOpen)
+                  Positioned.fill(
+                    child: GestureDetector(
+                      onTap: _toggleFab,
+                      child: Container(color: Colors.black54),
+                    ),
+                  ),
+                _buildFabMenu(),
+                // 2. 【核心修复】右侧滑动条层 (放在 CustomScrollView 之后，它就会浮在上面)
+                if (_showSideSlider)
+                  Positioned.fill(
+                    child: GestureDetector(
+                      onTap: () => setState(() => _showSideSlider = false),
+                      behavior: HitTestBehavior.opaque,
+                      child: Container(
+                        color: Colors.black26,
+                        child: Stack(
+                          children: [
                             Positioned(
-                              right: 90,
-                              top:
-                                  (MediaQuery.of(context).size.height * 0.15) +
-                                  ((_dragValue! / (_totalPages * _ppp)) *
-                                      (MediaQuery.of(context).size.height *
-                                          0.6)),
-                              child: Container(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 12,
-                                  vertical: 6,
-                                ),
-                                decoration: BoxDecoration(
-                                  color: Theme.of(context).colorScheme.primary,
-                                  borderRadius: BorderRadius.circular(20),
-                                ),
-                                child: Text(
-                                  "第 ${_dragValue!.round()} 楼",
-                                  style: const TextStyle(
-                                    color: Colors.white,
-                                    fontWeight: FontWeight.bold,
+                              right: 25,
+                              top: MediaQuery.of(context).size.height * 0.15,
+                              bottom: MediaQuery.of(context).size.height * 0.15,
+                              child: GestureDetector(
+                                onTap: () {},
+                                onVerticalDragUpdate: (details) {
+                                  // 1. 获取屏幕总尺寸
+                                  final double screenHeight = MediaQuery.of(
+                                    context,
+                                  ).size.height;
+
+                                  // 2. 定义条子的物理边界（必须与 Positioned 的定义的 0.15 和 0.15 一致）
+                                  double barTop = screenHeight * 0.15;
+                                  double barBottom = screenHeight * 0.85;
+                                  double barHeight = barBottom - barTop;
+
+                                  // 3. 使用【绝对坐标】计算手指在条子内的位置
+                                  // 手指位置减去条子顶部位置 = 手指在条子内的相对高度
+                                  double fingerY = details.globalPosition.dy;
+                                  double relativeY = (fingerY - barTop).clamp(
+                                    0.0,
+                                    barHeight,
+                                  );
+
+                                  // 4. 算出比例：0.0 代表最顶端，1.0 代表最底端
+                                  double percent = relativeY / barHeight;
+
+                                  setState(() {
+                                    _isScrubbingScroll = true;
+                                    // 5. 映射楼层：向下划 percent 增加，楼层增加
+                                    _exactFloor =
+                                        1 + (percent * (_totalPostsCount - 1));
+                                  });
+                                },
+                                onVerticalDragEnd: (_) {
+                                  int targetFloor = _exactFloor.round();
+                                  int jumpToPage =
+                                      ((targetFloor - 1) / _ppp).floor() + 1;
+                                  setState(() {
+                                    _isScrubbingScroll = false;
+                                    _pendingFloorJump = targetFloor;
+                                    _showSideSlider = false;
+                                  });
+                                  if (jumpToPage >= _minPage &&
+                                      jumpToPage <= _maxPage) {
+                                    _doPreciseScroll(targetFloor);
+                                  } else {
+                                    setState(() {
+                                      _posts = [];
+                                      _isLoading = true;
+                                    });
+                                    _loadPage(jumpToPage, resetScroll: true);
+                                  }
+                                },
+                                child: Container(
+                                  width: 55,
+                                  decoration: BoxDecoration(
+                                    color: Theme.of(
+                                      context,
+                                    ).colorScheme.surface.withOpacity(0.95),
+                                    borderRadius: BorderRadius.circular(30),
+                                    boxShadow: [
+                                      const BoxShadow(
+                                        color: Colors.black26,
+                                        blurRadius: 10,
+                                      ),
+                                    ],
+                                  ),
+                                  child: Center(
+                                    child: Container(
+                                      width: 6,
+                                      height: double.infinity,
+                                      margin: const EdgeInsets.symmetric(
+                                        vertical: 30,
+                                      ),
+                                      decoration: BoxDecoration(
+                                        color: Colors.grey.withOpacity(0.2),
+                                        borderRadius: BorderRadius.circular(3),
+                                      ),
+                                      child: LayoutBuilder(
+                                        builder: (context, constraints) {
+                                          // 算出百分比
+                                          double p = (_totalPostsCount > 1)
+                                              ? (_exactFloor - 1) /
+                                                    (_totalPostsCount - 1)
+                                              : 0.0;
+                                          return Stack(
+                                            clipBehavior: Clip.none,
+                                            children: [
+                                              Positioned(
+                                                // 【关键修正】：top 随 p 增大而增大，即向下走
+                                                top:
+                                                    p * constraints.maxHeight -
+                                                    8,
+                                                left: -5,
+                                                child: CircleAvatar(
+                                                  radius: 8,
+                                                  backgroundColor: Theme.of(
+                                                    context,
+                                                  ).colorScheme.primary,
+                                                ),
+                                              ),
+                                            ],
+                                          );
+                                        },
+                                      ),
+                                    ),
                                   ),
                                 ),
                               ),
                             ),
-                        ],
+
+                            // 侧边气泡提示
+                            if (_isScrubbingScroll && _posts.isNotEmpty)
+                              Builder(
+                                builder: (context) {
+                                  int safeIndex = (_exactFloor.round() - 1)
+                                      .clamp(0, _posts.length - 1);
+                                  double p = (_totalPostsCount > 1)
+                                      ? (_exactFloor - 1) /
+                                            (_totalPostsCount - 1)
+                                      : 0.0;
+
+                                  // 气泡的垂直位置计算
+                                  double barTop =
+                                      MediaQuery.of(context).size.height * 0.15;
+                                  double barHeight =
+                                      MediaQuery.of(context).size.height * 0.7;
+
+                                  return Positioned(
+                                    right: 90,
+                                    // 【关键修正】：气泡位置也必须随 p 增大而增大（向下走）
+                                    top: barTop + (p * barHeight) - 16,
+                                    child: Container(
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 12,
+                                        vertical: 6,
+                                      ),
+                                      decoration: BoxDecoration(
+                                        color: Theme.of(
+                                          context,
+                                        ).colorScheme.primary,
+                                        borderRadius: BorderRadius.circular(20),
+                                        boxShadow: [
+                                          const BoxShadow(
+                                            color: Colors.black26,
+                                            blurRadius: 4,
+                                          ),
+                                        ],
+                                      ),
+                                      child: Text(
+                                        _posts[safeIndex].floor,
+                                        style: const TextStyle(
+                                          color: Colors.white,
+                                          fontWeight: FontWeight.bold,
+                                        ),
+                                      ),
+                                    ),
+                                  );
+                                },
+                              ),
+                          ],
+                        ),
                       ),
                     ),
                   ),
-                ),
-            ],
+              ],
+            ),
           ),
         ),
       ),
     );
+  }
+
+  void _doPreciseScroll(int floorNumber, {double fraction = 0.0}) async {
+    // 在内存列表中找到最接近目标楼层的索引
+    int indexInList = _posts.indexWhere((p) {
+      String raw = p.floor.replaceAll(RegExp(r'[^0-9]'), '');
+      return int.parse(raw) >= floorNumber;
+    });
+
+    if (indexInList != -1) {
+      // 第一步：先跳到该楼层的头部
+      await _scrollController.scrollToIndex(
+        indexInList,
+        preferPosition: AutoScrollPosition.begin,
+        duration: const Duration(milliseconds: 300),
+      );
+
+      // 第二步：执行楼层内的小数微调
+      if (fraction > 0.01) {
+        // 给 HTML 渲染留出 100ms 的响应时间
+        await Future.delayed(const Duration(milliseconds: 100));
+
+        // 获取刚才跳到的组件高度，进行二次位移
+        final key = _pidKeys[_posts[indexInList].pid];
+        if (key != null && key.currentContext != null) {
+          final box = key.currentContext!.findRenderObject() as RenderBox?;
+          if (box != null && box.hasSize) {
+            // 计算基于该楼层高度的偏移量
+            double extraOffset = box.size.height * fraction;
+
+            _scrollController.animateTo(
+              _scrollController.offset + extraOffset,
+              duration: const Duration(milliseconds: 200),
+              curve: Curves.easeOut,
+            );
+          }
+        }
+      }
+      // 定位完成，清除待处理指令
+      _pendingFloorJump = null;
+    }
   }
 
   Widget _buildBottomControlBar() {
@@ -1784,7 +1882,7 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              // === 第一部分：进度条 ===
+              // === 第一部分：本页精准进度条 ===
               SizedBox(
                 height: 40,
                 child: Row(
@@ -1805,68 +1903,109 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
                             context,
                           ).primaryColor.withOpacity(0.2),
                         ),
-                        // 【核心修复】以完美的服务器返回的页码分页！不再通过除以10进行毫无意义的算数
+                        // 【核心】：AnimatedBuilder 实时监听当前页的像素滚动
                         child: AnimatedBuilder(
                           animation: _scrollController,
                           builder: (context, child) {
-                            double uiVal =
-                                (_dragValue ?? _targetPage.toDouble()).clamp(
-                                  1.0,
-                                  _totalPages.toDouble() < 1.0
-                                      ? 1.0
-                                      : _totalPages.toDouble(),
-                                );
+                            double currentOffset = 0.0;
+                            double maxScroll = 0.01; // 防除0报错
+
+                            // 获取当前页的真实高度
+                            if (_scrollController.hasClients &&
+                                _scrollController
+                                    .position
+                                    .hasContentDimensions) {
+                              currentOffset = _scrollController.offset;
+                              maxScroll =
+                                  _scrollController.position.maxScrollExtent;
+                              if (maxScroll <= 0) maxScroll = 0.01;
+                            }
+
+                            // 算出百分比
+                            int percent = ((currentOffset / maxScroll) * 100)
+                                .clamp(0, 100)
+                                .toInt();
 
                             return Slider(
-                              value: _targetPage.toDouble(),
-                              min: 1.0,
-                              max: _totalPages.toDouble(),
-                              divisions: _totalPages > 1 ? _totalPages - 1 : 1,
-                              label: "第 ${_targetPage} 页",
+                              value: currentOffset.clamp(0.0, maxScroll),
+                              min: 0.0,
+                              max: maxScroll,
+                              label: "$percent%",
                               onChanged: (v) {
-                                // 拖动时，直接记录要去第几页
-                                setState(() => _targetPage = v.toInt());
-                              },
-                              onChangeEnd: (v) {
-                                // 停止拖动时，清空当前列表，直接去 API 请求第 V 页
-                                setState(() {
-                                  _posts.clear();
-                                  _isLoading = true;
-                                });
-                                _loadPage(v.toInt(), resetScroll: true);
+                                // 【丝滑拖拽】：直接 jumpTo，页面死死跟着手指走，绝对不会抽搐！
+                                if (_scrollController.hasClients) {
+                                  _scrollController.jumpTo(v);
+                                }
                               },
                             );
                           },
                         ),
                       ),
                     ),
-                    // 页码显示
-                    IconButton(
-                      icon: Icon(
-                        _showSideSlider ? Icons.unfold_less : Icons.unfold_more,
-                        color: Colors.blue,
-                      ),
-                      iconSize: 20,
-                      tooltip: "局部定位",
-                      onPressed: () {
-                        setState(() => _showSideSlider = !_showSideSlider);
+
+                    // 【新增】：当前页阅读百分比显示
+                    AnimatedBuilder(
+                      animation: _scrollController,
+                      builder: (context, child) {
+                        double currentOffset = 0.0;
+                        double maxScroll = 0.01;
+                        if (_scrollController.hasClients &&
+                            _scrollController.position.hasContentDimensions) {
+                          currentOffset = _scrollController.offset;
+                          maxScroll =
+                              _scrollController.position.maxScrollExtent;
+                          if (maxScroll <= 0) maxScroll = 0.01;
+                        }
+                        int percent = ((currentOffset / maxScroll) * 100)
+                            .clamp(0, 100)
+                            .toInt();
+
+                        return SizedBox(
+                          width: 45,
+                          child: Text(
+                            "$percent%",
+                            style: TextStyle(
+                              color: Theme.of(context).colorScheme.primary,
+                              fontSize: 12,
+                              fontWeight: FontWeight.bold,
+                            ),
+                            textAlign: TextAlign.center,
+                          ),
+                        );
                       },
-                      splashColor: Theme.of(
-                        context,
-                      ).colorScheme.primary.withOpacity(0.85),
+                    ),
+
+                    // 【右侧按钮】：不再呼出侧边条，而是呼出全局跳页菜单！
+                    TextButton.icon(
+                      icon: const Icon(
+                        Icons.import_contacts,
+                        size: 14,
+                        color: Colors.grey,
+                      ),
+                      label: Text(
+                        "$_targetPage / $_totalPages",
+                        style: const TextStyle(
+                          color: Colors.grey,
+                          fontSize: 12,
+                        ),
+                      ),
+                      // 点击这个按钮，弹出大跳跃菜单
+                      onPressed: _showPageJumpDialog,
+                      style: TextButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(horizontal: 8),
+                      ),
                     ),
                     const SizedBox(width: 8),
                   ],
                 ),
               ),
 
-              // 分割线
               Divider(
                 height: 1,
                 color: Theme.of(context).dividerColor.withOpacity(0.1),
               ),
 
-              // === 第二部分：操作按钮 (保持不变) ===
+              // === 第二部分：操作按钮 (回复、点赞、收藏等保持不变) ===
               Container(
                 height: 56,
                 padding: const EdgeInsets.symmetric(horizontal: 12),
@@ -2452,40 +2591,319 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
   }
 
   Widget _buildNativeSliver() {
-    // 1. 【核心修复】如果正在初次加载且列表没数据，显示骨架屏
-    if (_isLoading && _posts.isEmpty) {
-      return _buildLoadingSkeleton();
-    }
-
-    // 2. 如果加载完了但真没内容
-    if (!_isLoading && _posts.isEmpty) {
+    if (_isLoading && _posts.isEmpty) return _buildLoadingSkeleton();
+    if (!_isLoading && _posts.isEmpty)
       return const SliverFillRemaining(child: Center(child: Text("暂无内容")));
-    }
-    // ... 判空处理 ...
+
+    // 我们不再使用单个 SliverList，而是手动拼接所有的 Sliver
     return SliverPadding(
       padding: const EdgeInsets.only(bottom: 100),
-      sliver: SliverList(
-        delegate: SliverChildBuilderDelegate((ctx, index) {
-          // 【核心修复】只要 _minPage 大于 1，第一个元素就显示“加载上一页”
-          if (index == 0 && _minPage > 1) {
-            return Padding(
-              padding: const EdgeInsets.all(8.0),
-              child: Center(
-                child: TextButton.icon(
-                  icon: const Icon(Icons.arrow_upward),
-                  // 这里显示的是正确的“上一页”页码
-                  label: Text("加载上一页 (第 ${_minPage - 1} 页)"),
-                  onPressed: _loadPrev,
+      sliver: SliverMainAxisGroup(
+        // 使用这个组件把多个 Sliver 组合起来
+        slivers: [
+          // 1. “加载上一页” 按钮
+          if (_minPage > 1)
+            SliverToBoxAdapter(
+              child: Padding(
+                padding: const EdgeInsets.all(8.0),
+                child: Center(
+                  child: TextButton.icon(
+                    icon: const Icon(Icons.arrow_upward),
+                    label: Text("加载上一页 (第 ${_minPage - 1} 页)"),
+                    onPressed: _loadPrev,
+                  ),
                 ),
               ),
+            ),
+
+          // 2. 核心：遍历每一个回帖，将每个回帖转化为一组独立的 Sliver
+          ..._posts.expand((post) => _buildPostSlivers(post)).toList(),
+
+          // 3. 底部加载更多
+          SliverToBoxAdapter(child: _buildFooter()),
+        ],
+      ),
+    );
+  }
+
+  List<Widget> _buildPostSlivers(PostItem post) {
+    bool isDark = Theme.of(context).brightness == Brightness.dark;
+    bool isLandlord = post.authorId == _landlordUid;
+    // 【修复】：在这里直接定义，并在下面 key: anchorKey 使用
+    final GlobalKey localAnchorKey = _pidKeys.putIfAbsent(
+      post.pid,
+      () => GlobalKey(),
+    );
+    int postIndex = _posts.indexOf(post);
+    // 字符串清洗（防止黑色字体在暗黑模式看不见）
+    String finalHtml = post.contentHtml;
+    if (isDark) {
+      finalHtml = finalHtml
+          .replaceAll('color:rgb(0, 0, 0)', 'color:#E0E0E0')
+          .replaceAll('color: rgb(0, 0, 0)', 'color:#E0E0E0')
+          .replaceAll('color:#000000', 'color:#E0E0E0')
+          .replaceAll('color="#000000"', 'color="#E0E0E0"')
+          .replaceAll('color="#000"', 'color="#E0E0E0"');
+    }
+
+    return [
+      // A. 头部：作者信息、标签、头像 (SliverToBoxAdapter)
+      SliverToBoxAdapter(
+        child: AutoScrollTag(
+          key: ValueKey(post.pid), // 必须是唯一的
+          controller: _scrollController,
+          index: postIndex, // 定位的核心索引
+          child: Container(
+            key: localAnchorKey, // ✅ 钥匙挂在这里！Container 是标准的 RenderBox
+            padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+            color: Theme.of(context).cardColor,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    GestureDetector(
+                      onTap: () => _jumpToUser(post),
+                      child: Hero(
+                        tag: "avatar_${post.authorId}_${post.pid}",
+                        child: CircleAvatar(
+                          backgroundImage: NetworkImage(post.avatarUrl),
+                          radius: 18,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              Text(
+                                post.author,
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                              if (isLandlord)
+                                Container(
+                                  margin: const EdgeInsets.only(left: 5),
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 4,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: Colors.blue[50],
+                                    borderRadius: BorderRadius.circular(4),
+                                  ),
+                                  child: const Text(
+                                    "楼主",
+                                    style: TextStyle(
+                                      fontSize: 10,
+                                      color: Colors.blue,
+                                    ),
+                                  ),
+                                ),
+                            ],
+                          ),
+                          Text(
+                            "${post.floor} · ${post.time}",
+                            style: const TextStyle(
+                              fontSize: 10,
+                              color: Colors.grey,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    IconButton(
+                      icon: const Icon(
+                        Icons.reply,
+                        size: 20,
+                        color: Colors.grey,
+                      ),
+                      onPressed: () => _onReply(post.pid),
+                    ),
+                  ],
+                ),
+                if (post.metadata.isNotEmpty) _buildMetadataCard(post.metadata),
+                if (post.tags.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 8),
+                    child: Wrap(
+                      spacing: 6,
+                      runSpacing: 6,
+                      children: post.tags.map((t) => _buildTagChip(t)).toList(),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ),
+      ),
+
+      // B. 核心：正文内容 (利用 sliverList 模式实现回帖内部的懒加载)
+      SliverPadding(
+        padding: const EdgeInsets.symmetric(horizontal: 16),
+        sliver: HtmlWidget(
+          finalHtml,
+          renderMode: RenderMode.sliverList, // 保持高性能懒加载
+          textStyle: TextStyle(
+            fontSize: _fontSize - 2,
+            height: _lineHeight,
+            color: isDark ? Colors.white70 : Colors.black87,
+          ),
+
+          // 【核心修复：重新注入图片点击和附件识别逻辑】
+          customWidgetBuilder: (element) {
+            // 1. 处理图片点击预览
+            if (element.localName == 'img') {
+              String src = element.attributes['src'] ?? '';
+              if (src.contains('favicon.ico'))
+                return const SizedBox.shrink(); // 屏蔽小图标
+              if (src.isNotEmpty) return _buildClickableImage(src); // 调用下方的预览逻辑
+            }
+
+            // 2. 处理之前写的 gn-file 附件卡片
+            if (element.localName == 'gn-file') {
+              String url = element.attributes['url'] ?? '';
+              String name = element.attributes['name'] ?? '附件';
+              String size = element.attributes['size'] ?? '';
+              return _buildFileAttachmentCard(url, name, size); // 建议封装一下
+            }
+
+            // 3. 处理 iframe 问卷
+            if (element.localName == 'iframe') {
+              // ... 原有的 iframe 按钮逻辑 ...
+            }
+            return null;
+          },
+
+          customStylesBuilder: (element) {
+            // 保持背景色清理逻辑
+            if (isDark) {
+              String style = element.attributes['style'] ?? '';
+              if (style.contains('background-color') ||
+                  style.contains('background:')) {
+                return {
+                  'background-color': 'transparent !important',
+                  'color': '#E0E0E0 !important',
+                };
+              }
+            }
+            return null;
+          },
+
+          // 处理网页链接点击
+          onTapUrl: (url) async {
+            await _launchURL(url);
+            return true;
+          },
+        ),
+      ),
+
+      // C. 底部：装饰和间距
+      SliverToBoxAdapter(
+        child: Container(
+          height: 12,
+          decoration: BoxDecoration(
+            color: Theme.of(context).cardColor,
+            border: Border(
+              bottom: BorderSide(
+                color: Theme.of(context).dividerColor.withOpacity(0.1),
+                width: 8,
+              ),
+            ),
+          ),
+        ),
+      ),
+    ];
+  }
+
+  // 【新增】：专门负责渲染文件附件卡片的方法，解决报错
+  Widget _buildFileAttachmentCard(String url, String name, String size) {
+    bool isDark = Theme.of(context).brightness == Brightness.dark;
+    return Container(
+      margin: const EdgeInsets.symmetric(vertical: 8),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(8),
+        onTap: () async {
+          // 调用系统外部浏览器下载
+          if (url.isNotEmpty) {
+            ScaffoldMessenger.of(
+              context,
+            ).showSnackBar(SnackBar(content: Text("正在调用系统下载: $name")));
+            await launchUrl(
+              Uri.parse(url),
+              mode: LaunchMode.externalApplication,
             );
           }
-
-          // 修正列表索引偏移
-          int postIndex = (_minPage > 1) ? index - 1 : index;
-          if (postIndex >= _posts.length) return _buildFooter();
-          return _buildPostCard(_posts[postIndex]);
-        }, childCount: _posts.length + (_minPage > 1 ? 2 : 1)),
+        },
+        child: Container(
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: isDark
+                ? const Color(0xFF2C2C2C)
+                : Colors.blueGrey.withOpacity(0.05),
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(
+              color: isDark ? Colors.white12 : Colors.blueGrey.withOpacity(0.2),
+            ),
+          ),
+          child: Row(
+            children: [
+              // 附件图标
+              Icon(
+                name.toLowerCase().endsWith('.txt')
+                    ? Icons.description_outlined
+                    : name.toLowerCase().contains('.zip') ||
+                          name.toLowerCase().contains('.7z') ||
+                          name.toLowerCase().contains('.rar')
+                    ? Icons.folder_zip_outlined
+                    : Icons.insert_drive_file_outlined,
+                size: 36,
+                color: isDark ? Colors.blue[300] : Colors.blue[700],
+              ),
+              const SizedBox(width: 12),
+              // 文件名和大小
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      name,
+                      style: const TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 14,
+                      ),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      size,
+                      style: const TextStyle(fontSize: 12, color: Colors.grey),
+                    ),
+                  ],
+                ),
+              ),
+              // 下载图标
+              Container(
+                padding: const EdgeInsets.all(6),
+                decoration: BoxDecoration(
+                  color: isDark
+                      ? Colors.blue[900]?.withOpacity(0.5)
+                      : Colors.blue[50],
+                  shape: BoxShape.circle,
+                ),
+                child: Icon(
+                  Icons.download,
+                  size: 20,
+                  color: isDark ? Colors.blue[200] : Colors.blue[800],
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }

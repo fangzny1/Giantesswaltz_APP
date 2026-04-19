@@ -3844,6 +3844,19 @@ class _RetryableImageState extends State<RetryableImage> {
                     ),
                   );
                 }
+                if (_retryCount >= 2) {
+                  debugPrint("🚨 [Security] 尝试修复特定链接: ${widget.imageUrl}");
+                  // 【核心修复】：把当前碎掉的图片 URL 传进去，让 WebView 针对性破盾
+                  bool success = await SecuritySolver.show(
+                    context,
+                    targetUrl: widget.imageUrl,
+                  );
+                  if (success) {
+                    setState(() => _retryCount = 0);
+                  }
+                } else {
+                  setState(() => _retryCount++);
+                }
               },
               child: Container(
                 height: 120,

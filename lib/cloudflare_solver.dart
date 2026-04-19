@@ -1,28 +1,34 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
-import 'package:giantesswaltz_app/login_page.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'forum_model.dart'; // 访问 kUserAgent 和 currentBaseUrl
+import 'forum_model.dart';
+import 'login_page.dart'; // 访问 kUserAgent
 
-class CloudflareSolver {
-  /// 弹出验证窗口
-  static Future<bool> show(BuildContext context) async {
+class SecuritySolver {
+  /// 修改：增加 targetUrl 参数，哪个链接碎了，我们就去修哪个域名
+  static Future<bool> show(
+    BuildContext context, {
+    required String targetUrl,
+  }) async {
     return await showDialog<bool>(
           context: context,
           barrierDismissible: false,
-          builder: (context) => _CloudflareDialog(),
+          builder: (context) => _SecurityDialog(targetUrl: targetUrl),
         ) ??
         false;
   }
 }
 
-class _CloudflareDialog extends StatefulWidget {
+class _SecurityDialog extends StatefulWidget {
+  final String targetUrl; // 接收传进来的碎图片地址
+  const _SecurityDialog({required this.targetUrl});
+
   @override
-  State<_CloudflareDialog> createState() => _CloudflareDialogState();
+  State<_SecurityDialog> createState() => _SecurityDialogState();
 }
 
-class _CloudflareDialogState extends State<_CloudflareDialog> {
+class _SecurityDialogState extends State<_SecurityDialog> {
   late final WebViewController _controller;
   bool _isSolved = false;
 
@@ -31,53 +37,44 @@ class _CloudflareDialogState extends State<_CloudflareDialog> {
     super.initState();
     _controller = WebViewController()
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
-      ..setUserAgent(kUserAgent) // 关键：UA 必须与 Dio 保持一致
+      ..setUserAgent(kUserAgent)
       ..setNavigationDelegate(
         NavigationDelegate(
           onPageFinished: (url) async {
-            // 检查页面内容，看盾消失没
-            final String html =
+            final String cookies =
                 await _controller.runJavaScriptReturningResult(
-                      "document.documentElement.outerHTML",
+                      'document.cookie',
                     )
                     as String;
+            String rawCookie = cookies.replaceAll('"', '');
 
-            // 如果页面不再包含 Cloudflare 的关键词，说明过盾了
-            if (!html.contains("challenges.cloudflare.com") &&
-                !html.contains("Verify you are human") &&
-                html.contains("Bvoy_2132_")) {
-              // 确保加载到了论坛内容
-              _onSolved();
+            // 只要发现了 wssplashchk，不管它是给哪个域名的，我们先把它抓下来
+            if (rawCookie.contains("wssplashchk")) {
+              print("🎯 [Security] 捕获到关键令牌: $rawCookie");
+              _onSolved(rawCookie);
             }
           },
         ),
       )
-      ..loadRequest(Uri.parse(currentBaseUrl.value));
+      // 【核心修复】：直接加载那个碎掉的图片链接
+      ..loadRequest(Uri.parse(widget.targetUrl));
   }
 
-  Future<void> _onSolved() async {
+  Future<void> _onSolved(String newCookies) async {
     if (_isSolved) return;
     _isSolved = true;
 
-    // 1. 抓取 WebView 里的所有 Cookie (包含 cf_clearance 和论坛登录 Cookie)
-    final String cookies =
-        await _controller.runJavaScriptReturningResult('document.cookie')
-            as String;
-    String rawCookie = cookies;
-    if (rawCookie.startsWith('"'))
-      rawCookie = rawCookie.substring(1, rawCookie.length - 1);
-
-    // 2. 持久化到本地，供 HttpService 使用
     final prefs = await SharedPreferences.getInstance();
     String oldCookie = prefs.getString('saved_cookie_string') ?? "";
 
-    // 合并新老 Cookie (借用之前的合并逻辑)
-    // 这里简单处理：直接追加或覆盖。由于 cf 盾通常只在乎 cf_clearance
-    await prefs.setString('saved_cookie_string', rawCookie);
+    // 【核心黑科技】：合并新老 Cookie
+    // 将 wssplashchk 合并到原来的论坛登录 Cookie 里
+    String mergedCookie = mergeCookies(oldCookie, [newCookies]);
+    await prefs.setString('saved_cookie_string', mergedCookie);
 
-    if (mounted) {
-      Navigator.pop(context, true); // 验证成功，返回 true
-    }
+    print("🔑 [Security] 捕获到安全令牌，已全线同步：$newCookies");
+
+    if (mounted) Navigator.pop(context, true);
   }
 
   @override
@@ -85,22 +82,27 @@ class _CloudflareDialogState extends State<_CloudflareDialog> {
     return AlertDialog(
       title: const Row(
         children: [
-          Icon(Icons.shield_outlined, color: Colors.orange),
+          Icon(Icons.shield_moon, color: Color(0xFF61CAB8)),
           SizedBox(width: 8),
-          Text("安全验证", style: TextStyle(fontSize: 16)),
+          Text("线路安全验证", style: TextStyle(fontSize: 16)),
         ],
       ),
       content: SizedBox(
+        height: 260,
         width: double.maxFinite,
-        height: 300,
         child: Column(
           children: [
             const Text(
-              "请点击下方的验证框（若无显示请稍等）",
+              "检测到图片服务器防护，请等待转圈结束即可完成修复。",
               style: TextStyle(fontSize: 12, color: Colors.grey),
             ),
             const SizedBox(height: 10),
-            Expanded(child: WebViewWidget(controller: _controller)),
+            Expanded(
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(8),
+                child: WebViewWidget(controller: _controller),
+              ),
+            ),
           ],
         ),
       ),

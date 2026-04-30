@@ -410,7 +410,15 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
       }
 
       String content = p['message']?.toString() ?? "";
-
+      // --- 【新增：权限/空内容处理】 ---
+      if (content.trim().isEmpty) {
+        // 如果是楼主且内容为空，通常是由于“仅作者可见”权限导致
+        content =
+            "<div style='padding: 20px; border: 1px dashed #ccc; text-align: center; color: grey;'>"
+            "内容受限：此帖子可能仅作者与管理员可见"
+            "</div>";
+      }
+      // -----------------------------
       if (p['first'] == "1" || p['first'] == 1) {
         if (sortHtml.isNotEmpty) content = sortHtml + content;
       }
@@ -2836,6 +2844,25 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
     int postIndex = _posts.indexOf(post);
     // 字符串清洗（防止黑色字体在暗黑模式看不见）
     String finalHtml = post.contentHtml;
+    // --- 【核心黑科技】：在送入渲染前，强行把问卷 HTML 转换为自定义标签 ---
+    if (finalHtml.contains('d4ebfa')) {
+      debugPrint("探知到问卷代码，正在进行字符串级重组...");
+
+      // 1. 尝试抠出 <h3> 标签里的标题文字
+      final titleMatch = RegExp(r'<h3>(.*?)<\/h3>').firstMatch(finalHtml);
+      String surveyTitle = titleMatch?.group(1) ?? "读者问卷调查";
+
+      // 2. 移除那个麻烦的蓝色 div 块（包括里面的 iframe 和脚本），替换为简单占位符
+      // 这个正则会匹配带 d4ebfa 的 div 一直到它闭合
+      finalHtml = finalHtml.replaceFirst(
+        RegExp(
+          r'<div style="padding:10px; background-color:#d4ebfa;[^>]*>.*?<\/div>',
+          dotAll: true,
+        ),
+        '<gw-survey title="$surveyTitle"></gw-survey>',
+      );
+    }
+    // -----------------------------------------------------------------
     if (isDark) {
       finalHtml = finalHtml
           .replaceAll('color:rgb(0, 0, 0)', 'color:#E0E0E0')
@@ -2963,9 +2990,100 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
 
           // 【核心修复：重新注入图片点击和附件识别逻辑】
           customWidgetBuilder: (element) {
+            // --- 【精准拦截自定义标签】 ---
+            if (element.localName == 'gw-survey') {
+              if (_isReaderMode || _isNovelMode) return const SizedBox.shrink();
+
+              // 从我们刚才塞进去的属性里拿标题
+              String surveyTitle = element.attributes['title'] ?? "读者问卷调查";
+              String surveyUrl =
+                  "${currentBaseUrl.value}plugin.php?id=cxpform:style2&form_id=35&type=iframe&tid=${widget.tid}";
+
+              bool isDark = Theme.of(context).brightness == Brightness.dark;
+
+              // 直接返回你想要的原生 MD3 卡片
+              return Container(
+                width: double.infinity,
+                margin: const EdgeInsets.symmetric(vertical: 12),
+                decoration: BoxDecoration(
+                  color: isDark
+                      ? Colors.blueGrey.withOpacity(0.15)
+                      : const Color(0xFFE3F2FD),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(
+                    color: isDark
+                        ? Colors.white10
+                        : Colors.blue.withOpacity(0.2),
+                  ),
+                ),
+                child: Column(
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.all(16.0),
+                      child: Row(
+                        children: [
+                          Icon(
+                            Icons.assignment_turned_in,
+                            color: isDark ? Colors.blue[300] : Colors.blue[700],
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Text(
+                              surveyTitle,
+                              style: TextStyle(
+                                fontWeight: FontWeight.bold,
+                                fontSize: 15,
+                                color: isDark ? Colors.white : Colors.blue[900],
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                      child: ElevatedButton.icon(
+                        icon: const Icon(Icons.open_in_new, size: 18),
+                        label: const Text("参与读者问卷 (网页端)"),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Theme.of(
+                            context,
+                          ).colorScheme.primary,
+                          foregroundColor: Theme.of(
+                            context,
+                          ).colorScheme.onPrimary,
+                          elevation: 0,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                        ),
+                        onPressed: () {
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (context) => GeneralWebViewPage(
+                                url: surveyUrl,
+                                title: "参与问卷",
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                  ],
+                ),
+              );
+            }
+
             // 1. 处理图片点击预览
             if (element.localName == 'img') {
               String src = element.attributes['src'] ?? '';
+              // 【核心修复】：如果是表情包，返回 null
+              // 返回 null 意味着“不使用自定义组件”，插件会自动使用上面的 CSS 样式来渲染它
+              if (src.contains('static/image/smiley/')) {
+                return null;
+              }
 
               // 【核心修改】：遇到这种难搞的缩略图，直接转为“外部下载卡片”
               if (src.contains('mod=image')) {
@@ -3314,25 +3432,48 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
                         };
                       }
                     }
-                    // A. 针对问卷外层 div (通过包含 d4ebfa 字符串精准识别)
-                    if (element.localName == 'div' &&
-                        style.contains('d4ebfa')) {
-                      if (_isReaderMode || _isNovelMode)
-                        return {'display': 'none'};
+                    // // --- 【核心修复】：适配问卷容器的背景颜色 ---
+                    // if (element.localName == 'div' &&
+                    //     style.contains('d4ebfa')) {
+                    //   // 如果在小说/纯净模式，按照你的要求隐藏
+                    //   if (_isReaderMode || _isNovelMode)
+                    //     return {'display': 'none'};
 
-                      if (isDark) {
+                    //   if (isDark) {
+                    //     return {
+                    //       'background-color': '#1E1E1E', // 暗黑模式深灰色
+                    //       'color': '#FFFFFF',
+                    //       'border': '1px solid #333333',
+                    //       'border-radius': '12px',
+                    //       'padding': '16px',
+                    //       'margin': '10px 0',
+                    //     };
+                    //   } else {
+                    //     return {
+                    //       'background-color': '#E3F2FD', // 白天模式浅蓝色
+                    //       'color': '#0D47A1',
+                    //       'border-radius': '12px',
+                    //       'padding': '16px',
+                    //       'margin': '10px 0',
+                    //     };
+                    //   }
+                    // }
+
+                    // 【修正处】：处理图片样式
+                    if (element.localName == 'img') {
+                      String src = element.attributes['src'] ?? '';
+
+                      // 如果是表情包，强制限制为原始大小，防止拉伸
+                      if (src.contains('static/image/smiley/')) {
                         return {
-                          'background-color': '#121212', // 强制改为纯黑或深灰
-                          'color': '#FFFFFF', // 强制文字为白色
-                          'border': '1px solid #333333',
-                          'border-radius': '10px',
-                          'padding': '15px',
-                          'display': 'block',
+                          'width': 'auto !important',
+                          'height': 'auto !important',
+                          'vertical-align': 'middle',
+                          'display': 'inline-block',
                         };
                       }
-                      return {'border-radius': '10px', 'padding': '15px'};
+                      return null;
                     }
-
                     if (element.localName == 'h3') {
                       final parentBg =
                           element.parent?.attributes['background-color'];
@@ -3460,59 +3601,103 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
                       if (src.isNotEmpty) return _buildClickableImage(src);
                     }
 
-                    // 将 iframe 转换为 MD3 风格按钮
-                    if (element.localName == 'iframe') {
+                    // --- 【核心重构】：拦截问卷容器 div，提取文字并重组 UI ---
+                    String style = element.attributes['style'] ?? '';
+                    if (element.localName == 'div' &&
+                        style.contains('d4ebfa')) {
                       if (_isReaderMode || _isNovelMode)
                         return const SizedBox.shrink();
 
+                      // 1. 提取标题文字：寻找 div 内部的 h3 标签
+                      final h3Element = element
+                          .getElementsByTagName('h3')
+                          .firstOrNull;
+                      final surveyTitle = h3Element?.text.trim() ?? "读者问卷调查";
+
+                      // 2. 准备跳转链接 (保持你之前的逻辑)
+                      String surveyUrl =
+                          "${currentBaseUrl.value}plugin.php?id=cxpform:style2&form_id=35&type=iframe&tid=${widget.tid}";
+
                       bool isDark =
                           Theme.of(context).brightness == Brightness.dark;
-                      return Container(
-                        margin: const EdgeInsets.symmetric(vertical: 15),
-                        width: double.infinity,
-                        child: ElevatedButton.icon(
-                          onPressed: () {
-                            String? src = element.attributes['src'];
-                            String finalUrl = (src == null || src.isEmpty)
-                                ? "${currentBaseUrl.value}plugin.php?id=cxpform:style2&form_id=35&type=iframe&tid=${widget.tid}"
-                                : (src.startsWith('http')
-                                      ? src
-                                      : "${currentBaseUrl.value}$src");
 
-                            Navigator.push(
-                              context,
-                              MaterialPageRoute(
-                                builder: (context) => GeneralWebViewPage(
-                                  url: finalUrl,
-                                  title: "参与问卷",
-                                  isPrintMode: false,
-                                ),
-                              ),
-                            );
-                          },
-                          icon: Icon(
-                            Icons.check_box_outlined,
-                            color: isDark ? Colors.blue[200] : Colors.blue[700],
+                      // 3. 返回完全重组后的原生 MD3 卡片
+                      return Container(
+                        width: double.infinity,
+                        margin: const EdgeInsets.symmetric(vertical: 12),
+                        decoration: BoxDecoration(
+                          // 根据主题自动切换背景色
+                          color: isDark
+                              ? Colors.blueGrey.withOpacity(0.15)
+                              : const Color(0xFFE3F2FD),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(
+                            color: isDark
+                                ? Colors.white10
+                                : Colors.blue.withOpacity(0.2),
                           ),
-                          label: const Text("点击此处参与读者问卷"),
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: isDark
-                                ? const Color(0xFF262626)
-                                : Colors.blue[50],
-                            foregroundColor: isDark
-                                ? Colors.blue[100]
-                                : Colors.blue[900],
-                            padding: const EdgeInsets.symmetric(vertical: 12),
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(8),
-                              side: BorderSide(
-                                color: isDark
-                                    ? Colors.white12
-                                    : Colors.blue[100]!,
+                        ),
+                        child: Column(
+                          children: [
+                            Padding(
+                              padding: const EdgeInsets.all(16.0),
+                              child: Row(
+                                children: [
+                                  Icon(
+                                    Icons.assignment,
+                                    color: isDark
+                                        ? Colors.blue[300]
+                                        : Colors.blue[700],
+                                  ),
+                                  const SizedBox(width: 10),
+                                  Expanded(
+                                    child: Text(
+                                      surveyTitle, // 这是抠出来的标题
+                                      style: TextStyle(
+                                        fontWeight: FontWeight.bold,
+                                        fontSize: 15,
+                                        color: isDark
+                                            ? Colors.white
+                                            : Colors.blue[900],
+                                      ),
+                                    ),
+                                  ),
+                                ],
                               ),
                             ),
-                            elevation: 0,
-                          ),
+                            // 下方按钮区域
+                            Container(
+                              width: double.infinity,
+                              padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                              child: ElevatedButton.icon(
+                                icon: const Icon(Icons.open_in_new, size: 18),
+                                label: const Text("点击此处参与读者问卷"),
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: Theme.of(
+                                    context,
+                                  ).colorScheme.primary,
+                                  foregroundColor: Theme.of(
+                                    context,
+                                  ).colorScheme.onPrimary,
+                                  elevation: 0,
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(8),
+                                  ),
+                                ),
+                                onPressed: () {
+                                  Navigator.push(
+                                    context,
+                                    MaterialPageRoute(
+                                      builder: (context) => GeneralWebViewPage(
+                                        url: surveyUrl,
+                                        title: "参与问卷",
+                                      ),
+                                    ),
+                                  );
+                                },
+                              ),
+                            ),
+                          ],
                         ),
                       );
                     }
@@ -3636,12 +3821,14 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
     }
 
     // 2. 判断是否是站内图片
+    // 【核心修复】：增加新附件域名 gtsproject.org 的识别
     // 如果 URL 包含当前域名，或者是相对路径（不以 http 开头），或者是备用域名
     bool isInternal =
         url.contains(currentHost) ||
         !url.startsWith('http') ||
         url.contains('giantesswaltz.org') ||
-        url.contains('gtswaltz.org');
+        url.contains('gtswaltz.org') ||
+        url.contains('gtsproject.org'); // <--- 必须加上这一行
 
     if (isInternal) {
       // 站内图片：全副武装

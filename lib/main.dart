@@ -469,6 +469,7 @@ class _MainScreenState extends State<MainScreen> {
                   child: Image.file(
                     File(wallpaperPath),
                     fit: BoxFit.cover,
+                    key: ValueKey(wallpaperPath),
                     errorBuilder: (_, __, ___) => const SizedBox(),
                   ),
                 ),
@@ -477,6 +478,7 @@ class _MainScreenState extends State<MainScreen> {
                 Positioned.fill(
                   child: ValueListenableBuilder<ThemeMode>(
                     valueListenable: currentTheme,
+                    key: ValueKey(wallpaperPath),
                     builder: (context, mode, _) {
                       bool isDark = mode == ThemeMode.dark;
                       if (mode == ThemeMode.system) {
@@ -2535,12 +2537,10 @@ class _ProfilePageState extends State<ProfilePage> {
     );
   }
 
-  // 【修复版】选择背景图片（改用 FilePicker 以适配小米/澎湃等国产系统）
   Future<void> _pickWallpaper(BuildContext context) async {
     try {
-      // 使用 FilePicker，它调用的是系统文件选择器，兼容性比 ImagePicker 更好
       FilePickerResult? result = await FilePicker.platform.pickFiles(
-        type: FileType.image, // 限制只能选图片
+        type: FileType.image,
       );
 
       if (result != null && result.files.single.path != null) {
@@ -2548,37 +2548,38 @@ class _ProfilePageState extends State<ProfilePage> {
         final File originalFile = File(originalPath);
 
         final prefs = await SharedPreferences.getInstance();
-
-        // 1. 获取永久存储目录 (Documents)
         final appDir = await getApplicationDocumentsDirectory();
-        final String fileName = 'permanent_wallpaper.jpg';
+
+        // --- 【核心修复：清理旧文件并生成新名称】 ---
+        // 1. 查找并删除目录下所有旧的壁纸文件，防止占用空间
+        final dir = Directory(appDir.path);
+        final List<FileSystemEntity> entities = await dir.list().toList();
+        for (var entity in entities) {
+          if (entity.path.contains('permanent_wallpaper_')) {
+            await entity.delete();
+          }
+        }
+
+        // 2. 使用当前时间戳作为文件名的一部分，确保路径字符串每次都不同
+        final String fileName =
+            'permanent_wallpaper_${DateTime.now().millisecondsSinceEpoch}.jpg';
         final File permanentFile = File('${appDir.path}/$fileName');
 
-        // 2. 将选择的图片复制到永久目录
-        // FilePicker 选出来的文件通常在缓存区，必须拷走，否则过几天会被系统删掉
+        // 3. 复制文件并保存路径
         await originalFile.copy(permanentFile.path);
-
-        // 3. 记录这个永久路径
         await prefs.setString('custom_wallpaper', permanentFile.path);
 
-        // 4. 更新全局状态
-        setState(() {
-          customWallpaperPath.value = permanentFile.path;
-        });
+        // 4. 更新全局状态：路径变了，Flutter 才会真正触发全量重绘
+        customWallpaperPath.value = permanentFile.path;
 
         if (context.mounted) {
           ScaffoldMessenger.of(
             context,
-          ).showSnackBar(const SnackBar(content: Text("背景设置成功！(已兼容国产系统)")));
+          ).showSnackBar(const SnackBar(content: Text("背景设置成功！")));
         }
       }
     } catch (e) {
       print("背景选择失败: $e");
-      if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text("设置失败: $e")));
-      }
     }
   }
 

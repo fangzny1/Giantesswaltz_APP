@@ -41,7 +41,8 @@ class _ImagePreviewPageState extends State<ImagePreviewPage> {
         url.contains(currentHost) ||
         !url.startsWith('http') ||
         url.contains('giantesswaltz.org') ||
-        url.contains('gtswaltz.org');
+        url.contains('gtswaltz.org') ||
+        url.contains('gtsproject.org'); // <--- 加上这一行
 
     if (isInternal) {
       // 站内图：使用传入的完整 Headers (含 Cookie, Referer)

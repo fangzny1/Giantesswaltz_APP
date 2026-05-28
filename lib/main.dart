@@ -2620,64 +2620,97 @@ class _ProfilePageState extends State<ProfilePage> {
   }
 
   void _changeDomain(BuildContext context, String newUrl) async {
+    // 1. 关闭选择列表弹窗
     Navigator.pop(context);
 
     if (newUrl == currentBaseUrl.value) return;
 
-    // 显示加载进度，因为清空缓存需要时间
+    // 记录加载弹窗是否还开着，防止物理返回键导致的错乱
+    bool dialogIsOpen = true;
+
+    // 2. 显示加载弹窗
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (ctx) => const Center(child: CircularProgressIndicator()),
-    );
+      builder: (ctx) => const PopScope(
+        // 【核心修复1】：禁止物理返回键强行关闭弹窗，防止路由栈崩溃
+        canPop: false,
+        child: Center(child: CircularProgressIndicator()),
+      ),
+    ).then((_) => dialogIsOpen = false);
 
     try {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString('selected_base_url', newUrl);
 
-      // 1. 【核心修复】切换线路时必须清空图片磁盘缓存
-      // 否则旧域名的拦截页面（伪装成图片）会留在本地导致解码失败
-      await DefaultCacheManager().emptyCache();
-      await globalImageCache.emptyCache();
+      // 3. 【核心修复2】：为文件清理加上超时枷锁
+      // 就算底层文件被系统锁死了，2秒后也会自动掐断跳过，绝不无限转圈
+      try {
+        await DefaultCacheManager().emptyCache().timeout(
+          const Duration(seconds: 2),
+        );
+        await globalImageCache.emptyCache().timeout(const Duration(seconds: 2));
+      } catch (e) {
+        debugPrint("⚠️ 清理缓存超时被跳过: $e");
+      }
+
       PaintingBinding.instance.imageCache.clear();
       PaintingBinding.instance.imageCache.clearLiveImages();
 
-      // 2. 更新基础域名
+      // 4. 更新基础域名
       currentBaseUrl.value = newUrl;
       HttpService().updateBaseUrl(newUrl);
 
-      // 3. Cookie 搬家逻辑 (保持你之前的)
-      String savedCookie = prefs.getString('saved_cookie_string') ?? "";
-      if (savedCookie.isNotEmpty) {
-        final cookieMgr = WebViewCookieManager();
-        await cookieMgr.clearCookies();
-        String newDomain = Uri.parse(newUrl).host;
-        List<String> cookieList = savedCookie.split(';');
-        for (var c in cookieList) {
-          if (c.contains('=')) {
-            var kv = c.split('=');
-            await cookieMgr.setCookie(
-              WebViewCookie(
-                name: kv[0].trim(),
-                value: kv.sublist(1).join('=').trim(),
-                domain: newDomain,
-                path: '/',
-              ),
-            );
+      // 5. 【核心修复3】：为 WebView Cookie 迁移加上总超时限制
+      // 各种国产魔改系统的 WebView 最容易在这里死锁挂起
+      try {
+        String savedCookie = prefs.getString('saved_cookie_string') ?? "";
+        if (savedCookie.isNotEmpty) {
+          final cookieMgr = WebViewCookieManager();
+          await cookieMgr.clearCookies().timeout(const Duration(seconds: 2));
+
+          String newDomain = Uri.parse(newUrl).host;
+          List<String> cookieList = savedCookie.split(';');
+
+          // 使用并发提速
+          List<Future> cookieTasks = [];
+          for (var c in cookieList) {
+            if (c.contains('=')) {
+              var kv = c.split('=');
+              cookieTasks.add(
+                cookieMgr.setCookie(
+                  WebViewCookie(
+                    name: kv[0].trim(),
+                    value: kv.sublist(1).join('=').trim(),
+                    domain: newDomain,
+                    path: '/',
+                  ),
+                ),
+              );
+            }
           }
+          // 给所有 Cookie 注入过程一个最多 3 秒的总时限
+          await Future.wait(cookieTasks).timeout(const Duration(seconds: 3));
         }
+      } catch (e) {
+        debugPrint("⚠️ WebView Cookie 同步超时被跳过: $e");
       }
 
-      if (mounted) {
-        Navigator.pop(context); // 关闭加载弹窗
+      // 6. 安全关闭弹窗并刷新
+      if (mounted && dialogIsOpen) {
+        Navigator.pop(context); // 关闭转圈弹窗
         ScaffoldMessenger.of(
           context,
         ).showSnackBar(const SnackBar(content: Text("线路已切换，缓存已重置")));
-        // 强制回首页刷新
         forumKey.currentState?.refreshData();
       }
     } catch (e) {
-      if (mounted) Navigator.pop(context);
+      if (mounted && dialogIsOpen) {
+        Navigator.pop(context);
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text("切换线路失败，请重试")));
+      }
     }
   }
 

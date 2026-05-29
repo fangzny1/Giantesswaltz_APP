@@ -8,6 +8,7 @@ import 'package:flutter_widget_from_html/flutter_widget_from_html.dart';
 import 'package:giantesswaltz_app/cloudflare_solver.dart';
 import 'package:giantesswaltz_app/gallery_reader_page.dart';
 import 'package:giantesswaltz_app/history_manager.dart';
+import 'package:giantesswaltz_app/main.dart';
 import 'package:giantesswaltz_app/ultra_reader_page.dart';
 import 'package:html/parser.dart' as html_parser;
 import 'package:url_launcher/url_launcher.dart'; // 现在已正确使用
@@ -1301,9 +1302,10 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
 
   void _showDisplaySettings() {
     showModalBottomSheet(
+      isScrollControlled: true,
       context: context,
       shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+        borderRadius: BorderRadius.vertical(top: Radius.circular(29)),
       ),
       backgroundColor: Theme.of(context).colorScheme.surface,
       builder: (context) {
@@ -1332,7 +1334,46 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
                     ],
                   ),
                   const SizedBox(height: 10),
+                  ValueListenableBuilder<ThemeMode>(
+                    valueListenable: currentTheme,
+                    builder: (context, mode, _) {
+                      // 判断当前到底是白天还是黑夜
+                      bool isDarkMode =
+                          mode == ThemeMode.dark ||
+                          (mode == ThemeMode.system &&
+                              MediaQuery.of(context).platformBrightness ==
+                                  Brightness.dark);
 
+                      return SwitchListTile(
+                        contentPadding: EdgeInsets.zero,
+                        title: const Text(
+                          "暗黑模式",
+                          style: TextStyle(fontSize: 14),
+                        ),
+                        subtitle: const Text(
+                          "一键切换全局深色/浅色主题",
+                          style: TextStyle(fontSize: 11, color: Colors.grey),
+                        ),
+                        value: isDarkMode,
+                        activeColor: Theme.of(context).primaryColorLight,
+                        onChanged: (val) async {
+                          final prefs = await SharedPreferences.getInstance();
+                          if (val) {
+                            currentTheme.value = ThemeMode.dark;
+                            await prefs.setString('theme_mode', 'dark');
+                          } else {
+                            currentTheme.value = ThemeMode.light;
+                            await prefs.setString('theme_mode', 'light');
+                          }
+                          // 刷新弹窗
+                          setSheetState(() {});
+                          // 【关键】：刷新底层页面
+                          setState(() {});
+                        },
+                      );
+                    },
+                  ),
+                  const Divider(height: 20),
                   SwitchListTile(
                     contentPadding: EdgeInsets.zero,
                     title: const Text(
@@ -1457,7 +1498,10 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
                       ],
                     ),
                   ],
+
                   SizedBox(height: MediaQuery.of(context).padding.bottom + 10),
+
+                  // ===========================================
                 ],
               ),
             );
@@ -2981,6 +3025,7 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
         padding: const EdgeInsets.symmetric(horizontal: 16),
         sliver: HtmlWidget(
           finalHtml,
+          key: ValueKey(isDark),
           renderMode: RenderMode.sliverList, // 保持高性能懒加载
           textStyle: TextStyle(
             fontSize: _fontSize - 2,
@@ -3079,6 +3124,7 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
             // 1. 处理图片点击预览
             if (element.localName == 'img') {
               String src = element.attributes['src'] ?? '';
+              String className = element.attributes['class'] ?? '';
               // 【核心修复】：如果是表情包，返回 null
               // 返回 null 意味着“不使用自定义组件”，插件会自动使用上面的 CSS 样式来渲染它
               if (src.contains('static/image/smiley/')) {
@@ -3104,7 +3150,13 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
                 return _buildExternalThumbnailCard(cleanedUrl, keyName);
               }
 
-              if (src.contains('favicon.ico'))
+              if (src.contains('favicon.ico') ||
+                  src.contains('loading.gif') ||
+                  src.contains('loading2.gif') ||
+                  src.contains('none.gif') ||
+                  src.contains('eh.ico') ||
+                  className.contains('pixiv_img') ||
+                  className.contains('ehicon'))
                 return const SizedBox.shrink(); // 屏蔽小图标
               if (src.isNotEmpty) return _buildClickableImage(src); // 调用下方的预览逻辑
             }
@@ -3115,6 +3167,28 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
               String name = element.attributes['name'] ?? '附件';
               String size = element.attributes['size'] ?? '';
               return _buildFileAttachmentCard(url, name, size); // 建议封装一下
+            }
+            // --- 【新增：终极绝杀，直接把 EH 插件框转成原生卡片】 ---
+            String id = element.attributes['id'] ?? '';
+            if (element.localName == 'div' && id.startsWith('ehbox_')) {
+              // 1. 抠出标题 (h3 标签里的文字)
+              final h3Element = element.getElementsByTagName('h3').firstOrNull;
+              String ehTitle = h3Element?.text.trim() ?? "E-Hentai 画廊资源";
+
+              // 2. 抠出来源网址 (找带有 exhentai 或 e-hentai 的 a 标签)
+              String ehUrl = "";
+              final aTags = element.getElementsByTagName('a');
+              for (var a in aTags) {
+                String href = a.attributes['href'] ?? '';
+                if (href.contains('exhentai.org') ||
+                    href.contains('e-hentai.org')) {
+                  ehUrl = href;
+                  break;
+                }
+              }
+
+              // 3. 直接返回原生组件，这块破烂 HTML 彻底消失！
+              return _buildEHBoxCard(ehTitle, ehUrl);
             }
 
             // 3. 处理 iframe 问卷
@@ -3163,6 +3237,85 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
         ),
       ),
     ];
+  }
+
+  // 【新增】：原生 EH 资源卡片构建器
+  Widget _buildEHBoxCard(String title, String url) {
+    bool isDark = Theme.of(context).brightness == Brightness.dark;
+
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.symmetric(vertical: 12),
+      decoration: BoxDecoration(
+        color: isDark
+            ? const Color(0xFF252525)
+            : const Color(0xFFF4ECD8), // 暗黑用深灰，白天用护眼米黄
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: isDark ? Colors.white12 : Colors.brown.withOpacity(0.2),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.all(16.0),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Icon(
+                  Icons.photo_library,
+                  color: isDark ? Colors.white70 : Colors.brown,
+                  size: 24,
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    title,
+                    style: TextStyle(
+                      fontWeight: FontWeight.bold,
+                      fontSize: 14,
+                      color: isDark ? Colors.white : Colors.black87,
+                      height: 1.4,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+
+          if (url.isNotEmpty)
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+              child: ElevatedButton.icon(
+                icon: const Icon(Icons.open_in_browser, size: 18),
+                label: const Text("在外部浏览器中打开资源"),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: isDark ? Colors.grey[800] : Colors.brown,
+                  foregroundColor: Colors.white,
+                  elevation: 0,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                ),
+                onPressed: () async {
+                  if (await canLaunchUrl(Uri.parse(url))) {
+                    await launchUrl(
+                      Uri.parse(url),
+                      mode: LaunchMode.externalApplication,
+                    );
+                  } else {
+                    ScaffoldMessenger.of(
+                      context,
+                    ).showSnackBar(const SnackBar(content: Text("无法打开链接")));
+                  }
+                },
+              ),
+            ),
+        ],
+      ),
+    );
   }
 
   // 【新增】：专门负责渲染文件附件卡片的方法，解决报错
@@ -3306,7 +3459,10 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
           .replaceAll('color: rgb(0, 0, 0)', 'color:#E0E0E0')
           .replaceAll('color:#000000', 'color:#E0E0E0')
           .replaceAll('color="#000000"', 'color="#E0E0E0"')
-          .replaceAll('color="#000"', 'color="#E0E0E0"');
+          .replaceAll('color="#000"', 'color="#E0E0E0"')
+          // 【新增核心修复】：直接把 EH 插件的黄色背景强行替换为深灰色
+          .replaceAll('background-color:#E3E0D1', 'background-color:#222222')
+          .replaceAll('background-color: #E3E0D1', 'background-color: #222222');
     }
 
     return AutoScrollTag(
@@ -3406,6 +3562,8 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
 
                 HtmlWidget(
                   finalHtml,
+                  key: ValueKey(isDark),
+                  //后面考虑要不要删吧
                   textStyle: TextStyle(
                     fontSize: _fontSize - 2, // 或者是 _fontSize
                     height: _lineHeight,
@@ -3419,17 +3577,39 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
                     String parentStyle =
                         element.parent?.attributes['style'] ?? '';
 
-                    // 【核心修复：暗黑模式强除背景】
+                    // ================= 【智能暗黑模式引擎】 =================
                     if (isDark) {
-                      // 检查元素是否有显式的 style 包含背景色
-                      String style = element.attributes['style'] ?? '';
-                      if (style.contains('background-color') ||
-                          element.attributes.containsKey('bgcolor')) {
-                        // 强制背景透明，并确保文字颜色是浅色以防原本是黑色文字
-                        return {
-                          'background-color': 'transparent !important',
-                          'color': '#E0E0E0 !important',
-                        };
+                      bool hasBgColor =
+                          style.contains('background-color') ||
+                          style.contains('background:') ||
+                          element.attributes.containsKey('bgcolor');
+
+                      if (hasBgColor) {
+                        // 1. 大块容器变成深色高级卡片
+                        if ([
+                          'div',
+                          'table',
+                          'tbody',
+                          'tr',
+                          'td',
+                        ].contains(element.localName)) {
+                          if (!style.contains('d4ebfa')) {
+                            // 【关键修复】：去掉 !important，否则插件直接罢工不渲染背景
+                            return {
+                              'background-color': '#222222',
+                              'color': '#EEEEEE',
+                              'border': '1px solid #333333',
+                              'border-radius': '8px',
+                            };
+                          }
+                        }
+                        // 2. 行内元素直接透明
+                        else {
+                          return {
+                            'background-color': 'transparent',
+                            'color': '#E0E0E0',
+                          };
+                        }
                       }
                     }
                     // // --- 【核心修复】：适配问卷容器的背景颜色 ---
@@ -3767,6 +3947,7 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
             const SizedBox(height: 10),
             HtmlWidget(
               finalHtml,
+              key: ValueKey(isDark),
               textStyle: TextStyle(
                 fontSize: _fontSize,
                 height: _lineHeight,

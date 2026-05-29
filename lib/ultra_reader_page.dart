@@ -64,6 +64,10 @@ class _UltraReaderPageState extends State<UltraReaderPage>
   int _currentThemeIndex = 1;
   bool _isBarsVisible = true;
 
+  // 【新增】：阅读设置开关
+  bool _enableSwipePaging = true; // 默认开启左右滑动翻页
+  bool _syncTocWithCurrentFloor = true; // 默认开启目录自动跟随
+
   late int _currentIndex;
   int _dragChapter = 1;
   double? _draggingValue; // 记录拖动中的临时值
@@ -124,6 +128,9 @@ class _UltraReaderPageState extends State<UltraReaderPage>
       setState(() {
         _fontSize = prefs.getDouble('reader_font_size') ?? 18.0;
         _currentThemeIndex = prefs.getInt('reader_theme_index') ?? 1;
+        // 【新增】：读取设置
+        _enableSwipePaging = prefs.getBool('reader_enable_swipe') ?? true;
+        _syncTocWithCurrentFloor = prefs.getBool('reader_sync_toc') ?? true;
       });
     }
   }
@@ -132,6 +139,9 @@ class _UltraReaderPageState extends State<UltraReaderPage>
     final prefs = await SharedPreferences.getInstance();
     await prefs.setDouble('reader_font_size', _fontSize);
     await prefs.setInt('reader_theme_index', _currentThemeIndex);
+    // 【新增】：保存设置
+    await prefs.setBool('reader_enable_swipe', _enableSwipePaging);
+    await prefs.setBool('reader_sync_toc', _syncTocWithCurrentFloor);
   }
 
   Future<void> _fetchContent() async {
@@ -303,13 +313,16 @@ class _UltraReaderPageState extends State<UltraReaderPage>
         },
         child: GestureDetector(
           onTap: _toggleBars,
-          onHorizontalDragEnd: (details) {
-            if (details.primaryVelocity! < -300) {
-              _goToChapter(_currentIndex + 1);
-            } else if (details.primaryVelocity! > 300) {
-              _goToChapter(_currentIndex - 1);
-            }
-          },
+          // 【核心修改】：通过 _enableSwipePaging 开关控制是否启用横向手势
+          onHorizontalDragEnd: _enableSwipePaging
+              ? (details) {
+                  if (details.primaryVelocity! < -300) {
+                    _goToChapter(_currentIndex + 1);
+                  } else if (details.primaryVelocity! > 300) {
+                    _goToChapter(_currentIndex - 1);
+                  }
+                }
+              : null, // 设为 null 即彻底禁用滑动事件
           behavior: HitTestBehavior.opaque,
           child: SizedBox.expand(
             child: Stack(
@@ -664,6 +677,18 @@ class _UltraReaderPageState extends State<UltraReaderPage>
   }
 
   void _showTOCSheet(ReaderTheme theme) {
+    // 【核心修改】：如果开启了目录跟随，预估偏移量让当前楼层出现在屏幕中间
+    // ListTile 带副标题的高度大约是 72 像素
+    double initialOffset = 0.0;
+    if (_syncTocWithCurrentFloor && _chapters.isNotEmpty) {
+      initialOffset =
+          (_currentIndex * 72.0) - (MediaQuery.of(context).size.height * 0.2);
+      if (initialOffset < 0) initialOffset = 0.0;
+    }
+    final ScrollController tocController = ScrollController(
+      initialScrollOffset: initialOffset,
+    );
+
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -690,6 +715,7 @@ class _UltraReaderPageState extends State<UltraReaderPage>
             Divider(height: 1, color: theme.text.withOpacity(0.1)),
             Expanded(
               child: ListView.builder(
+                controller: tocController, // 【新增】：绑定刚才带偏移量的控制器
                 itemCount: _chapters.length,
                 itemBuilder: (context, i) => ListTile(
                   leading: Text(
@@ -716,7 +742,7 @@ class _UltraReaderPageState extends State<UltraReaderPage>
                   ),
                   onTap: () {
                     Navigator.pop(context);
-                    _goToChapter(i);
+                    _goToChapter(i); // 注意：全量模式是调 _goToChapter
                   },
                 ),
               ),
@@ -818,6 +844,48 @@ class _UltraReaderPageState extends State<UltraReaderPage>
                 }),
               ),
               const SizedBox(height: 16),
+              Divider(color: theme.text.withOpacity(0.1)),
+
+              // 【新增】：滑动翻页开关
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                activeColor: theme.primary,
+                title: Text(
+                  "左右滑动翻页",
+                  style: TextStyle(
+                    color: theme.text,
+                    fontSize: 15,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                value: _enableSwipePaging,
+                onChanged: (val) {
+                  setModalState(() => _enableSwipePaging = val); // 更新弹窗状态
+                  setState(() => _enableSwipePaging = val); // 更新底层页面状态
+                  _saveUserPreferences(); // 保存到本地
+                },
+              ),
+
+              // 【新增】：目录跟随开关
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                activeColor: theme.primary,
+                title: Text(
+                  "目录自动定位到当前楼层",
+                  style: TextStyle(
+                    color: theme.text,
+                    fontSize: 15,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                value: _syncTocWithCurrentFloor,
+                onChanged: (val) {
+                  setModalState(() => _syncTocWithCurrentFloor = val);
+                  setState(() => _syncTocWithCurrentFloor = val);
+                  _saveUserPreferences();
+                },
+              ),
+              SizedBox(height: MediaQuery.of(context).padding.bottom),
             ],
           ),
         ),

@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 import 'package:html/parser.dart' as html_parser;
 import 'package:shared_preferences/shared_preferences.dart';
@@ -237,9 +238,10 @@ class _SearchPageState extends State<SearchPage> {
         var authorLink = li.querySelector('p a[href*="uid="]');
         if (authorLink != null) {
           author = authorLink.text.trim();
+          // 【核心修复】：兼容 uid=123 和 uid-123 两种情况
           authorId =
               RegExp(
-                r'uid=(\d+)',
+                r'uid[=-](\d+)',
               ).firstMatch(authorLink.attributes['href'] ?? "")?.group(1) ??
               "0";
         }
@@ -279,9 +281,10 @@ class _SearchPageState extends State<SearchPage> {
           var authorNode = li.querySelector('.list_bottom a[href*="uid="]');
           if (authorNode != null) {
             author = authorNode.text.trim();
+            // 【核心修复】：同样加上 [=-] 的兼容
             authorId =
                 RegExp(
-                  r'uid=(\d+)',
+                  r'uid[=-](\d+)',
                 ).firstMatch(authorNode.attributes['href'] ?? "")?.group(1) ??
                 "0";
           }
@@ -560,27 +563,53 @@ class _SearchPageState extends State<SearchPage> {
                   spacing: 8,
                   runSpacing: 4,
                   children: _history.map((h) {
-                    return ActionChip(
-                      label: Text(
-                        h,
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: subTextColor, // 标签文字同步颜色
-                        ),
-                      ),
-                      // 标签的背景色：如果有壁纸，给一个半透明遮罩感
-                      backgroundColor: wallpaperPath != null
-                          ? (isDark
-                                ? Colors.white.withOpacity(0.1)
-                                : Colors.black.withOpacity(0.05))
-                          : theme.colorScheme.surfaceVariant.withOpacity(0.5),
-                      side: BorderSide(
-                        color: textColor.withOpacity(0.2), // 边框也动态适配
-                      ),
-                      onPressed: () {
-                        _textController.text = h;
-                        _doSearch(h);
+                    return GestureDetector(
+                      // 【新增】：长按触发删除
+                      onLongPress: () async {
+                        // 震动反馈
+                        HapticFeedback.lightImpact();
+
+                        final prefs = await SharedPreferences.getInstance();
+                        setState(() {
+                          _history.remove(h); // 从内存中移除
+                        });
+                        await prefs.setStringList(
+                          'search_history',
+                          _history,
+                        ); // 同步到本地
+
+                        if (mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(
+                              content: Text("已删除搜索记录: $h"),
+                              duration: const Duration(seconds: 1),
+                              behavior: SnackBarBehavior.floating,
+                            ),
+                          );
+                        }
                       },
+                      child: ActionChip(
+                        label: Text(
+                          h,
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: subTextColor, // 标签文字同步颜色
+                          ),
+                        ),
+                        // 标签的背景色：如果有壁纸，给一个半透明遮罩感
+                        backgroundColor: wallpaperPath != null
+                            ? (isDark
+                                  ? Colors.white.withOpacity(0.1)
+                                  : Colors.black.withOpacity(0.05))
+                            : theme.colorScheme.surfaceVariant.withOpacity(0.5),
+                        side: BorderSide(
+                          color: textColor.withOpacity(0.2), // 边框也动态适配
+                        ),
+                        onPressed: () {
+                          _textController.text = h;
+                          _doSearch(h);
+                        },
+                      ),
                     );
                   }).toList(),
                 ),

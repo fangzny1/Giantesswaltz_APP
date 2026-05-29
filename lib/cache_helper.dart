@@ -6,6 +6,24 @@ import 'package:path/path.dart' as p;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:file_picker/file_picker.dart';
 import '../forum_model.dart'; // 访问 globalImageCache
+import 'package:flutter/foundation.dart'; // 需要引入 foundation 以使用 compute
+
+// 【新增】：必须写在类外面的顶级函数，专门给后台多线程跑
+int _calculateSizeInIsolate(String dirPath) {
+  int total = 0;
+  try {
+    final dir = Directory(dirPath);
+    if (dir.existsSync()) {
+      // 在后台线程同步暴力遍历，速度极快且不卡 UI
+      for (var entity in dir.listSync(recursive: true, followLinks: false)) {
+        if (entity is File) {
+          total += entity.lengthSync();
+        }
+      }
+    }
+  } catch (_) {}
+  return total;
+}
 
 class CacheHelper {
   // ================= 基础路径获取 =================
@@ -14,26 +32,17 @@ class CacheHelper {
     return tempDir.path;
   }
 
-  // ================= 缓存大小计算 =================
+  // 【核心修复】：将计算任务丢给后台线程
   static Future<int> getTotalCacheSize() async {
     int total = 0;
     try {
-      // 1. 计算临时目录 (包含压缩产生的图片、WebView缓存等)
+      // 1. 获取目录路径
       final tempDir = await getTemporaryDirectory();
-      if (await tempDir.exists()) {
-        await for (var entity in tempDir.list(
-          recursive: true,
-          followLinks: false,
-        )) {
-          if (entity is File) {
-            try {
-              total += await entity.length();
-            } catch (_) {}
-          }
-        }
-      }
 
-      // 2. 估算 SharedPreferences 文本缓存
+      // 2. 使用 compute 开启后台 Isolate 计算庞大的文件大小，绝对不卡主界面！
+      total += await compute(_calculateSizeInIsolate, tempDir.path);
+
+      // 3. 估算 SharedPreferences 文本缓存 (这个很少，留给主线程即可)
       final prefs = await SharedPreferences.getInstance();
       for (String key in prefs.getKeys()) {
         if (key.startsWith('thread_cache_')) {

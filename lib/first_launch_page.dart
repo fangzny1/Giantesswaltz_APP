@@ -131,9 +131,17 @@ class _FirstLaunchPageState extends State<FirstLaunchPage> {
           child: const Icon(Icons.waving_hand, color: Colors.white, size: 36),
         ),
         const SizedBox(height: 24),
-        const Text(
-          "欢迎使用 GiantessWaltz第三方客户端",
-          style: TextStyle(fontSize: 22, fontWeight: FontWeight.w700),
+        Center(
+          child: const Text(
+            "欢迎使用",
+            style: TextStyle(fontSize: 21, fontWeight: FontWeight.w700),
+          ),
+        ),
+        Center(
+          child: const Text(
+            "GiantessWaltz第三方客户端",
+            style: TextStyle(fontSize: 21, fontWeight: FontWeight.w700),
+          ),
         ),
         const SizedBox(height: 8),
         Text(

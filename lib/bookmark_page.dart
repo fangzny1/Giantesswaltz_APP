@@ -73,9 +73,10 @@ class _BookmarkPageState extends State<BookmarkPage> {
 
   @override
   Widget build(BuildContext context) {
-    return ValueListenableBuilder<String?>(
-      valueListenable: customWallpaperPath,
-      builder: (context, wallpaperPath, _) {
+    return AnimatedBuilder(
+      animation: Listenable.merge([customWallpaperPath, forumCardOpacity]),
+      builder: (context, _) {
+        final wallpaperPath = customWallpaperPath.value;
         bool useTransparent =
             wallpaperPath != null && transparentBarsEnabled.value;
         return Scaffold(
@@ -138,7 +139,7 @@ class _BookmarkPageState extends State<BookmarkPage> {
                                 ? Theme.of(context)
                                       .colorScheme
                                       .surfaceContainerHighest
-                                      .withOpacity(0.7)
+                                      .withOpacity(forumCardOpacity.value)
                                 : Theme.of(
                                     context,
                                   ).colorScheme.surfaceContainerHighest,
@@ -149,48 +150,40 @@ class _BookmarkPageState extends State<BookmarkPage> {
                               borderRadius: BorderRadius.circular(12),
                               // 【点击】跳转
                               onTap: () {
-                                // 【新增】：判断是否是超级全量模式的书签
                                 if (item.targetFloor != null &&
                                     item.targetFloor!.startsWith("ultra_")) {
                                   int ultraIndex = int.parse(
                                     item.targetFloor!.split("_").last,
                                   );
-
-                                  Navigator.push(
+                                  adaptivePush(
                                     context,
-                                    MaterialPageRoute(
-                                      builder: (context) => UltraReaderPage(
-                                        tid: item.tid,
-                                        title: item.subject.replaceAll(
-                                          "[全量模式]",
-                                          "",
-                                        ),
-                                        initialIndex: ultraIndex, // 直接跳跃到指定楼层
+                                    UltraReaderPage(
+                                      tid: item.tid,
+                                      title: item.subject.replaceAll(
+                                        "[全量模式]",
+                                        "",
                                       ),
+                                      initialIndex: ultraIndex,
                                     ),
                                   );
                                 } else {
-                                  // 传统的跳转逻辑保持不变
                                   String? targetFloor;
                                   if (item.savedTime.contains("读至 ")) {
                                     targetFloor = item.savedTime
                                         .split("读至 ")
                                         .last;
                                   }
-
-                                  Navigator.push(
+                                  adaptivePush(
                                     context,
-                                    MaterialPageRoute(
-                                      builder: (context) => ThreadDetailPage(
-                                        tid: item.tid,
-                                        subject: item.subject,
-                                        initialPage: item.page,
-                                        initialNovelMode: item.isNovelMode,
-                                        initialAuthorId: item.authorId,
-                                        initialTargetFloor:
-                                            item.targetFloor ?? targetFloor,
-                                        initialTargetPid: item.targetPid,
-                                      ),
+                                    ThreadDetailPage(
+                                      tid: item.tid,
+                                      subject: item.subject,
+                                      initialPage: item.page,
+                                      initialNovelMode: item.isNovelMode,
+                                      initialAuthorId: item.authorId,
+                                      initialTargetFloor:
+                                          item.targetFloor ?? targetFloor,
+                                      initialTargetPid: item.targetPid,
                                     ),
                                   );
                                 }

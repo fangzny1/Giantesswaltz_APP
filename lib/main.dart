@@ -12,27 +12,28 @@ import 'package:webview_flutter/webview_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:async';
 import 'dart:convert';
-import 'package:dio/dio.dart'; // Add Dio import
+import 'package:dio/dio.dart';
 import 'login_page.dart';
 import 'forum_model.dart';
 import 'thread_list_page.dart';
 import 'search_page.dart';
 import 'favorite_page.dart';
 import 'bookmark_page.dart';
-import 'user_detail_page.dart'; // 用于跳转
+import 'user_detail_page.dart';
 import 'dart:io';
 import 'package:url_launcher/url_launcher.dart';
-import 'package:app_links/app_links.dart'; // 引入库
+import 'package:app_links/app_links.dart';
 import 'package:image_picker/image_picker.dart';
-import 'package:cached_network_image/cached_network_image.dart'; // 引入缓存图片库
-import 'cache_helper.dart'; // 引入缓存助手
+import 'package:cached_network_image/cached_network_image.dart';
+import 'cache_helper.dart';
 import 'package:receive_sharing_intent/receive_sharing_intent.dart';
 import 'package:file_picker/file_picker.dart';
 import 'dart:ui' as ui;
 import 'package:flutter/services.dart';
+import 'miui_theme.dart';
+import 'first_launch_page.dart';
 
-const String kAppVersion = "v1.9.1"; // 这是你当前的 App 版本
-const String kUpdateUrl = "https://fangzny-myupdate-gw-app.hf.space/update";
+// kAppVersion and kUpdateUrl now defined in forum_model.dart
 
 // 全局状态
 final ValueNotifier<String> currentUser = ValueNotifier("未登录");
@@ -45,6 +46,10 @@ final ValueNotifier<ThemeMode> currentTheme = ValueNotifier(ThemeMode.system);
 // 【新增】自定义壁纸路径
 final ValueNotifier<String?> customWallpaperPath = ValueNotifier(null);
 final ValueNotifier<bool> transparentBarsEnabled = ValueNotifier(false);
+final ValueNotifier<double> forumCardOpacity = ValueNotifier(0.7);
+final ValueNotifier<String> transitionAnimationType = ValueNotifier("default");
+final ValueNotifier<String> colorSchemeMode = ValueNotifier("default");
+final ValueNotifier<Color?> seedColor = ValueNotifier(null);
 // 【新增】加载模式开关：true = Dio代理加载 (强力模式), false = WebView原生加载 (默认)
 final ValueNotifier<bool> useDioProxyLoader = ValueNotifier(false);
 
@@ -66,40 +71,183 @@ bool _isTabletMode(BuildContext context) {
 // 【核心修复】左侧点击 (板块/菜单)
 void openOnTablet(BuildContext context, Widget page) {
   if (_isTabletMode(context)) {
-    // 1. 更新根页面记录 (为了防止旋转屏幕后丢失当前状态)
     tabletRightRootPage.value = page;
-
-    // 2. 【关键】如果右侧导航器已经存在，直接操作它进行跳转！
-    // pushAndRemoveUntil 会清空右侧所有历史，只保留新的这一页
     if (tabletNavigatorKey.currentState != null) {
       tabletNavigatorKey.currentState!.pushAndRemoveUntil(
-        MaterialPageRoute(builder: (c) => page),
-        (route) => false, // 这里的 false 表示删掉之前所有路由
+        _buildTransitionRoute(page),
+        (route) => false,
       );
     }
   } else {
-    // 竖屏或手机：普通跳转
-    Navigator.push(context, MaterialPageRoute(builder: (c) => page));
+    Navigator.push(context, _buildTransitionRoute(page));
   }
 }
 
 // 2. 右侧点击 (帖子详情/全站热点)
 void adaptivePush(BuildContext context, Widget page) {
+  final route = _buildTransitionRoute(page);
   if (_isTabletMode(context)) {
-    // 检查右侧导航器是否存在
     if (tabletNavigatorKey.currentState != null) {
-      // 存在：正常入栈 (Push)
-      tabletNavigatorKey.currentState!.push(
-        MaterialPageRoute(builder: (c) => page),
-      );
+      tabletNavigatorKey.currentState!.push(route);
     } else {
-      // 【核心修复】不存在 (说明右侧是空的)：
-      // 直接调用 openOnTablet 把这个页面作为右侧的“第一页”初始化出来
       openOnTablet(context, page);
     }
   } else {
-    // 竖屏或手机：普通跳转
-    Navigator.push(context, MaterialPageRoute(builder: (c) => page));
+    Navigator.push(context, route);
+  }
+}
+
+// 3. 根据 transitionAnimationType 构建对应的页面路由
+PageRoute _buildTransitionRoute(Widget page) {
+  final type = transitionAnimationType.value;
+  switch (type) {
+    case "fade":
+      return PageRouteBuilder(
+        pageBuilder: (context, animation, secondaryAnimation) => page,
+        transitionsBuilder: (context, animation, secondaryAnimation, child) {
+          return FadeTransition(opacity: animation, child: child);
+        },
+        transitionDuration: const Duration(milliseconds: 300),
+      );
+    case "slide_left":
+      return PageRouteBuilder(
+        pageBuilder: (context, animation, secondaryAnimation) => page,
+        transitionsBuilder: (context, animation, secondaryAnimation, child) {
+          return SlideTransition(
+            position:
+                Tween<Offset>(
+                  begin: const Offset(1.0, 0.0),
+                  end: Offset.zero,
+                ).animate(
+                  CurvedAnimation(
+                    parent: animation,
+                    curve: Curves.easeOutCubic,
+                  ),
+                ),
+            child: child,
+          );
+        },
+        transitionDuration: const Duration(milliseconds: 350),
+      );
+    case "slide_up":
+      return PageRouteBuilder(
+        pageBuilder: (context, animation, secondaryAnimation) => page,
+        transitionsBuilder: (context, animation, secondaryAnimation, child) {
+          return SlideTransition(
+            position:
+                Tween<Offset>(
+                  begin: const Offset(0.0, 0.3),
+                  end: Offset.zero,
+                ).animate(
+                  CurvedAnimation(
+                    parent: animation,
+                    curve: Curves.easeOutCubic,
+                  ),
+                ),
+            child: FadeTransition(
+              opacity: CurvedAnimation(
+                parent: animation,
+                curve: const Interval(0.0, 0.5, curve: Curves.easeIn),
+              ),
+              child: child,
+            ),
+          );
+        },
+        transitionDuration: const Duration(milliseconds: 350),
+      );
+    case "scale":
+      return PageRouteBuilder(
+        pageBuilder: (context, animation, secondaryAnimation) => page,
+        transitionsBuilder: (context, animation, secondaryAnimation, child) {
+          return ScaleTransition(
+            scale: CurvedAnimation(
+              parent: animation,
+              curve: Curves.easeOutCubic,
+            ),
+            child: FadeTransition(opacity: animation, child: child),
+          );
+        },
+        transitionDuration: const Duration(milliseconds: 350),
+      );
+    case "slide_right":
+      return PageRouteBuilder(
+        pageBuilder: (context, animation, secondaryAnimation) => page,
+        transitionsBuilder: (context, animation, secondaryAnimation, child) {
+          return SlideTransition(
+            position:
+                Tween<Offset>(
+                  begin: const Offset(-1.0, 0.0),
+                  end: Offset.zero,
+                ).animate(
+                  CurvedAnimation(
+                    parent: animation,
+                    curve: Curves.easeOutCubic,
+                  ),
+                ),
+            child: child,
+          );
+        },
+        transitionDuration: const Duration(milliseconds: 350),
+      );
+    case "rotation":
+      return PageRouteBuilder(
+        pageBuilder: (context, animation, secondaryAnimation) => page,
+        transitionsBuilder: (context, animation, secondaryAnimation, child) {
+          return RotationTransition(
+            turns: Tween<double>(begin: 0.05, end: 0.0).animate(
+              CurvedAnimation(parent: animation, curve: Curves.easeOutCubic),
+            ),
+            child: FadeTransition(
+              opacity: animation,
+              child: ScaleTransition(
+                scale: Tween<double>(begin: 0.95, end: 1.0).animate(
+                  CurvedAnimation(
+                    parent: animation,
+                    curve: Curves.easeOutCubic,
+                  ),
+                ),
+                child: child,
+              ),
+            ),
+          );
+        },
+        transitionDuration: const Duration(milliseconds: 400),
+      );
+    default:
+      return MaterialPageRoute(builder: (c) => page);
+  }
+}
+
+Future<Color> extractWallpaperColor(String imagePath) async {
+  try {
+    final file = File(imagePath);
+    if (!await file.exists()) return MiuiTheme.primaryColor;
+    final bytes = await file.readAsBytes();
+    final codec = await ui.instantiateImageCodec(bytes);
+    final frame = await codec.getNextFrame();
+    final img = frame.image;
+    final byteData = await img.toByteData(format: ui.ImageByteFormat.rawRgba);
+    if (byteData == null) return MiuiTheme.primaryColor;
+    final pixels = byteData.buffer.asUint8List();
+    int r = 0, g = 0, b = 0, count = 0;
+    final int stepX = (img.width / 12).ceil();
+    final int stepY = (img.height / 12).ceil();
+    for (int y = 0; y < img.height; y += stepY) {
+      for (int x = 0; x < img.width; x += stepX) {
+        final int offset = (y * img.width + x) * 4;
+        if (offset + 2 < pixels.length) {
+          r += pixels[offset];
+          g += pixels[offset + 1];
+          b += pixels[offset + 2];
+          count++;
+        }
+      }
+    }
+    img.dispose();
+    if (count == 0) return MiuiTheme.primaryColor;
+    return Color.fromARGB(255, r ~/ count, g ~/ count, b ~/ count);
+  } catch (_) {
+    return MiuiTheme.primaryColor;
   }
 }
 
@@ -124,6 +272,14 @@ void main() async {
   // 【新增】加载壁纸路径
   customWallpaperPath.value = prefs.getString('custom_wallpaper');
   transparentBarsEnabled.value = prefs.getBool('transparent_bars') ?? false;
+  forumCardOpacity.value = prefs.getDouble('forum_card_opacity') ?? 0.7;
+  transitionAnimationType.value =
+      prefs.getString('transition_animation_type') ?? "default";
+  colorSchemeMode.value = prefs.getString('color_scheme_mode') ?? "default";
+  final int? seedColorValue = prefs.getInt('seed_color');
+  if (seedColorValue != null) {
+    seedColor.value = Color(seedColorValue);
+  }
   // 【新增】读取设置
   useDioProxyLoader.value = prefs.getBool('use_dio_proxy') ?? false;
 
@@ -208,28 +364,73 @@ class MyApp extends StatelessWidget {
     return ValueListenableBuilder<ThemeMode>(
       valueListenable: currentTheme,
       builder: (context, mode, child) {
-        return MaterialApp(
-          title: 'GiantessWaltz',
-          debugShowCheckedModeBanner: false,
-          themeMode: mode,
-          theme: ThemeData(
-            colorScheme: ColorScheme.fromSeed(
-              seedColor: const Color(0xFF61CAB8),
-              brightness: Brightness.light,
-            ),
-            useMaterial3: true,
-          ),
-          darkTheme: ThemeData(
-            colorScheme: ColorScheme.fromSeed(
-              seedColor: const Color(0xFF61CAB8),
-              brightness: Brightness.dark,
-            ),
-            useMaterial3: true,
-          ),
-          home: const MainScreen(),
+        return ValueListenableBuilder<Color?>(
+          valueListenable: seedColor,
+          builder: (context, seed, _) {
+            return MaterialApp(
+              title: 'GiantessWaltz',
+              debugShowCheckedModeBanner: false,
+              themeMode: mode,
+              theme: MiuiTheme.buildLightTheme(seedColor: seed),
+              darkTheme: MiuiTheme.buildDarkTheme(seedColor: seed),
+              home: const AppStartupGate(),
+            );
+          },
         );
       },
     );
+  }
+}
+
+/// 启动关卡：判断是否为首次启动，决定显示引导页还是主页
+class AppStartupGate extends StatefulWidget {
+  const AppStartupGate({super.key});
+
+  @override
+  State<AppStartupGate> createState() => _AppStartupGateState();
+}
+
+class _AppStartupGateState extends State<AppStartupGate> {
+  bool _isChecking = true;
+  bool _isFirstLaunch = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _checkFirstLaunch();
+  }
+
+  Future<void> _checkFirstLaunch() async {
+    final prefs = await SharedPreferences.getInstance();
+    final bool completed = prefs.getBool('first_launch_completed') ?? false;
+
+    if (mounted) {
+      setState(() {
+        _isFirstLaunch = !completed;
+        _isChecking = false;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_isChecking) {
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
+    }
+
+    if (_isFirstLaunch) {
+      return FirstLaunchPage(
+        onComplete: () {
+          if (mounted) {
+            setState(() {
+              _isFirstLaunch = false;
+            });
+          }
+        },
+      );
+    }
+
+    return const MainScreen();
   }
 }
 
@@ -546,8 +747,12 @@ class _MainScreenState extends State<MainScreen> {
                                                             .withOpacity(0.2)
                                                       : Colors.white
                                                             .withOpacity(0.4))
-                                                : null),
-                                      elevation: wallpaperPath != null ? 0 : 3,
+                                                : Theme.of(
+                                                    context,
+                                                  ).colorScheme.surface),
+                                      elevation: wallpaperPath != null ? 0 : 0,
+                                      shadowColor: Colors.transparent,
+                                      surfaceTintColor: Colors.transparent,
                                       selectedIndex: _selectedIndex,
                                       onDestinationSelected: (int index) =>
                                           setState(
@@ -599,17 +804,12 @@ class _MainScreenState extends State<MainScreen> {
                                               Brightness.dark
                                           ? Colors.black.withOpacity(0.2)
                                           : Colors.white.withOpacity(0.4))
-                                    : null,
+                                    : Theme.of(context).colorScheme.surface,
                                 selectedIndex: _selectedIndex,
                                 onDestinationSelected: (int index) =>
                                     setState(() => _selectedIndex = index),
                                 labelType: NavigationRailLabelType.all,
-                                indicatorColor: wallpaperPath != null
-                                    ? Theme.of(context)
-                                          .colorScheme
-                                          .secondaryContainer
-                                          .withOpacity(0.8)
-                                    : null,
+                                indicatorColor: MiuiTheme.primaryLight,
                                 destinations: const [
                                   NavigationRailDestination(
                                     icon: Icon(Icons.home_outlined),
@@ -871,7 +1071,7 @@ class _ForumHomePageState extends State<ForumHomePage> {
       _apiHttpFallbackTried = false;
     });
 
-    // 2. 启动超时“强力加载”按钮 (防止无限转圈)
+    // 2. 启动超时"强力加载"按钮 (防止无限转圈)
     _timeoutTimer = Timer(const Duration(seconds: 15), () {
       if (mounted && _isLoading) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -1579,13 +1779,14 @@ class _ForumHomePageState extends State<ForumHomePage> {
           },
           child: CustomScrollView(
             slivers: [
-              ValueListenableBuilder<String?>(
-                valueListenable: customWallpaperPath,
-                builder: (context, wallpaperPath, _) {
+              AnimatedBuilder(
+                animation: Listenable.merge([customWallpaperPath, forumCardOpacity]),
+                builder: (context, _) {
+                  final wallpaperPath = customWallpaperPath.value;
                   bool useTransparent =
                       wallpaperPath != null && transparentBarsEnabled.value;
                   return SliverAppBar(
-                    expandedHeight: 110.0, // 增加高度
+                    expandedHeight: 110.0,
                     floating: false,
                     pinned: true,
                     backgroundColor: useTransparent
@@ -1598,12 +1799,13 @@ class _ForumHomePageState extends State<ForumHomePage> {
                       title: Row(
                         crossAxisAlignment: CrossAxisAlignment.end,
                         children: [
-                          const Text(
+                          Text(
                             "发现",
                             style: TextStyle(
-                              fontWeight: FontWeight.w900,
+                              fontWeight: FontWeight.w700,
                               fontSize: 26,
-                              letterSpacing: 1.2,
+                              letterSpacing: 0.5,
+                              color: Theme.of(context).colorScheme.onSurface,
                             ),
                           ),
                           const SizedBox(width: 8),
@@ -1613,8 +1815,8 @@ class _ForumHomePageState extends State<ForumHomePage> {
                               "GiantessWaltz",
                               style: TextStyle(
                                 fontSize: 11,
-                                color: Colors.grey.withOpacity(0.8),
-                                fontStyle: FontStyle.italic,
+                                color: MiuiTheme.textSecondary,
+                                fontWeight: FontWeight.w400,
                               ),
                             ),
                           ),
@@ -1623,8 +1825,6 @@ class _ForumHomePageState extends State<ForumHomePage> {
                     ),
 
                     actions: [
-                      // 新增：通知图标
-                      // 铃铛图标
                       Padding(
                         padding: const EdgeInsets.only(top: 10, right: 5),
                         child: IconButton(
@@ -1634,7 +1834,6 @@ class _ForumHomePageState extends State<ForumHomePage> {
                             child: const Icon(Icons.notifications_outlined),
                           ),
                           onPressed: () {
-                            // 点击后本地立即清空红点，解决你担心的重复提示问题
                             setState(() => _newNoticeCount = 0);
                             Navigator.push(
                               context,
@@ -1645,32 +1844,40 @@ class _ForumHomePageState extends State<ForumHomePage> {
                           },
                         ),
                       ),
-                      // 右上角展示当前登录用户的头像
                       Padding(
                         padding: const EdgeInsets.only(right: 20.0, top: 10),
-
                         child: ValueListenableBuilder<String>(
                           valueListenable: currentUserAvatar,
                           builder: (context, avatar, _) {
-                            return CircleAvatar(
-                              radius: 16,
-                              backgroundColor: Theme.of(
-                                context,
-                              ).colorScheme.secondaryContainer,
-                              // 【核心修复】：挂上加速器
-                              backgroundImage: avatar.isNotEmpty
-                                  ? CachedNetworkImageProvider(
-                                      avatar,
-                                      cacheManager: globalImageCache,
-                                    )
-                                  : null,
-                              child: avatar.isEmpty
-                                  ? const Icon(
-                                      Icons.person,
-                                      size: 18,
-                                      color: Colors.grey,
-                                    )
-                                  : null,
+                            return Container(
+                              decoration: BoxDecoration(
+                                shape: BoxShape.circle,
+                                border: Border.all(
+                                  color: MiuiTheme.primaryColor.withOpacity(
+                                    0.2,
+                                  ),
+                                  width: 2,
+                                ),
+                              ),
+                              child: CircleAvatar(
+                                radius: 16,
+                                backgroundColor: Theme.of(
+                                  context,
+                                ).colorScheme.primaryContainer,
+                                backgroundImage: avatar.isNotEmpty
+                                    ? CachedNetworkImageProvider(
+                                        avatar,
+                                        cacheManager: globalImageCache,
+                                      )
+                                    : null,
+                                child: avatar.isEmpty
+                                    ? const Icon(
+                                        Icons.person,
+                                        size: 18,
+                                        color: Colors.grey,
+                                      )
+                                    : null,
+                              ),
                             );
                           },
                         ),
@@ -1743,9 +1950,10 @@ class _ForumHomePageState extends State<ForumHomePage> {
           padding: const EdgeInsets.fromLTRB(24, 24, 16, 8),
           child: Text(
             category.name,
-            style: Theme.of(context).textTheme.titleLarge?.copyWith(
-              color: Theme.of(context).colorScheme.primary,
-              fontWeight: FontWeight.bold,
+            style: TextStyle(
+              fontSize: 16,
+              fontWeight: FontWeight.w700,
+              color: Theme.of(context).colorScheme.onSurface,
             ),
           ),
         ),
@@ -1769,102 +1977,120 @@ class _ForumHomePageState extends State<ForumHomePage> {
       );
     }
     return SliverToBoxAdapter(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Padding(
-            padding: EdgeInsets.fromLTRB(20, 15, 20, 10),
-            child: Row(
-              children: [
-                Icon(Icons.whatshot, color: Colors.orange, size: 20),
-                SizedBox(width: 8),
-                Text(
-                  "全站热点",
-                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-                ),
-              ],
-            ),
-          ),
-          SizedBox(
-            height: 140,
-            child: ListView.builder(
-              scrollDirection: Axis.horizontal,
-              padding: const EdgeInsets.symmetric(horizontal: 16),
-              itemCount: _hotThreads.length,
-              itemBuilder: (context, index) {
-                final item = _hotThreads[index];
-                return GestureDetector(
-                  onTap: () => adaptivePush(
-                    context,
-                    ThreadDetailPage(
-                      tid: item['tid'],
-                      subject: item['subject'],
+      child: AnimatedBuilder(
+        animation: Listenable.merge([customWallpaperPath, forumCardOpacity]),
+        builder: (context, _) {
+          final wallpaperPath = customWallpaperPath.value;
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 15, 20, 10),
+                child: Row(
+                  children: [
+                    const Icon(
+                      Icons.whatshot,
+                      color: MiuiTheme.orange,
+                      size: 20,
                     ),
-                  ),
-                  child: Container(
-                    width: 260,
-                    margin: const EdgeInsets.only(right: 12),
-                    child: Card(
-                      elevation: 0,
-                      color: Theme.of(
-                        context,
-                      ).colorScheme.primaryContainer.withOpacity(0.3),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(16),
+                    const SizedBox(width: 8),
+                    Text(
+                      "全站热点",
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w700,
+                        color: Theme.of(context).colorScheme.onSurface,
                       ),
-                      child: Padding(
-                        padding: const EdgeInsets.all(16.0),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              item['subject'],
-                              maxLines: 2,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(
-                                fontWeight: FontWeight.bold,
-                                fontSize: 14,
-                              ),
-                            ),
-                            const Spacer(),
-                            Row(
-                              children: [
-                                CircleAvatar(
-                                  radius: 9,
-                                  // 【核心修复】：换成加速器
-                                  backgroundImage: CachedNetworkImageProvider(
-                                    "${currentBaseUrl.value}uc_server/avatar.php?uid=${item['authorid']}&size=small",
-                                    cacheManager: globalImageCache,
-                                  ),
-                                ),
-                                const SizedBox(width: 6),
-                                Text(
-                                  item['author'],
-                                  style: const TextStyle(
-                                    fontSize: 11,
-                                    color: Colors.grey,
-                                  ),
-                                ),
-                                const Spacer(),
-                                Text(
-                                  "${item['views']} 阅",
-                                  style: const TextStyle(
-                                    fontSize: 10,
-                                    color: Colors.grey,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ],
+                    ),
+                  ],
+                ),
+              ),
+              SizedBox(
+                height: 140,
+                child: ListView.builder(
+                  scrollDirection: Axis.horizontal,
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  itemCount: _hotThreads.length,
+                  itemBuilder: (context, index) {
+                    final item = _hotThreads[index];
+                    return GestureDetector(
+                      onTap: () => adaptivePush(
+                        context,
+                        ThreadDetailPage(
+                          tid: item['tid'],
+                          subject: item['subject'],
                         ),
                       ),
-                    ),
-                  ),
-                );
-              },
-            ),
-          ),
-        ],
+                      child: Container(
+                        width: 260,
+                        margin: const EdgeInsets.only(right: 12),
+                        decoration: BoxDecoration(
+                          color: wallpaperPath != null
+                              ? Theme.of(context).colorScheme.surface
+                                    .withOpacity(forumCardOpacity.value)
+                              : Theme.of(context).colorScheme.surface,
+                          borderRadius: BorderRadius.circular(16),
+                          border: Border.all(
+                            color: Colors.grey.withOpacity(0.15),
+                            width: 0.5,
+                          ),
+                        ),
+                        child: Padding(
+                          padding: const EdgeInsets.all(16.0),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                item['subject'],
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                  fontWeight: FontWeight.w600,
+                                  fontSize: 14,
+                                  color: Theme.of(
+                                    context,
+                                  ).colorScheme.onSurface,
+                                ),
+                              ),
+                              const Spacer(),
+                              Row(
+                                children: [
+                                  CircleAvatar(
+                                    radius: 9,
+                                    backgroundImage: CachedNetworkImageProvider(
+                                      "${currentBaseUrl.value}uc_server/avatar.php?uid=${item['authorid']}&size=small",
+                                      cacheManager: globalImageCache,
+                                    ),
+                                  ),
+                                  const SizedBox(width: 6),
+                                  Text(
+                                    item['author'],
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      color: MiuiTheme.textSecondary,
+                                    ),
+                                  ),
+                                  const Spacer(),
+                                  Text(
+                                    "${item['views']} 阅",
+                                    style: TextStyle(
+                                      fontSize: 10,
+                                      color: MiuiTheme.textSecondary,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ],
+          );
+        },
       ),
     );
   }
@@ -1875,75 +2101,123 @@ class _ForumHomePageState extends State<ForumHomePage> {
   Widget _buildForumTile(Forum forum) {
     int today = int.tryParse(forum.todayposts) ?? 0;
 
-    return ValueListenableBuilder<String?>(
-      valueListenable: customWallpaperPath,
-      builder: (context, wallpaperPath, _) {
-        return Card(
-          margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-          elevation: 0,
-          color: wallpaperPath != null
-              ? Theme.of(
-                  context,
-                ).colorScheme.surfaceContainerLow.withOpacity(0.7)
-              : Theme.of(context).colorScheme.surfaceContainerLow,
-          child: ListTile(
-            contentPadding: const EdgeInsets.symmetric(
-              horizontal: 16,
-              vertical: 4,
-            ),
-            // 【新增】根据 fid 动态加载板块图标
-            leading: Container(
-              width: 48,
-              height: 48,
-              decoration: BoxDecoration(
-                color: Colors.transparent, // 强制透明背景
-                borderRadius: BorderRadius.circular(24), // 大圆角
+    return AnimatedBuilder(
+      animation: Listenable.merge([customWallpaperPath, forumCardOpacity]),
+      builder: (context, _) {
+        final wallpaperPath = customWallpaperPath.value;
+        return Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+          child: Material(
+            color: Colors.transparent,
+            child: InkWell(
+              borderRadius: BorderRadius.circular(14),
+              onTap: () => openOnTablet(
+                context,
+                ThreadListPage(fid: forum.fid, forumName: forum.name),
               ),
-              child: ClipOval(
-                // 关键：强制裁剪成完美圆形
-                child: forum.icon != null && forum.icon!.isNotEmpty
-                    ? CachedNetworkImage(
-                        imageUrl: forum.icon!,
-                        fit: BoxFit.cover, // 填满圆形
-                        cacheManager: globalImageCache,
-                        placeholder: (context, url) => Center(
-                          child: CircularProgressIndicator(strokeWidth: 2),
+              child: Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 14,
+                  vertical: 10,
+                ),
+                decoration: BoxDecoration(
+                  color: wallpaperPath != null
+                      ? Theme.of(context).colorScheme.surfaceContainerLow
+                            .withOpacity(forumCardOpacity.value)
+                      : Theme.of(context).colorScheme.surface,
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                child: Row(
+                  children: [
+                    Container(
+                      width: 48,
+                      height: 48,
+                      decoration: BoxDecoration(
+                        color: Colors.transparent,
+                        borderRadius: BorderRadius.circular(24),
+                      ),
+                      child: ClipOval(
+                        child: forum.icon != null && forum.icon!.isNotEmpty
+                            ? CachedNetworkImage(
+                                imageUrl: forum.icon!,
+                                fit: BoxFit.cover,
+                                cacheManager: globalImageCache,
+                                placeholder: (context, url) => Center(
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                    color: MiuiTheme.primaryColor,
+                                  ),
+                                ),
+                                errorWidget: (context, url, error) => Icon(
+                                  _getForumIcon(forum.name),
+                                  size: 28,
+                                  color: MiuiTheme.primaryColor,
+                                ),
+                              )
+                            : Icon(
+                                _getForumIcon(forum.name),
+                                size: 28,
+                                color: MiuiTheme.primaryColor,
+                              ),
+                      ),
+                    ),
+                    const SizedBox(width: 14),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            forum.name,
+                            style: TextStyle(
+                              fontWeight: FontWeight.w600,
+                              fontSize: 15,
+                              color: Theme.of(context).colorScheme.onSurface,
+                            ),
+                          ),
+                          if (forum.description.isNotEmpty)
+                            Padding(
+                              padding: const EdgeInsets.only(top: 3),
+                              child: Text(
+                                forum.description,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: MiuiTheme.textSecondary,
+                                ),
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
+                    if (today > 0)
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 8,
+                          vertical: 3,
                         ),
-                        errorWidget: (context, url, error) => Icon(
-                          _getForumIcon(forum.name),
-                          size: 28,
-                          color: Theme.of(context).colorScheme.primary,
+                        decoration: BoxDecoration(
+                          color: MiuiTheme.red.withOpacity(0.1),
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        child: Text(
+                          "+$today",
+                          style: const TextStyle(
+                            color: MiuiTheme.red,
+                            fontSize: 11,
+                            fontWeight: FontWeight.w600,
+                          ),
                         ),
                       )
-                    : Icon(
-                        _getForumIcon(forum.name),
-                        size: 28,
-                        color: Theme.of(context).colorScheme.primary,
+                    else
+                      Icon(
+                        Icons.chevron_right,
+                        size: 16,
+                        color: Colors.grey.withOpacity(0.5),
                       ),
+                  ],
+                ),
               ),
-            ),
-            title: Text(
-              forum.name,
-              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
-            ),
-            subtitle: forum.description.isNotEmpty
-                ? Text(
-                    forum.description,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontSize: 12),
-                  )
-                : null,
-            trailing: today > 0
-                ? Badge(
-                    label: Text("+$today"),
-                    backgroundColor: Colors.redAccent,
-                  )
-                : const Icon(Icons.chevron_right, size: 16, color: Colors.grey),
-            // 修改后：使用 openOnTablet (重置右侧)
-            onTap: () => openOnTablet(
-              context,
-              ThreadListPage(fid: forum.fid, forumName: forum.name),
             ),
           ),
         );
@@ -2300,7 +2574,7 @@ class _ProfilePageState extends State<ProfilePage> {
                         color: Colors.redAccent,
                       ),
                       title: const Text("登录状态修复"),
-                      subtitle: const Text("遇到“暂无内容”或无法登录时点击"),
+                      subtitle: const Text('遇到"暂无内容"或无法登录时点击'),
                       onTap: () => _showRepairDialog(context),
                     ),
                   ],
@@ -2363,7 +2637,7 @@ class _ProfilePageState extends State<ProfilePage> {
           mainAxisSize: MainAxisSize.min,
           children: [
             const Text(
-              "“强力代理模式”使用 Dio 直接请求 API，速度快，但部分地区可能被干扰。\n\n“原生模式”通过内置网页内核加载，兼容性极高，更稳定。",
+              '"强力代理模式"使用 Dio 直接请求 API，速度快，但部分地区可能被干扰。\n\n"原生模式"通过内置网页内核加载，兼容性极高，更稳定。',
             ),
             const SizedBox(height: 10),
             RadioListTile<bool>(
@@ -2736,16 +3010,73 @@ class _ProfilePageState extends State<ProfilePage> {
     }
   }
 
+  Widget _buildMenuItem({
+    required IconData icon,
+    required String title,
+    String? subtitle,
+    Widget? subtitleWidget,
+    Widget? trailing,
+    Color? iconColor,
+    Color? titleColor,
+    required VoidCallback onTap,
+  }) {
+    return ListTile(
+      leading: Container(
+        width: 38,
+        height: 38,
+        decoration: BoxDecoration(
+          color: (iconColor ?? MiuiTheme.primaryColor).withOpacity(0.08),
+          borderRadius: BorderRadius.circular(10),
+        ),
+        child: Icon(icon, color: iconColor ?? MiuiTheme.primaryColor, size: 20),
+      ),
+      title: Text(
+        title,
+        style: TextStyle(
+          fontSize: 15,
+          fontWeight: FontWeight.w500,
+          color: titleColor ?? Theme.of(context).colorScheme.onSurface,
+        ),
+      ),
+      subtitle:
+          subtitleWidget ??
+          (subtitle != null
+              ? Text(
+                  subtitle,
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: MiuiTheme.textSecondary,
+                  ),
+                )
+              : null),
+      trailing:
+          trailing ??
+          Icon(
+            Icons.chevron_right,
+            size: 18,
+            color: Colors.grey.withOpacity(0.5),
+          ),
+      contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 2),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      onTap: onTap,
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      // 【修复 4】个人中心原本被写死了 Colors.transparent，改回判断
       backgroundColor: customWallpaperPath.value != null
           ? Colors.transparent
-          : Theme.of(context).colorScheme.surface, // 或者设为 null
+          : Theme.of(context).colorScheme.surface,
       appBar: AppBar(
-        title: const Text("个人中心"),
-        backgroundColor: Colors.transparent, // AppBar 也透明
+        title: Text(
+          "个人中心",
+          style: TextStyle(
+            color: Theme.of(context).colorScheme.onSurface,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+        backgroundColor: Colors.transparent,
         elevation: 0,
         actions: [
           ValueListenableBuilder<ThemeMode>(
@@ -2766,12 +3097,7 @@ class _ProfilePageState extends State<ProfilePage> {
           IconButton(
             icon: const Icon(Icons.settings_outlined),
             tooltip: "高级设置",
-            onPressed: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(builder: (c) => const SettingsPage()),
-              );
-            },
+            onPressed: () => adaptivePush(context, const SettingsPage()),
           ),
 
           const SizedBox(width: 8),
@@ -2790,33 +3116,47 @@ class _ProfilePageState extends State<ProfilePage> {
               // === 头像区域 ===
               Center(
                 child: GestureDetector(
-                  // 点击头像跳转
                   onTap: isLogin ? () => _jumpToMyPosts(context) : null,
                   child: Stack(
                     children: [
-                      // 使用 ValueListenableBuilder 监听头像变化
                       ValueListenableBuilder<String>(
                         valueListenable: currentUserAvatar,
                         builder: (context, avatarUrl, _) {
-                          return CircleAvatar(
-                            radius: 45,
-                            backgroundColor: Theme.of(
-                              context,
-                            ).colorScheme.primaryContainer,
-                            // 【核心修复】：挂上加速器
-                            backgroundImage: (isLogin && avatarUrl.isNotEmpty)
-                                ? CachedNetworkImageProvider(
-                                    avatarUrl,
-                                    cacheManager: globalImageCache,
-                                  )
-                                : null,
-                            child: (!isLogin || avatarUrl.isEmpty)
-                                ? const Icon(Icons.person, size: 50)
-                                : null,
+                          return Container(
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              boxShadow: [
+                                BoxShadow(
+                                  color: MiuiTheme.primaryColor.withOpacity(
+                                    0.2,
+                                  ),
+                                  blurRadius: 16,
+                                  offset: const Offset(0, 4),
+                                ),
+                              ],
+                            ),
+                            child: CircleAvatar(
+                              radius: 45,
+                              backgroundColor: Theme.of(
+                                context,
+                              ).colorScheme.primaryContainer,
+                              backgroundImage: (isLogin && avatarUrl.isNotEmpty)
+                                  ? CachedNetworkImageProvider(
+                                      avatarUrl,
+                                      cacheManager: globalImageCache,
+                                    )
+                                  : null,
+                              child: (!isLogin || avatarUrl.isEmpty)
+                                  ? Icon(
+                                      Icons.person,
+                                      size: 50,
+                                      color: MiuiTheme.textSecondary,
+                                    )
+                                  : null,
+                            ),
                           );
                         },
                       ),
-                      // 如果已登录，显示一个小角标提示可以点击
                       if (isLogin)
                         Positioned(
                           right: 0,
@@ -2824,8 +3164,9 @@ class _ProfilePageState extends State<ProfilePage> {
                           child: Container(
                             padding: const EdgeInsets.all(4),
                             decoration: BoxDecoration(
-                              color: Theme.of(context).colorScheme.primary,
+                              color: MiuiTheme.primaryColor,
                               shape: BoxShape.circle,
+                              border: Border.all(color: Colors.white, width: 2),
                             ),
                             child: const Icon(
                               Icons.edit_note,
@@ -2855,15 +3196,19 @@ class _ProfilePageState extends State<ProfilePage> {
                       children: [
                         Text(
                           username,
-                          style: const TextStyle(
+                          style: TextStyle(
                             fontSize: 22,
-                            fontWeight: FontWeight.bold,
+                            fontWeight: FontWeight.w700,
+                            color: Theme.of(context).colorScheme.onSurface,
                           ),
                         ),
                         if (isLogin)
-                          const Text(
+                          Text(
                             "点击查看我的发布",
-                            style: TextStyle(fontSize: 10, color: Colors.grey),
+                            style: TextStyle(
+                              fontSize: 11,
+                              color: MiuiTheme.textSecondary,
+                            ),
                           ),
                       ],
                     ),
@@ -2876,113 +3221,104 @@ class _ProfilePageState extends State<ProfilePage> {
                 Center(
                   child: Container(
                     padding: const EdgeInsets.symmetric(
-                      horizontal: 12,
-                      vertical: 4,
+                      horizontal: 14,
+                      vertical: 5,
                     ),
                     decoration: BoxDecoration(
-                      color: Colors.green.withOpacity(0.1),
+                      color: MiuiTheme.green.withOpacity(0.1),
                       borderRadius: BorderRadius.circular(20),
-                      border: Border.all(color: Colors.green),
                     ),
-                    child: const Text(
-                      "已登录",
-                      style: TextStyle(color: Colors.green, fontSize: 12),
+                    child: const Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          Icons.check_circle,
+                          size: 14,
+                          color: MiuiTheme.green,
+                        ),
+                        SizedBox(width: 6),
+                        Text(
+                          "已登录",
+                          style: TextStyle(
+                            color: MiuiTheme.green,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ],
                     ),
                   ),
                 ),
 
               const SizedBox(height: 30),
 
-              // ... 下面的菜单项 (书签、收藏等) 保持不变 ...
-              ListTile(
-                leading: const Icon(
-                  Icons.bookmark_border,
-                  color: Colors.purple,
-                ),
-                title: const Text("阅读书签"),
-                trailing: const Icon(Icons.chevron_right),
-                onTap: () => openOnTablet(
-                  context,
-                  const BookmarkPage(),
-                ), // 改为 openOnTablet
+              // === 菜单项 ===
+              _buildMenuItem(
+                icon: Icons.bookmark_border,
+                title: "阅读书签",
+                onTap: () => openOnTablet(context, const BookmarkPage()),
               ),
-              ListTile(
-                leading: const Icon(Icons.star_outline, color: Colors.orange),
-                title: const Text("我的收藏"),
-                trailing: const Icon(Icons.chevron_right),
-                onTap: () => openOnTablet(
-                  context,
-                  const FavoritePage(),
-                ), // 改为 openOnTablet
+              _buildMenuItem(
+                icon: Icons.star_outline,
+                title: "我的收藏",
+                onTap: () => openOnTablet(context, const FavoritePage()),
               ),
-              // 上次加的清除缓存
-              ListTile(
-                leading: const Icon(
-                  Icons.cleaning_services_outlined,
-                  color: Colors.blueGrey,
-                ),
-                title: const Text("清除缓存"),
-                subtitle: const Text("管理存储空间"), // 加个副标题更好看
-                trailing: const Icon(Icons.chevron_right),
-                // 【修改】点击不再直接清理，而是弹窗询问
+              _buildMenuItem(
+                icon: Icons.cleaning_services_outlined,
+                title: "清除缓存",
+                subtitle: "管理存储空间",
                 onTap: () => _showClearCacheDialog(context),
               ),
-              ListTile(
-                leading: const Icon(
-                  Icons.download_for_offline_outlined,
-                  color: Colors.teal,
-                ),
-                title: const Text("离线缓存"),
-                subtitle: const Text("管理已保存的帖子"),
-                trailing: const Icon(Icons.chevron_right),
+              _buildMenuItem(
+                icon: Icons.download_for_offline_outlined,
+                title: "离线缓存",
+                subtitle: "管理已保存的帖子",
                 onTap: () => openOnTablet(context, const OfflineListPage()),
               ),
-              ListTile(
-                leading: const Icon(Icons.history, color: Colors.blue),
-                title: const Text("浏览足迹"),
-                trailing: const Icon(Icons.chevron_right),
-                onTap: () => openOnTablet(
-                  context,
-                  const HistoryPage(),
-                ), // 改为 openOnTablet
+              _buildMenuItem(
+                icon: Icons.history,
+                title: "浏览足迹",
+                onTap: () => openOnTablet(context, const HistoryPage()),
               ),
-              // 【新增】加载模式入口
-              ListTile(
-                leading: const Icon(
-                  Icons.settings_ethernet,
-                  color: Colors.deepPurple,
-                ),
-                title: const Text("加载模式设置"),
-                subtitle: ValueListenableBuilder<bool>(
+              _buildMenuItem(
+                icon: Icons.settings_ethernet,
+                title: "加载模式设置",
+                subtitleWidget: ValueListenableBuilder<bool>(
                   valueListenable: useDioProxyLoader,
                   builder: (context, value, _) {
                     return Text(
-                      value ? "当前: 强力代理模式 (Dio)" : "当前: 原生模式 (WebView+Json解析)",
+                      value ? "当前: 强力代理模式 (Dio)" : "当前: 原生模式 (WebView)",
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: MiuiTheme.textSecondary,
+                      ),
                     );
                   },
                 ),
-                trailing: const Icon(Icons.chevron_right),
                 onTap: () => _showLoadModeDialog(context),
               ),
 
-              const Divider(),
-
-              // 【新增】外观设置
-              ListTile(
-                leading: const Icon(Icons.image_outlined, color: Colors.teal),
-                title: const Text("自定义背景"),
-                subtitle: const Text("设置全局背景图片"),
-                trailing: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    if (customWallpaperPath.value != null)
-                      IconButton(
-                        icon: const Icon(Icons.close, color: Colors.grey),
-                        onPressed: () => _clearWallpaper(context),
-                      ),
-                    const Icon(Icons.chevron_right),
-                  ],
+              const SizedBox(height: 8),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 20),
+                child: Divider(
+                  color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                  height: 1,
                 ),
+              ),
+              const SizedBox(height: 8),
+
+              // === 外观设置 ===
+              _buildMenuItem(
+                icon: Icons.image_outlined,
+                title: "自定义背景",
+                subtitle: "设置全局背景图片",
+                trailing: customWallpaperPath.value != null
+                    ? IconButton(
+                        icon: const Icon(Icons.close, size: 18),
+                        onPressed: () => _clearWallpaper(context),
+                      )
+                    : null,
                 onTap: () => _pickWallpaper(context),
               ),
               ValueListenableBuilder<bool>(
@@ -3004,43 +3340,52 @@ class _ProfilePageState extends State<ProfilePage> {
                 },
               ),
 
-              // 在 ProfilePage 的 ListView children 里添加
-              ListTile(
-                leading: const Icon(Icons.link, color: Colors.indigoAccent),
-                title: const Text("切换线路"),
-                subtitle: ValueListenableBuilder<String>(
+              _buildMenuItem(
+                icon: Icons.link,
+                title: "切换线路",
+                subtitleWidget: ValueListenableBuilder<String>(
                   valueListenable: currentBaseUrl,
                   builder: (context, url, _) {
                     bool isMain = url.contains("giantesswaltz.org");
-                    return Text(isMain ? "当前：主线路 (需要代理)" : "当前：备用线路 (直连优化)");
+                    return Text(
+                      isMain ? "当前：主线路" : "当前：备用线路",
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: MiuiTheme.textSecondary,
+                      ),
+                    );
                   },
                 ),
-                trailing: const Icon(Icons.chevron_right),
                 onTap: () => _showDomainSwitchDialog(context),
               ),
-              // 在 ProfilePage 的 ListView 中
-              ListTile(
-                leading: const Icon(Icons.update, color: Colors.blueAccent),
-                title: const Text("检查更新"),
-                subtitle: const Text("当前版本：$kAppVersion"), // 显示当前版本号
-                trailing: const Icon(Icons.chevron_right),
-                onTap: () => _checkUpdate(context), // 点击手动检查
+              _buildMenuItem(
+                icon: Icons.update,
+                title: "检查更新",
+                subtitle: "当前版本：$kAppVersion",
+                onTap: () => _checkUpdate(context),
               ),
-              // 【新增】关于
-              ListTile(
-                leading: const Icon(Icons.info_outline, color: Colors.indigo),
-                title: const Text("关于项目"),
-                subtitle: const Text("GitHub 开源地址"),
-                trailing: const Icon(Icons.chevron_right),
+              _buildMenuItem(
+                icon: Icons.info_outline,
+                title: "关于项目",
+                subtitle: "GitHub 开源地址",
                 onTap: () => _showAboutDialog(context),
               ),
-              const Divider(),
+
+              const SizedBox(height: 8),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 20),
+                child: Divider(
+                  color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                  height: 1,
+                ),
+              ),
+              const SizedBox(height: 8),
 
               if (!isLogin)
-                ListTile(
-                  leading: const Icon(Icons.login),
-                  title: const Text("登录账号"),
-                  trailing: const Icon(Icons.chevron_right),
+                _buildMenuItem(
+                  icon: Icons.login,
+                  title: "登录账号",
+                  iconColor: MiuiTheme.primaryColor,
                   onTap: () async {
                     final result = await Navigator.push(
                       context,
@@ -3049,29 +3394,27 @@ class _ProfilePageState extends State<ProfilePage> {
                       ),
                     );
                     if (result == true) {
-                      ScaffoldMessenger.of(
-                        context,
-                      ).showSnackBar(const SnackBar(content: Text("登录成功！")));
+                      if (mounted) {
+                        ScaffoldMessenger.of(
+                          context,
+                        ).showSnackBar(const SnackBar(content: Text("登录成功！")));
+                      }
                       forumKey.currentState?.refreshData();
                     }
-                    // 【核心修改】给一点时间让 Cookie 存盘，然后强力刷新
                     await Future.delayed(const Duration(milliseconds: 500));
-                    // 这里的 forumKey 必须在 main.dart 顶部定义为全局变量
                     forumKey.currentState?.refreshData();
                   },
                 ),
 
               if (isLogin)
-                ListTile(
-                  leading: const Icon(Icons.logout, color: Colors.red),
-                  title: const Text(
-                    "退出登录",
-                    style: TextStyle(color: Colors.red),
-                  ),
+                _buildMenuItem(
+                  icon: Icons.logout,
+                  title: "退出登录",
+                  iconColor: MiuiTheme.red,
+                  titleColor: MiuiTheme.red,
                   onTap: () async {
                     await WebViewCookieManager().clearCookies();
                     final prefs = await SharedPreferences.getInstance();
-                    // 【新增】清理所有用户信息
                     prefs.remove('username');
                     prefs.remove('uid');
                     prefs.remove('avatar');

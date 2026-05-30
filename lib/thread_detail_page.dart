@@ -416,7 +416,7 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
         // 如果是楼主且内容为空，通常是由于“仅作者可见”权限导致
         content =
             "<div style='padding: 20px; border: 1px dashed #ccc; text-align: center; color: grey;'>"
-            "内容受限：此帖子可能仅作者与管理员可见"
+            "内容受限：此帖子可能仅作者与管理员可见或者该楼层无内容"
             "</div>";
       }
       // -----------------------------

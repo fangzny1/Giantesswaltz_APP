@@ -28,9 +28,10 @@ class _HistoryPageState extends State<HistoryPage> {
   }
 
   Widget build(BuildContext context) {
-    return ValueListenableBuilder<String?>(
-      valueListenable: customWallpaperPath,
-      builder: (context, wallpaperPath, _) {
+    return AnimatedBuilder(
+      animation: Listenable.merge([customWallpaperPath, forumCardOpacity]),
+      builder: (context, _) {
+        final wallpaperPath = customWallpaperPath.value;
         return Scaffold(
           backgroundColor: wallpaperPath != null ? Colors.transparent : null,
           appBar: AppBar(
@@ -91,7 +92,7 @@ class _HistoryPageState extends State<HistoryPage> {
                               ? Theme.of(context)
                                     .colorScheme
                                     .surfaceContainerHighest
-                                    .withOpacity(0.5)
+                                    .withOpacity(forumCardOpacity.value)
                               : null,
                           child: ListTile(
                             leading: _isEditMode
@@ -124,13 +125,11 @@ class _HistoryPageState extends State<HistoryPage> {
                                     _selectedTids.add(item.tid);
                                 });
                               } else {
-                                Navigator.push(
+                                adaptivePush(
                                   context,
-                                  MaterialPageRoute(
-                                    builder: (c) => ThreadDetailPage(
-                                      tid: item.tid,
-                                      subject: item.subject,
-                                    ),
+                                  ThreadDetailPage(
+                                    tid: item.tid,
+                                    subject: item.subject,
                                   ),
                                 );
                               }

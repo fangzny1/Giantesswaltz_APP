@@ -414,9 +414,10 @@ class _UserDetailPageState extends State<UserDetailPage> {
 
   @override
   Widget build(BuildContext context) {
-    return ValueListenableBuilder<String?>(
-      valueListenable: customWallpaperPath,
-      builder: (context, wallpaperPath, _) {
+    return AnimatedBuilder(
+      animation: Listenable.merge([customWallpaperPath, forumCardOpacity]),
+      builder: (context, _) {
+        final wallpaperPath = customWallpaperPath.value;
         return Scaffold(
           backgroundColor: wallpaperPath != null
               ? Colors.transparent
@@ -522,7 +523,7 @@ class _UserDetailPageState extends State<UserDetailPage> {
 
     final theme = Theme.of(context);
     final cardColor = wallpaperPath != null
-        ? theme.cardColor.withOpacity(0.8)
+        ? theme.cardColor.withOpacity(forumCardOpacity.value)
         : theme.cardColor;
 
     final String rawTitle = _userProfile!.groupTitle;
@@ -691,19 +692,14 @@ class _UserDetailPageState extends State<UserDetailPage> {
       margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
       elevation: 0,
       color: wallpaperPath != null
-          ? Theme.of(context).cardColor.withOpacity(0.7)
+          ? Theme.of(context).cardColor.withOpacity(forumCardOpacity.value)
           : Theme.of(context).cardColor,
       child: InkWell(
         borderRadius: BorderRadius.circular(12),
-        onTap: () {
-          Navigator.push(
-            context,
-            MaterialPageRoute(
-              builder: (context) =>
-                  ThreadDetailPage(tid: item.tid, subject: item.subject),
-            ),
-          );
-        },
+        onTap: () => adaptivePush(
+          context,
+          ThreadDetailPage(tid: item.tid, subject: item.subject),
+        ),
         child: Padding(
           padding: const EdgeInsets.all(16.0),
           child: Column(
@@ -722,22 +718,28 @@ class _UserDetailPageState extends State<UserDetailPage> {
               Row(
                 children: [
                   if (item.forumName.isNotEmpty)
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 6,
-                        vertical: 2,
-                      ),
-                      decoration: BoxDecoration(
-                        color: Theme.of(context).colorScheme.secondaryContainer,
-                        borderRadius: BorderRadius.circular(4),
-                      ),
-                      child: Text(
-                        item.forumName,
-                        style: TextStyle(
-                          fontSize: 10,
+                    Flexible(
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 6,
+                          vertical: 2,
+                        ),
+                        decoration: BoxDecoration(
                           color: Theme.of(
                             context,
-                          ).colorScheme.onSecondaryContainer,
+                          ).colorScheme.secondaryContainer,
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                        child: Text(
+                          item.forumName,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 10,
+                            color: Theme.of(
+                              context,
+                            ).colorScheme.onSecondaryContainer,
+                          ),
                         ),
                       ),
                     ),
@@ -747,6 +749,8 @@ class _UserDetailPageState extends State<UserDetailPage> {
                     style: const TextStyle(fontSize: 12, color: Colors.grey),
                   ),
                   const Spacer(),
+                  const Spacer(),
+
                   const Icon(
                     Icons.remove_red_eye,
                     size: 12,
@@ -757,7 +761,7 @@ class _UserDetailPageState extends State<UserDetailPage> {
                     item.views,
                     style: const TextStyle(fontSize: 12, color: Colors.grey),
                   ),
-                  const SizedBox(width: 8),
+                  const SizedBox(width: 10),
                   const Icon(
                     Icons.chat_bubble_outline,
                     size: 14,

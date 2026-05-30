@@ -69,9 +69,10 @@ class _NotificationPageState extends State<NotificationPage>
 
   @override
   Widget build(BuildContext context) {
-    return ValueListenableBuilder<String?>(
-      valueListenable: customWallpaperPath,
-      builder: (context, wallpaperPath, _) {
+    return AnimatedBuilder(
+      animation: Listenable.merge([customWallpaperPath, forumCardOpacity]),
+      builder: (context, _) {
+        final wallpaperPath = customWallpaperPath.value;
         return Scaffold(
           // 这里的背景色逻辑要和 main.dart 一致
           backgroundColor: wallpaperPath != null
@@ -158,7 +159,7 @@ class _NotificationPageState extends State<NotificationPage>
           color: wallpaperPath != null
               ? Theme.of(
                   context,
-                ).colorScheme.surfaceContainerHighest.withOpacity(0.7)
+                ).colorScheme.surfaceContainerHighest.withOpacity(forumCardOpacity.value)
               : null,
           elevation: 0,
           child: ListTile(
@@ -213,7 +214,7 @@ class _NotificationPageState extends State<NotificationPage>
           color: wallpaperPath != null
               ? Theme.of(
                   context,
-                ).colorScheme.surfaceContainerHighest.withOpacity(0.7)
+                ).colorScheme.surfaceContainerHighest.withOpacity(forumCardOpacity.value)
               : null,
           elevation: 0,
           child: ListTile(

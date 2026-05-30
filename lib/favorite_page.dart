@@ -354,9 +354,10 @@ class _FavoritePageState extends State<FavoritePage> {
 
   @override
   Widget build(BuildContext context) {
-    return ValueListenableBuilder<String?>(
-      valueListenable: customWallpaperPath,
-      builder: (context, wallpaperPath, _) {
+    return AnimatedBuilder(
+      animation: Listenable.merge([customWallpaperPath, forumCardOpacity]),
+      builder: (context, _) {
+        final wallpaperPath = customWallpaperPath.value;
         return Scaffold(
           backgroundColor: wallpaperPath != null
               ? Theme.of(context).colorScheme.surfaceContainerHighest
@@ -421,7 +422,7 @@ class _FavoritePageState extends State<FavoritePage> {
           color: wallpaperPath != null
               ? Theme.of(
                   context,
-                ).colorScheme.surfaceContainerHighest.withOpacity(0.5)
+                ).colorScheme.surfaceContainerHighest.withOpacity(forumCardOpacity.value)
               : null,
           elevation: 0,
           child: ListTile(
@@ -432,15 +433,10 @@ class _FavoritePageState extends State<FavoritePage> {
               overflow: TextOverflow.ellipsis,
             ),
             subtitle: fav.description.isNotEmpty ? Text(fav.description) : null,
-            onTap: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (c) =>
-                      ThreadDetailPage(tid: fav.tid, subject: fav.title),
-                ),
-              );
-            },
+            onTap: () => adaptivePush(
+              context,
+              ThreadDetailPage(tid: fav.tid, subject: fav.title),
+            ),
             onLongPress: () => _showDeleteConfirmDialog(fav.favid, fav.title),
           ),
         );

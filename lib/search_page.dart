@@ -337,9 +337,10 @@ class _SearchPageState extends State<SearchPage> {
 
   @override
   Widget build(BuildContext context) {
-    return ValueListenableBuilder<String?>(
-      valueListenable: customWallpaperPath,
-      builder: (context, wallpaperPath, _) {
+    return AnimatedBuilder(
+      animation: Listenable.merge([customWallpaperPath, forumCardOpacity]),
+      builder: (context, _) {
+        final wallpaperPath = customWallpaperPath.value;
         return Scaffold(
           backgroundColor: wallpaperPath != null ? Colors.transparent : null,
           appBar: AppBar(
@@ -641,7 +642,7 @@ class _SearchPageState extends State<SearchPage> {
           color: wallpaperPath != null
               ? Theme.of(
                   context,
-                ).colorScheme.surfaceContainerHighest.withOpacity(0.9)
+                ).colorScheme.surfaceContainerHighest.withOpacity(forumCardOpacity.value)
               : null,
           elevation: 0,
           child: ListTile(
@@ -681,12 +682,9 @@ class _SearchPageState extends State<SearchPage> {
               "作者: ${item.author}",
               style: const TextStyle(fontSize: 12, color: Colors.grey),
             ),
-            onTap: () => Navigator.push(
+            onTap: () => adaptivePush(
               context,
-              MaterialPageRoute(
-                builder: (c) =>
-                    ThreadDetailPage(tid: item.tid, subject: item.subject),
-              ),
+              ThreadDetailPage(tid: item.tid, subject: item.subject),
             ),
           ),
         );

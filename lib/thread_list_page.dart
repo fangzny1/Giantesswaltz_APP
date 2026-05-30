@@ -198,9 +198,10 @@ class _ThreadListPageState extends State<ThreadListPage> {
 
   @override
   Widget build(BuildContext context) {
-    return ValueListenableBuilder<String?>(
-      valueListenable: customWallpaperPath,
-      builder: (context, wallpaperPath, _) {
+    return AnimatedBuilder(
+      animation: Listenable.merge([customWallpaperPath, forumCardOpacity]),
+      builder: (context, _) {
+        final wallpaperPath = customWallpaperPath.value;
         return Scaffold(
           backgroundColor: wallpaperPath != null ? Colors.transparent : null,
           body: Stack(
@@ -319,9 +320,10 @@ class _ThreadListPageState extends State<ThreadListPage> {
   }
 
   Widget _buildCard(Thread thread) {
-    return ValueListenableBuilder<String?>(
-      valueListenable: customWallpaperPath,
-      builder: (context, wallpaperPath, _) {
+    return AnimatedBuilder(
+      animation: Listenable.merge([customWallpaperPath, forumCardOpacity]),
+      builder: (context, _) {
+        final wallpaperPath = customWallpaperPath.value;
         String rawTitle = thread.subject;
         String cleanTitle =
             html_parser.parseFragment(rawTitle).text ?? rawTitle;
@@ -336,7 +338,7 @@ class _ThreadListPageState extends State<ThreadListPage> {
           color: wallpaperPath != null
               ? Theme.of(
                   context,
-                ).colorScheme.surfaceContainerLow.withOpacity(0.7)
+                ).colorScheme.surfaceContainerLow.withOpacity(forumCardOpacity.value)
               : Theme.of(context).colorScheme.surfaceContainerLow,
           child: ListTile(
             // 【新增：头像显示】

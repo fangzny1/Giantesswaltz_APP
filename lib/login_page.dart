@@ -2,14 +2,28 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'miui_theme.dart';
 import 'forum_model.dart';
 
-// 统一 UA，务必保持一致
 const String kUserAgent =
     "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36";
 
 class LoginPage extends StatefulWidget {
-  const LoginPage({super.key});
+  /// 登录成功后回调
+  final VoidCallback? onLoginSuccess;
+
+  /// 是否显示右上角跳过按钮
+  final bool showSkip;
+
+  /// 跳过按钮回调
+  final VoidCallback? onSkip;
+
+  const LoginPage({
+    super.key,
+    this.onLoginSuccess,
+    this.showSkip = false,
+    this.onSkip,
+  });
 
   @override
   State<LoginPage> createState() => _LoginPageState();
@@ -19,17 +33,15 @@ class _LoginPageState extends State<LoginPage> {
   late final WebViewController controller;
   bool isDetecting = false;
   Timer? _timer;
+  bool _isLoading = true;
 
   @override
   void initState() {
     super.initState();
-    // 1. 清理环境
     WebViewCookieManager().clearCookies();
-    // 【核心修复】动态获取当前选中的域名
-    // 之前可能写死成 '${kBaseUrl}member.php...' 了，现在要改成 currentBaseUrl.value
+
     final String loginUrl =
         '${currentBaseUrl.value}member.php?mod=logging&action=login&mobile=2';
-    print("🔐 正在打开登录页: $loginUrl");
 
     controller = WebViewController()
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
@@ -37,7 +49,7 @@ class _LoginPageState extends State<LoginPage> {
       ..setNavigationDelegate(
         NavigationDelegate(
           onPageFinished: (String url) {
-            print("🌐 页面加载完: $url");
+            if (mounted) setState(() => _isLoading = false);
             _checkLoginStatus(url);
           },
           onUrlChange: (UrlChange change) {
@@ -46,10 +58,8 @@ class _LoginPageState extends State<LoginPage> {
         ),
       );
 
-    // 2. 加载动态构建的 URL
     controller.loadRequest(Uri.parse(loginUrl));
 
-    // 3. 【核心修复】定时器主动嗅探内容
     _timer = Timer.periodic(const Duration(seconds: 1), (t) {
       _scanPageContent();
     });
@@ -61,11 +71,9 @@ class _LoginPageState extends State<LoginPage> {
     super.dispose();
   }
 
-  // 【黑科技 1】扫描网页文本内容
   Future<void> _scanPageContent() async {
     if (isDetecting) return;
     try {
-      // 检查页面是否包含“欢迎您回来”或“现在将转入”
       final String text =
           await controller.runJavaScriptReturningResult(
                 "document.body.innerText",
@@ -75,19 +83,13 @@ class _LoginPageState extends State<LoginPage> {
       if (text.contains("欢迎您回来") ||
           text.contains("现在将转入") ||
           text.contains("登录成功")) {
-        print("🎯 探测到网页版登录成功提示！");
         _completeLogin();
       }
-    } catch (e) {
-      // 忽略
-    }
+    } catch (_) {}
   }
 
   void _checkLoginStatus(String url) {
     if (isDetecting) return;
-
-    // 【优化】使用动态域名判断跳转
-    // 只要 URL 包含了当前基础域名，且是首页或论坛页，就认为登录跳转完成了
     String domain = Uri.parse(currentBaseUrl.value).host;
 
     if (url == currentBaseUrl.value ||
@@ -103,7 +105,6 @@ class _LoginPageState extends State<LoginPage> {
     _timer?.cancel();
 
     try {
-      // 抓取 Cookie
       final String cookies =
           await controller.runJavaScriptReturningResult('document.cookie')
               as String;
@@ -112,25 +113,23 @@ class _LoginPageState extends State<LoginPage> {
         rawCookie = rawCookie.substring(1, rawCookie.length - 1);
       }
 
-      print("✅ [Login] 捕获凭证: $rawCookie");
-
-      // 保存到本地
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString('saved_cookie_string', rawCookie);
-
-      // 【新增】同时保存UID（如果能从Cookie里简单解析的话），或者留给主页去解析
-      // 这里主要确保 Cookie 被写入
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text('登录成功，正在同步数据...'),
-            backgroundColor: Colors.green,
+            backgroundColor: MiuiTheme.green,
           ),
         );
-        // 稍微等待一下写入
         await Future.delayed(const Duration(milliseconds: 500));
-        Navigator.pop(context, true);
+
+        if (widget.onLoginSuccess != null) {
+          widget.onLoginSuccess!();
+        } else {
+          if (mounted) Navigator.pop(context, true);
+        }
       }
     } catch (e) {
       isDetecting = false;
@@ -140,21 +139,54 @@ class _LoginPageState extends State<LoginPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      backgroundColor: Theme.of(context).scaffoldBackgroundColor,
       appBar: AppBar(
         title: const Text("登录账号"),
+        centerTitle: true,
         actions: [
+          if (widget.showSkip)
+            TextButton(
+              onPressed: widget.onSkip,
+              child: const Text(
+                "跳过",
+                style: TextStyle(
+                  color: MiuiTheme.primaryColor,
+                  fontSize: 15,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ),
           IconButton(
             icon: const Icon(Icons.refresh),
-            onPressed: () => controller.reload(),
+            onPressed: () {
+              setState(() => _isLoading = true);
+              controller.reload();
+            },
           ),
-          // 手动干预按钮
           TextButton(
             onPressed: () => _completeLogin(),
-            child: const Text("已登录点此"),
+            child: const Text(
+              "已登录点此",
+              style: TextStyle(fontSize: 13),
+            ),
           ),
         ],
       ),
-      body: WebViewWidget(controller: controller),
+      body: Stack(
+        children: [
+          WebViewWidget(controller: controller),
+          if (_isLoading)
+            const Column(
+              children: [
+                LinearProgressIndicator(
+                  color: MiuiTheme.primaryColor,
+                  minHeight: 2,
+                ),
+                Expanded(child: SizedBox()),
+              ],
+            ),
+        ],
+      ),
     );
   }
 }

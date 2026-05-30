@@ -2,17 +2,16 @@
 import 'dart:io';
 
 import 'package:flutter_cache_manager/flutter_cache_manager.dart';
-import 'package:flutter/foundation.dart'; // 引入这个以使用 ValueNotifier
-// const String currentBaseUrl.value = 'https://giantesswaltz.org/';
-// const String kCookieDomain = 'giantesswaltz.org';
-// const String kBaseDomain = kCookieDomain;
-//临时删除旧的常量
+import 'package:flutter/foundation.dart';
 import 'package:flutter_cache_manager/src/web/file_service.dart';
 import 'package:http/http.dart' as http;
 import 'package:dio/dio.dart';
 import 'package:native_dio_adapter/native_dio_adapter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:flutter_cache_manager_dio/flutter_cache_manager_dio.dart'; // 建议添加这个小插件
+import 'package:flutter_cache_manager_dio/flutter_cache_manager_dio.dart';
+
+const String kAppVersion = "v1.9.1";
+const String kUpdateUrl = "https://fangzny-myupdate-gw-app.hf.space/update";
 
 // 1. 全局缓存管理器（改为 late 动态初始化）
 late CacheManager globalImageCache;

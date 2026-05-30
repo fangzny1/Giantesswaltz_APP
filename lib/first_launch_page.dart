@@ -53,9 +53,7 @@ class _FirstLaunchPageState extends State<FirstLaunchPage> {
         await DefaultCacheManager().emptyCache().timeout(
           const Duration(seconds: 2),
         );
-        await globalImageCache.emptyCache().timeout(
-          const Duration(seconds: 2),
-        );
+        await globalImageCache.emptyCache().timeout(const Duration(seconds: 2));
       } catch (_) {}
 
       PaintingBinding.instance.imageCache.clear();
@@ -76,9 +74,9 @@ class _FirstLaunchPageState extends State<FirstLaunchPage> {
     } catch (e) {
       if (mounted) {
         setState(() => _isApplying = false);
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("线路设置失败，请重试")),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text("线路设置失败，请重试")));
       }
     }
   }
@@ -134,7 +132,7 @@ class _FirstLaunchPageState extends State<FirstLaunchPage> {
         ),
         const SizedBox(height: 24),
         const Text(
-          "欢迎使用 GiantessWaltz",
+          "欢迎使用 GiantessWaltz第三方客户端",
           style: TextStyle(fontSize: 22, fontWeight: FontWeight.w700),
         ),
         const SizedBox(height: 8),
@@ -185,9 +183,9 @@ class _FirstLaunchPageState extends State<FirstLaunchPage> {
                       decoration: BoxDecoration(
                         color: isSelected
                             ? MiuiTheme.primaryColor.withOpacity(0.15)
-                            : Theme.of(context)
-                                .colorScheme
-                                .surfaceContainerHighest,
+                            : Theme.of(
+                                context,
+                              ).colorScheme.surfaceContainerHighest,
                         borderRadius: BorderRadius.circular(12),
                       ),
                       child: Icon(
@@ -212,9 +210,7 @@ class _FirstLaunchPageState extends State<FirstLaunchPage> {
                                   fontWeight: FontWeight.w600,
                                   color: isSelected
                                       ? MiuiTheme.primaryColor
-                                      : Theme.of(context)
-                                          .colorScheme
-                                          .onSurface,
+                                      : Theme.of(context).colorScheme.onSurface,
                                 ),
                               ),
                               const SizedBox(width: 8),
@@ -224,10 +220,11 @@ class _FirstLaunchPageState extends State<FirstLaunchPage> {
                                   vertical: 2,
                                 ),
                                 decoration: BoxDecoration(
-                                  color: (server['tag'] == '推荐'
-                                      ? MiuiTheme.orange
-                                      : MiuiTheme.green)
-                                      .withOpacity(0.1),
+                                  color:
+                                      (server['tag'] == '推荐'
+                                              ? MiuiTheme.orange
+                                              : MiuiTheme.green)
+                                          .withOpacity(0.1),
                                   borderRadius: BorderRadius.circular(10),
                                 ),
                                 child: Text(
@@ -248,10 +245,9 @@ class _FirstLaunchPageState extends State<FirstLaunchPage> {
                             server['desc'] as String,
                             style: TextStyle(
                               fontSize: 13,
-                              color: Theme.of(context)
-                                  .colorScheme
-                                  .onSurface
-                                  .withOpacity(0.5),
+                              color: Theme.of(
+                                context,
+                              ).colorScheme.onSurface.withOpacity(0.5),
                             ),
                           ),
                         ],
@@ -274,7 +270,11 @@ class _FirstLaunchPageState extends State<FirstLaunchPage> {
                         ),
                       ),
                       child: isSelected
-                          ? const Icon(Icons.check, size: 14, color: Colors.white)
+                          ? const Icon(
+                              Icons.check,
+                              size: 14,
+                              color: Colors.white,
+                            )
                           : null,
                     ),
                   ],
@@ -294,7 +294,9 @@ class _FirstLaunchPageState extends State<FirstLaunchPage> {
               onPressed: _isApplying ? null : _applyServer,
               style: ElevatedButton.styleFrom(
                 backgroundColor: MiuiTheme.primaryColor,
-                disabledBackgroundColor: MiuiTheme.primaryColor.withOpacity(0.5),
+                disabledBackgroundColor: MiuiTheme.primaryColor.withOpacity(
+                  0.5,
+                ),
                 shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(14),
                 ),

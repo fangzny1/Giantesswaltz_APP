@@ -10,7 +10,7 @@ import 'package:native_dio_adapter/native_dio_adapter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter_cache_manager_dio/flutter_cache_manager_dio.dart';
 
-const String kAppVersion = "v1.9.1";
+const String kAppVersion = "v.2.0.0";
 const String kUpdateUrl = "https://fangzny-myupdate-gw-app.hf.space/update";
 
 // 1. 全局缓存管理器（改为 late 动态初始化）

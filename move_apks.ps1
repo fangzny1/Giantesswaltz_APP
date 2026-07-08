@@ -2,10 +2,10 @@
 $destDir = Get-Location
 
 # 定义需要查找的 APK 文件名及其对应的目标名称
-# 根据你的要求，移除了架构中的 'v'
+
 $mapping = @{
-    "app-arm64-v8a-release.apk"   = "Giantesswaltz_APP+arm64-8a.apk"
-    "app-armeabi-v7a-release.apk" = "Giantesswaltz_APP+armeabi-7a.apk"
+    "app-arm64-v8a-release.apk"   = "Giantesswaltz_APP+arm64-v8a.apk"
+    "app-armeabi-v7a-release.apk" = "Giantesswaltz_APP+armeabi-v7a.apk"
     "app-x86_64-release.apk"      = "Giantesswaltz_APP+x86_64.apk"
     "app-debug.apk"               = "Giantesswaltz_APP+debug.apk"
 }

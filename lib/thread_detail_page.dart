@@ -3146,216 +3146,204 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
         ),
       ),
 
-      // B. 核心：正文内容
-      SliverToBoxAdapter(
-        child: GestureDetector(
-          onLongPress: () => _showCopySheet(post),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16),
-            child: HtmlWidget(
-              finalHtml,
-              key: ValueKey(isDark),
-              textStyle: TextStyle(
-                fontSize: _fontSize - 2,
-                height: _lineHeight,
-                color: isDark ? Colors.white70 : Colors.black87,
-              ),
+      // B. 核心：正文内容（sliver 懒加载）
+      SliverPadding(
+        padding: const EdgeInsets.symmetric(horizontal: 16),
+        sliver: HtmlWidget(
+          finalHtml,
+          key: ValueKey(isDark),
+          renderMode: RenderMode.sliverList,
+          textStyle: TextStyle(
+            fontSize: _fontSize - 2,
+            height: _lineHeight,
+            color: isDark ? Colors.white70 : Colors.black87,
+          ),
 
-              // 【核心修复：重新注入图片点击和附件识别逻辑】
-              customWidgetBuilder: (element) {
-                // --- 【精准拦截自定义标签】 ---
-                if (element.localName == 'gw-survey') {
-                  if (_isReaderMode || _isNovelMode)
-                    return const SizedBox.shrink();
+          // 【核心修复：重新注入图片点击和附件识别逻辑】
+          customWidgetBuilder: (element) {
+            // --- 【精准拦截自定义标签】 ---
+            if (element.localName == 'gw-survey') {
+              if (_isReaderMode || _isNovelMode) return const SizedBox.shrink();
 
-                  // 从我们刚才塞进去的属性里拿标题
-                  String surveyTitle = element.attributes['title'] ?? "读者问卷调查";
-                  String surveyUrl =
-                      "${currentBaseUrl.value}plugin.php?id=cxpform:style2&form_id=35&type=iframe&tid=${widget.tid}";
+              // 从我们刚才塞进去的属性里拿标题
+              String surveyTitle = element.attributes['title'] ?? "读者问卷调查";
+              String surveyUrl =
+                  "${currentBaseUrl.value}plugin.php?id=cxpform:style2&form_id=35&type=iframe&tid=${widget.tid}";
 
-                  bool isDark = Theme.of(context).brightness == Brightness.dark;
+              bool isDark = Theme.of(context).brightness == Brightness.dark;
 
-                  // 直接返回你想要的原生 MD3 卡片
-                  return Container(
-                    width: double.infinity,
-                    margin: const EdgeInsets.symmetric(vertical: 12),
-                    decoration: BoxDecoration(
-                      color: isDark
-                          ? Colors.blueGrey.withOpacity(0.15)
-                          : const Color(0xFFE3F2FD),
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(
-                        color: isDark
-                            ? Colors.white10
-                            : Colors.blue.withOpacity(0.2),
-                      ),
-                    ),
-                    child: Column(
-                      children: [
-                        Padding(
-                          padding: const EdgeInsets.all(16.0),
-                          child: Row(
-                            children: [
-                              Icon(
-                                Icons.assignment_turned_in,
-                                color: isDark
-                                    ? Colors.blue[300]
-                                    : Colors.blue[700],
-                              ),
-                              const SizedBox(width: 10),
-                              Expanded(
-                                child: Text(
-                                  surveyTitle,
-                                  style: TextStyle(
-                                    fontWeight: FontWeight.bold,
-                                    fontSize: 15,
-                                    color: isDark
-                                        ? Colors.white
-                                        : Colors.blue[900],
-                                  ),
-                                ),
-                              ),
-                            ],
+              // 直接返回你想要的原生 MD3 卡片
+              return Container(
+                width: double.infinity,
+                margin: const EdgeInsets.symmetric(vertical: 12),
+                decoration: BoxDecoration(
+                  color: isDark
+                      ? Colors.blueGrey.withOpacity(0.15)
+                      : const Color(0xFFE3F2FD),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(
+                    color: isDark
+                        ? Colors.white10
+                        : Colors.blue.withOpacity(0.2),
+                  ),
+                ),
+                child: Column(
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.all(16.0),
+                      child: Row(
+                        children: [
+                          Icon(
+                            Icons.assignment_turned_in,
+                            color: isDark ? Colors.blue[300] : Colors.blue[700],
                           ),
-                        ),
-                        Container(
-                          width: double.infinity,
-                          padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-                          child: ElevatedButton.icon(
-                            icon: const Icon(Icons.open_in_new, size: 18),
-                            label: const Text("参与读者问卷 (网页端)"),
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: Theme.of(
-                                context,
-                              ).colorScheme.primary,
-                              foregroundColor: Theme.of(
-                                context,
-                              ).colorScheme.onPrimary,
-                              elevation: 0,
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(8),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Text(
+                              surveyTitle,
+                              style: TextStyle(
+                                fontWeight: FontWeight.bold,
+                                fontSize: 15,
+                                color: isDark ? Colors.white : Colors.blue[900],
                               ),
                             ),
-                            onPressed: () {
-                              Navigator.push(
-                                context,
-                                MaterialPageRoute(
-                                  builder: (context) => GeneralWebViewPage(
-                                    url: surveyUrl,
-                                    title: "参与问卷",
-                                  ),
-                                ),
-                              );
-                            },
+                          ),
+                        ],
+                      ),
+                    ),
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                      child: ElevatedButton.icon(
+                        icon: const Icon(Icons.open_in_new, size: 18),
+                        label: const Text("参与读者问卷 (网页端)"),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Theme.of(
+                            context,
+                          ).colorScheme.primary,
+                          foregroundColor: Theme.of(
+                            context,
+                          ).colorScheme.onPrimary,
+                          elevation: 0,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(8),
                           ),
                         ),
-                      ],
+                        onPressed: () {
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (context) => GeneralWebViewPage(
+                                url: surveyUrl,
+                                title: "参与问卷",
+                              ),
+                            ),
+                          );
+                        },
+                      ),
                     ),
-                  );
-                }
+                  ],
+                ),
+              );
+            }
 
-                // 1. 处理图片点击预览
-                if (element.localName == 'img') {
-                  String src = element.attributes['src'] ?? '';
-                  String className = element.attributes['class'] ?? '';
-                  // 【核心修复】：如果是表情包，返回 null
-                  // 返回 null 意味着“不使用自定义组件”，插件会自动使用上面的 CSS 样式来渲染它
-                  if (src.contains('static/image/smiley/')) {
-                    return null;
-                  }
-
-                  // 【核心修改】：遇到这种难搞的缩略图，直接转为“外部下载卡片”
-                  if (src.contains('mod=image')) {
-                    // 1. 强力清洗链接
-                    String cleanedUrl = src;
-                    while (cleanedUrl.contains('&amp;'))
-                      cleanedUrl = cleanedUrl.replaceAll('&amp;', '&');
-                    if (!cleanedUrl.startsWith('http'))
-                      cleanedUrl = "${currentBaseUrl.value}$cleanedUrl";
-
-                    // 2. 提取 Key 方便用户对照
-                    var keyMatch = RegExp(
-                      r'key=([a-zA-Z0-9]+)',
-                    ).firstMatch(cleanedUrl);
-                    String keyName = keyMatch?.group(1) ?? "unknown";
-
-                    // 返回一个纯粹的“外部工具卡片”
-                    return _buildExternalThumbnailCard(cleanedUrl, keyName);
-                  }
-
-                  if (src.contains('favicon.ico') ||
-                      src.contains('loading.gif') ||
-                      src.contains('loading2.gif') ||
-                      src.contains('none.gif') ||
-                      src.contains('eh.ico') ||
-                      className.contains('pixiv_img') ||
-                      className.contains('ehicon'))
-                    return const SizedBox.shrink(); // 屏蔽小图标
-                  if (src.isNotEmpty)
-                    return _buildClickableImage(src); // 调用下方的预览逻辑
-                }
-
-                // 2. 处理之前写的 gn-file 附件卡片
-                if (element.localName == 'gn-file') {
-                  String url = element.attributes['url'] ?? '';
-                  String name = element.attributes['name'] ?? '附件';
-                  String size = element.attributes['size'] ?? '';
-                  return _buildFileAttachmentCard(url, name, size); // 建议封装一下
-                }
-                // --- 【新增：终极绝杀，直接把 EH 插件框转成原生卡片】 ---
-                String id = element.attributes['id'] ?? '';
-                if (element.localName == 'div' && id.startsWith('ehbox_')) {
-                  // 1. 抠出标题 (h3 标签里的文字)
-                  final h3Element = element
-                      .getElementsByTagName('h3')
-                      .firstOrNull;
-                  String ehTitle = h3Element?.text.trim() ?? "E-Hentai 画廊资源";
-
-                  // 2. 抠出来源网址 (找带有 exhentai 或 e-hentai 的 a 标签)
-                  String ehUrl = "";
-                  final aTags = element.getElementsByTagName('a');
-                  for (var a in aTags) {
-                    String href = a.attributes['href'] ?? '';
-                    if (href.contains('exhentai.org') ||
-                        href.contains('e-hentai.org')) {
-                      ehUrl = href;
-                      break;
-                    }
-                  }
-
-                  // 3. 直接返回原生组件，这块破烂 HTML 彻底消失！
-                  return _buildEHBoxCard(ehTitle, ehUrl);
-                }
-
-                // 3. 处理 iframe 问卷
-                if (element.localName == 'iframe') {
-                  // ... 原有的 iframe 按钮逻辑 ...
-                }
+            // 1. 处理图片点击预览
+            if (element.localName == 'img') {
+              String src = element.attributes['src'] ?? '';
+              String className = element.attributes['class'] ?? '';
+              // 【核心修复】：如果是表情包，返回 null
+              // 返回 null 意味着“不使用自定义组件”，插件会自动使用上面的 CSS 样式来渲染它
+              if (src.contains('static/image/smiley/')) {
                 return null;
-              },
+              }
 
-              customStylesBuilder: (element) {
-                // 保持背景色清理逻辑
-                if (isDark) {
-                  String style = element.attributes['style'] ?? '';
-                  if (style.contains('background-color') ||
-                      style.contains('background:')) {
-                    return {
-                      'background-color': 'transparent !important',
-                      'color': '#E0E0E0 !important',
-                    };
-                  }
+              // 【核心修改】：遇到这种难搞的缩略图，直接转为“外部下载卡片”
+              if (src.contains('mod=image')) {
+                // 1. 强力清洗链接
+                String cleanedUrl = src;
+                while (cleanedUrl.contains('&amp;'))
+                  cleanedUrl = cleanedUrl.replaceAll('&amp;', '&');
+                if (!cleanedUrl.startsWith('http'))
+                  cleanedUrl = "${currentBaseUrl.value}$cleanedUrl";
+
+                // 2. 提取 Key 方便用户对照
+                var keyMatch = RegExp(
+                  r'key=([a-zA-Z0-9]+)',
+                ).firstMatch(cleanedUrl);
+                String keyName = keyMatch?.group(1) ?? "unknown";
+
+                // 返回一个纯粹的“外部工具卡片”
+                return _buildExternalThumbnailCard(cleanedUrl, keyName);
+              }
+
+              if (src.contains('favicon.ico') ||
+                  src.contains('loading.gif') ||
+                  src.contains('loading2.gif') ||
+                  src.contains('none.gif') ||
+                  src.contains('eh.ico') ||
+                  className.contains('pixiv_img') ||
+                  className.contains('ehicon'))
+                return const SizedBox.shrink(); // 屏蔽小图标
+              if (src.isNotEmpty) return _buildClickableImage(src); // 调用下方的预览逻辑
+            }
+
+            // 2. 处理之前写的 gn-file 附件卡片
+            if (element.localName == 'gn-file') {
+              String url = element.attributes['url'] ?? '';
+              String name = element.attributes['name'] ?? '附件';
+              String size = element.attributes['size'] ?? '';
+              return _buildFileAttachmentCard(url, name, size); // 建议封装一下
+            }
+            // --- 【新增：终极绝杀，直接把 EH 插件框转成原生卡片】 ---
+            String id = element.attributes['id'] ?? '';
+            if (element.localName == 'div' && id.startsWith('ehbox_')) {
+              // 1. 抠出标题 (h3 标签里的文字)
+              final h3Element = element.getElementsByTagName('h3').firstOrNull;
+              String ehTitle = h3Element?.text.trim() ?? "E-Hentai 画廊资源";
+
+              // 2. 抠出来源网址 (找带有 exhentai 或 e-hentai 的 a 标签)
+              String ehUrl = "";
+              final aTags = element.getElementsByTagName('a');
+              for (var a in aTags) {
+                String href = a.attributes['href'] ?? '';
+                if (href.contains('exhentai.org') ||
+                    href.contains('e-hentai.org')) {
+                  ehUrl = href;
+                  break;
                 }
-                return null;
-              },
+              }
 
-              // 处理网页链接点击
-              onTapUrl: (url) async {
-                await _launchURL(url);
-                return true;
-              },
-            ),
-          ),
+              // 3. 直接返回原生组件，这块破烂 HTML 彻底消失！
+              return _buildEHBoxCard(ehTitle, ehUrl);
+            }
+
+            // 3. 处理 iframe 问卷
+            if (element.localName == 'iframe') {
+              // ... 原有的 iframe 按钮逻辑 ...
+            }
+            return null;
+          },
+
+          customStylesBuilder: (element) {
+            // 保持背景色清理逻辑
+            if (isDark) {
+              String style = element.attributes['style'] ?? '';
+              if (style.contains('background-color') ||
+                  style.contains('background:')) {
+                return {
+                  'background-color': 'transparent !important',
+                  'color': '#E0E0E0 !important',
+                };
+              }
+            }
+            return null;
+          },
+
+          // 处理网页链接点击
+          onTapUrl: (url) async {
+            await _launchURL(url);
+            return true;
+          },
         ),
       ),
 

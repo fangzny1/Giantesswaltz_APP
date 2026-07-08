@@ -1300,6 +1300,138 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
       );
   }
 
+  void _showCopySheet(PostItem post) {
+    showModalBottomSheet(
+      context: context,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) {
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 16),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 40,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: Colors.grey[400],
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                Text(
+                  "${post.author} · ${post.floor}",
+                  style: const TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 15,
+                  ),
+                ),
+                const SizedBox(height: 16),
+                ListTile(
+                  leading: const Icon(Icons.copy),
+                  title: const Text("复制本楼层"),
+                  subtitle: const Text("复制该楼层的纯文本内容"),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    _copyPostContent(post);
+                  },
+                ),
+                ListTile(
+                  leading: const Icon(Icons.select_all),
+                  title: const Text("自由复制"),
+                  subtitle: const Text("进入自由选择模式，手动选取文字复制"),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    _freeCopyPost(post);
+                  },
+                ),
+                const SizedBox(height: 8),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  String _extractPlainText(String html) {
+    try {
+      final document = html_parser.parse(html);
+      return (document.body?.text ?? html.replaceAll(RegExp(r'<[^>]*>'), ''))
+          .trim();
+    } catch (_) {
+      return html.replaceAll(RegExp(r'<[^>]*>'), '').trim();
+    }
+  }
+
+  void _copyPostContent(PostItem post) {
+    final plainText = _extractPlainText(post.contentHtml);
+    Clipboard.setData(ClipboardData(text: plainText));
+    _showToast("已复制 ${post.floor} 内容");
+  }
+
+  void _freeCopyPost(PostItem post) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) {
+        return DraggableScrollableSheet(
+          initialChildSize: 0.7,
+          minChildSize: 0.3,
+          maxChildSize: 0.95,
+          expand: false,
+          builder: (ctx, scrollController) {
+            return Column(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(
+                        "${post.author} · ${post.floor}",
+                        style: const TextStyle(fontWeight: FontWeight.bold),
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.close),
+                        onPressed: () => Navigator.pop(ctx),
+                      ),
+                    ],
+                  ),
+                ),
+                const Divider(height: 1),
+                Expanded(
+                  child: SelectionArea(
+                    child: SingleChildScrollView(
+                      controller: scrollController,
+                      padding: const EdgeInsets.all(16),
+                      child: HtmlWidget(
+                        post.contentHtml.replaceAll(
+                          RegExp(r'<img[^>]*>', caseSensitive: false),
+                          '',
+                        ),
+                        textStyle: TextStyle(
+                          fontSize: _fontSize,
+                          height: _lineHeight,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
   void _showDisplaySettings() {
     showModalBottomSheet(
       isScrollControlled: true,
@@ -1629,297 +1761,285 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
       // 防止键盘弹出挤压布局
       resizeToAvoidBottomInset: false,
 
-      body: SelectionArea(
-        child: NotificationListener<UserScrollNotification>(
+      body: NotificationListener<UserScrollNotification>(
+        onNotification: (notification) {
+          if (notification.direction == ScrollDirection.reverse &&
+              _isBarsVisible) {
+            setState(() {
+              _isBarsVisible = false;
+              _hideController.reverse();
+            });
+          } else if (notification.direction == ScrollDirection.forward &&
+              !_isBarsVisible) {
+            setState(() {
+              _isBarsVisible = true;
+              _hideController.forward();
+            });
+          }
+          // --- 【新增】实时更新进度条值的逻辑 ---
+          // 当用户停止滚动或者正在滚动时，计算当前大概在第几楼
+          if (notification is ScrollUpdateNotification) {
+            _updateCurrentFloorValue();
+          }
+          return true;
+        },
+        child: NotificationListener<ScrollUpdateNotification>(
           onNotification: (notification) {
-            if (notification.direction == ScrollDirection.reverse &&
-                _isBarsVisible) {
-              setState(() {
-                _isBarsVisible = false;
-                _hideController.reverse();
-              });
-            } else if (notification.direction == ScrollDirection.forward &&
-                !_isBarsVisible) {
-              setState(() {
-                _isBarsVisible = true;
-                _hideController.forward();
-              });
-            }
-            // --- 【新增】实时更新进度条值的逻辑 ---
-            // 当用户停止滚动或者正在滚动时，计算当前大概在第几楼
-            if (notification is ScrollUpdateNotification) {
+            // 【新增】：当屏幕正常滑动时，启动扫描仪
+            if (!_isScrubbingScroll) {
               _updateCurrentFloorValue();
             }
-            return true;
+            return false; // 继续向上传递事件
           },
-          child: NotificationListener<ScrollUpdateNotification>(
-            onNotification: (notification) {
-              // 【新增】：当屏幕正常滑动时，启动扫描仪
-              if (!_isScrubbingScroll) {
-                _updateCurrentFloorValue();
-              }
-              return false; // 继续向上传递事件
+          child: GestureDetector(
+            onTap: () {
+              // 如果你觉得点击整个屏幕任何地方都全屏不合理
+              // 我们可以加一个判断：只有小说模式/纯净模式下，且点击位置不是顶部，才切换显隐
+              setState(() {
+                _isBarsVisible = !_isBarsVisible;
+                if (_isBarsVisible) {
+                  _hideController.forward();
+                } else {
+                  _hideController.reverse();
+                }
+              });
             },
-            child: GestureDetector(
-              onTap: () {
-                // 如果你觉得点击整个屏幕任何地方都全屏不合理
-                // 我们可以加一个判断：只有小说模式/纯净模式下，且点击位置不是顶部，才切换显隐
-                setState(() {
-                  _isBarsVisible = !_isBarsVisible;
-                  if (_isBarsVisible) {
-                    _hideController.forward();
-                  } else {
-                    _hideController.reverse();
-                  }
-                });
-              },
 
-              child: Stack(
-                children: [
-                  CustomScrollView(
-                    // 【核心修复1】：当呼出侧边条时，彻底锁死底层滚动，防止手势被抢走！
-                    physics: _showSideSlider
-                        ? const NeverScrollableScrollPhysics()
-                        : const BouncingScrollPhysics(),
-                    controller: _scrollController,
-                    cacheExtent: 2000.0,
-                    // 【核心修复】阅读模式下增加顶部 Padding，防止文字被刘海屏遮挡
-                    // 普通模式下由 SliverAppBar 占据顶部，不需要 padding
-                    slivers: [
-                      if (!_isReaderMode)
-                        SliverAppBar(
-                          floating: true,
-                          pinned: false,
-                          snap: true,
-                          // 【修改点】将 widget.subject 换成 _displaySubject
-                          title: Text(
-                            _displaySubject,
-                            style: const TextStyle(fontSize: 16),
-                          ),
-                          centerTitle: false,
-                          elevation: 0,
-                          backgroundColor: bgColor,
-                          surfaceTintColor: Colors.transparent,
+            child: Stack(
+              children: [
+                CustomScrollView(
+                  // 【核心修复1】：当呼出侧边条时，彻底锁死底层滚动，防止手势被抢走！
+                  physics: _showSideSlider
+                      ? const NeverScrollableScrollPhysics()
+                      : const BouncingScrollPhysics(),
+                  controller: _scrollController,
+                  cacheExtent: 2000.0,
+                  // 【核心修复】阅读模式下增加顶部 Padding，防止文字被刘海屏遮挡
+                  // 普通模式下由 SliverAppBar 占据顶部，不需要 padding
+                  slivers: [
+                    if (!_isReaderMode)
+                      SliverAppBar(
+                        floating: true,
+                        pinned: false,
+                        snap: true,
+                        // 【修改点】将 widget.subject 换成 _displaySubject
+                        title: Text(
+                          _displaySubject,
+                          style: const TextStyle(fontSize: 16),
                         ),
-
-                      // 阅读模式给一点顶部内边距
-                      if (_isReaderMode)
-                        SliverPadding(
-                          padding: EdgeInsets.only(
-                            top: MediaQuery.of(context).padding.top,
-                          ),
-                        ),
-
-                      if (_isReaderMode)
-                        _buildReaderSliver()
-                      else
-                        _buildNativeSliver(),
-                    ],
-                  ),
-
-                  Positioned(
-                    left: 0,
-                    right: 0,
-                    bottom: 0,
-                    child: _buildBottomControlBar(),
-                  ),
-                  if (_isFabOpen)
-                    Positioned.fill(
-                      child: GestureDetector(
-                        onTap: _toggleFab,
-                        child: Container(color: Colors.black54),
+                        centerTitle: false,
+                        elevation: 0,
+                        backgroundColor: bgColor,
+                        surfaceTintColor: Colors.transparent,
                       ),
+
+                    // 阅读模式给一点顶部内边距
+                    if (_isReaderMode)
+                      SliverPadding(
+                        padding: EdgeInsets.only(
+                          top: MediaQuery.of(context).padding.top,
+                        ),
+                      ),
+
+                    if (_isReaderMode)
+                      _buildReaderSliver()
+                    else
+                      _buildNativeSliver(),
+                  ],
+                ),
+
+                Positioned(
+                  left: 0,
+                  right: 0,
+                  bottom: 0,
+                  child: _buildBottomControlBar(),
+                ),
+                if (_isFabOpen)
+                  Positioned.fill(
+                    child: GestureDetector(
+                      onTap: _toggleFab,
+                      child: Container(color: Colors.black54),
                     ),
-                  _buildFabMenu(),
-                  // 2. 【核心修复】右侧滑动条层 (放在 CustomScrollView 之后，它就会浮在上面)
-                  if (_showSideSlider)
-                    Positioned.fill(
-                      child: GestureDetector(
-                        onTap: () => setState(() => _showSideSlider = false),
-                        behavior: HitTestBehavior.opaque,
-                        child: Container(
-                          color: Colors.black26,
-                          child: Stack(
-                            children: [
-                              Positioned(
-                                right: 25,
-                                top: MediaQuery.of(context).size.height * 0.15,
-                                bottom:
-                                    MediaQuery.of(context).size.height * 0.15,
-                                child: GestureDetector(
-                                  onTap: () {},
-                                  onVerticalDragUpdate: (details) {
-                                    // 1. 获取屏幕总尺寸
-                                    final double screenHeight = MediaQuery.of(
+                  ),
+                _buildFabMenu(),
+                // 2. 【核心修复】右侧滑动条层 (放在 CustomScrollView 之后，它就会浮在上面)
+                if (_showSideSlider)
+                  Positioned.fill(
+                    child: GestureDetector(
+                      onTap: () => setState(() => _showSideSlider = false),
+                      behavior: HitTestBehavior.opaque,
+                      child: Container(
+                        color: Colors.black26,
+                        child: Stack(
+                          children: [
+                            Positioned(
+                              right: 25,
+                              top: MediaQuery.of(context).size.height * 0.15,
+                              bottom: MediaQuery.of(context).size.height * 0.15,
+                              child: GestureDetector(
+                                onTap: () {},
+                                onVerticalDragUpdate: (details) {
+                                  // 1. 获取屏幕总尺寸
+                                  final double screenHeight = MediaQuery.of(
+                                    context,
+                                  ).size.height;
+
+                                  // 2. 定义条子的物理边界（必须与 Positioned 的定义的 0.15 和 0.15 一致）
+                                  double barTop = screenHeight * 0.15;
+                                  double barBottom = screenHeight * 0.85;
+                                  double barHeight = barBottom - barTop;
+
+                                  // 3. 使用【绝对坐标】计算手指在条子内的位置
+                                  // 手指位置减去条子顶部位置 = 手指在条子内的相对高度
+                                  double fingerY = details.globalPosition.dy;
+                                  double relativeY = (fingerY - barTop).clamp(
+                                    0.0,
+                                    barHeight,
+                                  );
+
+                                  // 4. 算出比例：0.0 代表最顶端，1.0 代表最底端
+                                  double percent = relativeY / barHeight;
+
+                                  setState(() {
+                                    _isScrubbingScroll = true;
+                                    // 5. 映射楼层：向下划 percent 增加，楼层增加
+                                    _exactFloor =
+                                        1 + (percent * (_totalPostsCount - 1));
+                                  });
+                                },
+                                onVerticalDragEnd: (_) {
+                                  int targetFloor = _exactFloor.round();
+                                  int jumpToPage =
+                                      ((targetFloor - 1) / _ppp).floor() + 1;
+                                  setState(() {
+                                    _isScrubbingScroll = false;
+                                    _pendingFloorJump = targetFloor;
+                                    _showSideSlider = false;
+                                  });
+                                  if (jumpToPage >= _minPage &&
+                                      jumpToPage <= _maxPage) {
+                                    _doPreciseScroll(targetFloor);
+                                  } else {
+                                    setState(() {
+                                      _posts = [];
+                                      _isLoading = true;
+                                    });
+                                    _loadPage(jumpToPage, resetScroll: true);
+                                  }
+                                },
+                                child: Container(
+                                  width: 55,
+                                  decoration: BoxDecoration(
+                                    color: Theme.of(
                                       context,
-                                    ).size.height;
-
-                                    // 2. 定义条子的物理边界（必须与 Positioned 的定义的 0.15 和 0.15 一致）
-                                    double barTop = screenHeight * 0.15;
-                                    double barBottom = screenHeight * 0.85;
-                                    double barHeight = barBottom - barTop;
-
-                                    // 3. 使用【绝对坐标】计算手指在条子内的位置
-                                    // 手指位置减去条子顶部位置 = 手指在条子内的相对高度
-                                    double fingerY = details.globalPosition.dy;
-                                    double relativeY = (fingerY - barTop).clamp(
-                                      0.0,
-                                      barHeight,
-                                    );
-
-                                    // 4. 算出比例：0.0 代表最顶端，1.0 代表最底端
-                                    double percent = relativeY / barHeight;
-
-                                    setState(() {
-                                      _isScrubbingScroll = true;
-                                      // 5. 映射楼层：向下划 percent 增加，楼层增加
-                                      _exactFloor =
-                                          1 +
-                                          (percent * (_totalPostsCount - 1));
-                                    });
-                                  },
-                                  onVerticalDragEnd: (_) {
-                                    int targetFloor = _exactFloor.round();
-                                    int jumpToPage =
-                                        ((targetFloor - 1) / _ppp).floor() + 1;
-                                    setState(() {
-                                      _isScrubbingScroll = false;
-                                      _pendingFloorJump = targetFloor;
-                                      _showSideSlider = false;
-                                    });
-                                    if (jumpToPage >= _minPage &&
-                                        jumpToPage <= _maxPage) {
-                                      _doPreciseScroll(targetFloor);
-                                    } else {
-                                      setState(() {
-                                        _posts = [];
-                                        _isLoading = true;
-                                      });
-                                      _loadPage(jumpToPage, resetScroll: true);
-                                    }
-                                  },
-                                  child: Container(
-                                    width: 55,
-                                    decoration: BoxDecoration(
-                                      color: Theme.of(
-                                        context,
-                                      ).colorScheme.surface.withOpacity(0.95),
-                                      borderRadius: BorderRadius.circular(30),
-                                      boxShadow: [
-                                        const BoxShadow(
-                                          color: Colors.black26,
-                                          blurRadius: 10,
-                                        ),
-                                      ],
-                                    ),
-                                    child: Center(
-                                      child: Container(
-                                        width: 6,
-                                        height: double.infinity,
-                                        margin: const EdgeInsets.symmetric(
-                                          vertical: 30,
-                                        ),
-                                        decoration: BoxDecoration(
-                                          color: Colors.grey.withOpacity(0.2),
-                                          borderRadius: BorderRadius.circular(
-                                            3,
-                                          ),
-                                        ),
-                                        child: LayoutBuilder(
-                                          builder: (context, constraints) {
-                                            // 算出百分比
-                                            double p = (_totalPostsCount > 1)
-                                                ? (_exactFloor - 1) /
-                                                      (_totalPostsCount - 1)
-                                                : 0.0;
-                                            return Stack(
-                                              clipBehavior: Clip.none,
-                                              children: [
-                                                Positioned(
-                                                  // 【关键修正】：top 随 p 增大而增大，即向下走
-                                                  top:
-                                                      p *
-                                                          constraints
-                                                              .maxHeight -
-                                                      8,
-                                                  left: -5,
-                                                  child: CircleAvatar(
-                                                    radius: 8,
-                                                    backgroundColor: Theme.of(
-                                                      context,
-                                                    ).colorScheme.primary,
-                                                  ),
+                                    ).colorScheme.surface.withOpacity(0.95),
+                                    borderRadius: BorderRadius.circular(30),
+                                    boxShadow: [
+                                      const BoxShadow(
+                                        color: Colors.black26,
+                                        blurRadius: 10,
+                                      ),
+                                    ],
+                                  ),
+                                  child: Center(
+                                    child: Container(
+                                      width: 6,
+                                      height: double.infinity,
+                                      margin: const EdgeInsets.symmetric(
+                                        vertical: 30,
+                                      ),
+                                      decoration: BoxDecoration(
+                                        color: Colors.grey.withOpacity(0.2),
+                                        borderRadius: BorderRadius.circular(3),
+                                      ),
+                                      child: LayoutBuilder(
+                                        builder: (context, constraints) {
+                                          // 算出百分比
+                                          double p = (_totalPostsCount > 1)
+                                              ? (_exactFloor - 1) /
+                                                    (_totalPostsCount - 1)
+                                              : 0.0;
+                                          return Stack(
+                                            clipBehavior: Clip.none,
+                                            children: [
+                                              Positioned(
+                                                // 【关键修正】：top 随 p 增大而增大，即向下走
+                                                top:
+                                                    p * constraints.maxHeight -
+                                                    8,
+                                                left: -5,
+                                                child: CircleAvatar(
+                                                  radius: 8,
+                                                  backgroundColor: Theme.of(
+                                                    context,
+                                                  ).colorScheme.primary,
                                                 ),
-                                              ],
-                                            );
-                                          },
-                                        ),
+                                              ),
+                                            ],
+                                          );
+                                        },
                                       ),
                                     ),
                                   ),
                                 ),
                               ),
+                            ),
 
-                              // 侧边气泡提示
-                              if (_isScrubbingScroll && _posts.isNotEmpty)
-                                Builder(
-                                  builder: (context) {
-                                    int safeIndex = (_exactFloor.round() - 1)
-                                        .clamp(0, _posts.length - 1);
-                                    double p = (_totalPostsCount > 1)
-                                        ? (_exactFloor - 1) /
-                                              (_totalPostsCount - 1)
-                                        : 0.0;
+                            // 侧边气泡提示
+                            if (_isScrubbingScroll && _posts.isNotEmpty)
+                              Builder(
+                                builder: (context) {
+                                  int safeIndex = (_exactFloor.round() - 1)
+                                      .clamp(0, _posts.length - 1);
+                                  double p = (_totalPostsCount > 1)
+                                      ? (_exactFloor - 1) /
+                                            (_totalPostsCount - 1)
+                                      : 0.0;
 
-                                    // 气泡的垂直位置计算
-                                    double barTop =
-                                        MediaQuery.of(context).size.height *
-                                        0.15;
-                                    double barHeight =
-                                        MediaQuery.of(context).size.height *
-                                        0.7;
+                                  // 气泡的垂直位置计算
+                                  double barTop =
+                                      MediaQuery.of(context).size.height * 0.15;
+                                  double barHeight =
+                                      MediaQuery.of(context).size.height * 0.7;
 
-                                    return Positioned(
-                                      right: 90,
-                                      // 【关键修正】：气泡位置也必须随 p 增大而增大（向下走）
-                                      top: barTop + (p * barHeight) - 16,
-                                      child: Container(
-                                        padding: const EdgeInsets.symmetric(
-                                          horizontal: 12,
-                                          vertical: 6,
-                                        ),
-                                        decoration: BoxDecoration(
-                                          color: Theme.of(
-                                            context,
-                                          ).colorScheme.primary,
-                                          borderRadius: BorderRadius.circular(
-                                            20,
+                                  return Positioned(
+                                    right: 90,
+                                    // 【关键修正】：气泡位置也必须随 p 增大而增大（向下走）
+                                    top: barTop + (p * barHeight) - 16,
+                                    child: Container(
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 12,
+                                        vertical: 6,
+                                      ),
+                                      decoration: BoxDecoration(
+                                        color: Theme.of(
+                                          context,
+                                        ).colorScheme.primary,
+                                        borderRadius: BorderRadius.circular(20),
+                                        boxShadow: [
+                                          const BoxShadow(
+                                            color: Colors.black26,
+                                            blurRadius: 4,
                                           ),
-                                          boxShadow: [
-                                            const BoxShadow(
-                                              color: Colors.black26,
-                                              blurRadius: 4,
-                                            ),
-                                          ],
-                                        ),
-                                        child: Text(
-                                          _posts[safeIndex].floor,
-                                          style: const TextStyle(
-                                            color: Colors.white,
-                                            fontWeight: FontWeight.bold,
-                                          ),
+                                        ],
+                                      ),
+                                      child: Text(
+                                        _posts[safeIndex].floor,
+                                        style: const TextStyle(
+                                          color: Colors.white,
+                                          fontWeight: FontWeight.bold,
                                         ),
                                       ),
-                                    );
-                                  },
-                                ),
-                            ],
-                          ),
+                                    ),
+                                  );
+                                },
+                              ),
+                          ],
                         ),
                       ),
                     ),
-                ],
-              ),
+                  ),
+              ],
             ),
           ),
         ),
@@ -2932,292 +3052,310 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
           key: ValueKey(post.pid), // 必须是唯一的
           controller: _scrollController,
           index: postIndex, // 定位的核心索引
-          child: Container(
-            key: localAnchorKey, // ✅ 钥匙挂在这里！Container 是标准的 RenderBox
-            padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-            color: Theme.of(context).cardColor,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    GestureDetector(
-                      onTap: () => _jumpToUser(post),
-                      child: Hero(
-                        tag: "avatar_${post.authorId}_${post.pid}",
-                        child: CircleAvatar(
-                          backgroundImage: NetworkImage(post.avatarUrl),
-                          radius: 18,
+          child: GestureDetector(
+            onLongPress: () => _showCopySheet(post),
+            child: Container(
+              key: localAnchorKey,
+              padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+              color: Theme.of(context).cardColor,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      GestureDetector(
+                        onTap: () => _jumpToUser(post),
+                        child: Hero(
+                          tag: "avatar_${post.authorId}_${post.pid}",
+                          child: CircleAvatar(
+                            backgroundImage: NetworkImage(post.avatarUrl),
+                            radius: 18,
+                          ),
                         ),
                       ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Row(
-                            children: [
-                              Text(
-                                post.author,
-                                style: const TextStyle(
-                                  fontWeight: FontWeight.bold,
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                Text(
+                                  post.author,
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                  ),
                                 ),
-                              ),
-                              if (isLandlord)
-                                Container(
-                                  margin: const EdgeInsets.only(left: 5),
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 4,
-                                  ),
-                                  decoration: BoxDecoration(
-                                    color: Colors.blue[50],
-                                    borderRadius: BorderRadius.circular(4),
-                                  ),
-                                  child: const Text(
-                                    "楼主",
-                                    style: TextStyle(
-                                      fontSize: 10,
-                                      color: Colors.blue,
+                                if (isLandlord)
+                                  Container(
+                                    margin: const EdgeInsets.only(left: 5),
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 4,
+                                    ),
+                                    decoration: BoxDecoration(
+                                      color: Colors.blue[50],
+                                      borderRadius: BorderRadius.circular(4),
+                                    ),
+                                    child: const Text(
+                                      "楼主",
+                                      style: TextStyle(
+                                        fontSize: 10,
+                                        color: Colors.blue,
+                                      ),
                                     ),
                                   ),
-                                ),
-                            ],
-                          ),
-                          Text(
-                            "${post.floor} · ${post.time}",
-                            style: const TextStyle(
-                              fontSize: 10,
-                              color: Colors.grey,
+                              ],
                             ),
-                          ),
-                        ],
+                            Text(
+                              "${post.floor} · ${post.time}",
+                              style: const TextStyle(
+                                fontSize: 10,
+                                color: Colors.grey,
+                              ),
+                            ),
+                          ],
+                        ),
                       ),
-                    ),
-                    IconButton(
-                      icon: const Icon(
-                        Icons.reply,
-                        size: 20,
-                        color: Colors.grey,
+                      IconButton(
+                        icon: const Icon(
+                          Icons.reply,
+                          size: 20,
+                          color: Colors.grey,
+                        ),
+                        onPressed: () => _onReply(post.pid),
                       ),
-                      onPressed: () => _onReply(post.pid),
-                    ),
-                  ],
-                ),
-                if (post.metadata.isNotEmpty) _buildMetadataCard(post.metadata),
-                if (post.tags.isNotEmpty)
-                  Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 8),
-                    child: Wrap(
-                      spacing: 6,
-                      runSpacing: 6,
-                      children: post.tags.map((t) => _buildTagChip(t)).toList(),
-                    ),
+                    ],
                   ),
-              ],
+                  if (post.metadata.isNotEmpty)
+                    _buildMetadataCard(post.metadata),
+                  if (post.tags.isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 8),
+                      child: Wrap(
+                        spacing: 6,
+                        runSpacing: 6,
+                        children: post.tags
+                            .map((t) => _buildTagChip(t))
+                            .toList(),
+                      ),
+                    ),
+                ],
+              ),
             ),
           ),
         ),
       ),
 
-      // B. 核心：正文内容 (利用 sliverList 模式实现回帖内部的懒加载)
-      SliverPadding(
-        padding: const EdgeInsets.symmetric(horizontal: 16),
-        sliver: HtmlWidget(
-          finalHtml,
-          key: ValueKey(isDark),
-          renderMode: RenderMode.sliverList, // 保持高性能懒加载
-          textStyle: TextStyle(
-            fontSize: _fontSize - 2,
-            height: _lineHeight,
-            color: isDark ? Colors.white70 : Colors.black87,
-          ),
+      // B. 核心：正文内容
+      SliverToBoxAdapter(
+        child: GestureDetector(
+          onLongPress: () => _showCopySheet(post),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: HtmlWidget(
+              finalHtml,
+              key: ValueKey(isDark),
+              textStyle: TextStyle(
+                fontSize: _fontSize - 2,
+                height: _lineHeight,
+                color: isDark ? Colors.white70 : Colors.black87,
+              ),
 
-          // 【核心修复：重新注入图片点击和附件识别逻辑】
-          customWidgetBuilder: (element) {
-            // --- 【精准拦截自定义标签】 ---
-            if (element.localName == 'gw-survey') {
-              if (_isReaderMode || _isNovelMode) return const SizedBox.shrink();
+              // 【核心修复：重新注入图片点击和附件识别逻辑】
+              customWidgetBuilder: (element) {
+                // --- 【精准拦截自定义标签】 ---
+                if (element.localName == 'gw-survey') {
+                  if (_isReaderMode || _isNovelMode)
+                    return const SizedBox.shrink();
 
-              // 从我们刚才塞进去的属性里拿标题
-              String surveyTitle = element.attributes['title'] ?? "读者问卷调查";
-              String surveyUrl =
-                  "${currentBaseUrl.value}plugin.php?id=cxpform:style2&form_id=35&type=iframe&tid=${widget.tid}";
+                  // 从我们刚才塞进去的属性里拿标题
+                  String surveyTitle = element.attributes['title'] ?? "读者问卷调查";
+                  String surveyUrl =
+                      "${currentBaseUrl.value}plugin.php?id=cxpform:style2&form_id=35&type=iframe&tid=${widget.tid}";
 
-              bool isDark = Theme.of(context).brightness == Brightness.dark;
+                  bool isDark = Theme.of(context).brightness == Brightness.dark;
 
-              // 直接返回你想要的原生 MD3 卡片
-              return Container(
-                width: double.infinity,
-                margin: const EdgeInsets.symmetric(vertical: 12),
-                decoration: BoxDecoration(
-                  color: isDark
-                      ? Colors.blueGrey.withOpacity(0.15)
-                      : const Color(0xFFE3F2FD),
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(
-                    color: isDark
-                        ? Colors.white10
-                        : Colors.blue.withOpacity(0.2),
-                  ),
-                ),
-                child: Column(
-                  children: [
-                    Padding(
-                      padding: const EdgeInsets.all(16.0),
-                      child: Row(
-                        children: [
-                          Icon(
-                            Icons.assignment_turned_in,
-                            color: isDark ? Colors.blue[300] : Colors.blue[700],
-                          ),
-                          const SizedBox(width: 10),
-                          Expanded(
-                            child: Text(
-                              surveyTitle,
-                              style: TextStyle(
-                                fontWeight: FontWeight.bold,
-                                fontSize: 15,
-                                color: isDark ? Colors.white : Colors.blue[900],
-                              ),
-                            ),
-                          ),
-                        ],
+                  // 直接返回你想要的原生 MD3 卡片
+                  return Container(
+                    width: double.infinity,
+                    margin: const EdgeInsets.symmetric(vertical: 12),
+                    decoration: BoxDecoration(
+                      color: isDark
+                          ? Colors.blueGrey.withOpacity(0.15)
+                          : const Color(0xFFE3F2FD),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(
+                        color: isDark
+                            ? Colors.white10
+                            : Colors.blue.withOpacity(0.2),
                       ),
                     ),
-                    Container(
-                      width: double.infinity,
-                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-                      child: ElevatedButton.icon(
-                        icon: const Icon(Icons.open_in_new, size: 18),
-                        label: const Text("参与读者问卷 (网页端)"),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: Theme.of(
-                            context,
-                          ).colorScheme.primary,
-                          foregroundColor: Theme.of(
-                            context,
-                          ).colorScheme.onPrimary,
-                          elevation: 0,
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(8),
+                    child: Column(
+                      children: [
+                        Padding(
+                          padding: const EdgeInsets.all(16.0),
+                          child: Row(
+                            children: [
+                              Icon(
+                                Icons.assignment_turned_in,
+                                color: isDark
+                                    ? Colors.blue[300]
+                                    : Colors.blue[700],
+                              ),
+                              const SizedBox(width: 10),
+                              Expanded(
+                                child: Text(
+                                  surveyTitle,
+                                  style: TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 15,
+                                    color: isDark
+                                        ? Colors.white
+                                        : Colors.blue[900],
+                                  ),
+                                ),
+                              ),
+                            ],
                           ),
                         ),
-                        onPressed: () {
-                          Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                              builder: (context) => GeneralWebViewPage(
-                                url: surveyUrl,
-                                title: "参与问卷",
+                        Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                          child: ElevatedButton.icon(
+                            icon: const Icon(Icons.open_in_new, size: 18),
+                            label: const Text("参与读者问卷 (网页端)"),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Theme.of(
+                                context,
+                              ).colorScheme.primary,
+                              foregroundColor: Theme.of(
+                                context,
+                              ).colorScheme.onPrimary,
+                              elevation: 0,
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(8),
                               ),
                             ),
-                          );
-                        },
-                      ),
+                            onPressed: () {
+                              Navigator.push(
+                                context,
+                                MaterialPageRoute(
+                                  builder: (context) => GeneralWebViewPage(
+                                    url: surveyUrl,
+                                    title: "参与问卷",
+                                  ),
+                                ),
+                              );
+                            },
+                          ),
+                        ),
+                      ],
                     ),
-                  ],
-                ),
-              );
-            }
-
-            // 1. 处理图片点击预览
-            if (element.localName == 'img') {
-              String src = element.attributes['src'] ?? '';
-              String className = element.attributes['class'] ?? '';
-              // 【核心修复】：如果是表情包，返回 null
-              // 返回 null 意味着“不使用自定义组件”，插件会自动使用上面的 CSS 样式来渲染它
-              if (src.contains('static/image/smiley/')) {
-                return null;
-              }
-
-              // 【核心修改】：遇到这种难搞的缩略图，直接转为“外部下载卡片”
-              if (src.contains('mod=image')) {
-                // 1. 强力清洗链接
-                String cleanedUrl = src;
-                while (cleanedUrl.contains('&amp;'))
-                  cleanedUrl = cleanedUrl.replaceAll('&amp;', '&');
-                if (!cleanedUrl.startsWith('http'))
-                  cleanedUrl = "${currentBaseUrl.value}$cleanedUrl";
-
-                // 2. 提取 Key 方便用户对照
-                var keyMatch = RegExp(
-                  r'key=([a-zA-Z0-9]+)',
-                ).firstMatch(cleanedUrl);
-                String keyName = keyMatch?.group(1) ?? "unknown";
-
-                // 返回一个纯粹的“外部工具卡片”
-                return _buildExternalThumbnailCard(cleanedUrl, keyName);
-              }
-
-              if (src.contains('favicon.ico') ||
-                  src.contains('loading.gif') ||
-                  src.contains('loading2.gif') ||
-                  src.contains('none.gif') ||
-                  src.contains('eh.ico') ||
-                  className.contains('pixiv_img') ||
-                  className.contains('ehicon'))
-                return const SizedBox.shrink(); // 屏蔽小图标
-              if (src.isNotEmpty) return _buildClickableImage(src); // 调用下方的预览逻辑
-            }
-
-            // 2. 处理之前写的 gn-file 附件卡片
-            if (element.localName == 'gn-file') {
-              String url = element.attributes['url'] ?? '';
-              String name = element.attributes['name'] ?? '附件';
-              String size = element.attributes['size'] ?? '';
-              return _buildFileAttachmentCard(url, name, size); // 建议封装一下
-            }
-            // --- 【新增：终极绝杀，直接把 EH 插件框转成原生卡片】 ---
-            String id = element.attributes['id'] ?? '';
-            if (element.localName == 'div' && id.startsWith('ehbox_')) {
-              // 1. 抠出标题 (h3 标签里的文字)
-              final h3Element = element.getElementsByTagName('h3').firstOrNull;
-              String ehTitle = h3Element?.text.trim() ?? "E-Hentai 画廊资源";
-
-              // 2. 抠出来源网址 (找带有 exhentai 或 e-hentai 的 a 标签)
-              String ehUrl = "";
-              final aTags = element.getElementsByTagName('a');
-              for (var a in aTags) {
-                String href = a.attributes['href'] ?? '';
-                if (href.contains('exhentai.org') ||
-                    href.contains('e-hentai.org')) {
-                  ehUrl = href;
-                  break;
+                  );
                 }
-              }
 
-              // 3. 直接返回原生组件，这块破烂 HTML 彻底消失！
-              return _buildEHBoxCard(ehTitle, ehUrl);
-            }
+                // 1. 处理图片点击预览
+                if (element.localName == 'img') {
+                  String src = element.attributes['src'] ?? '';
+                  String className = element.attributes['class'] ?? '';
+                  // 【核心修复】：如果是表情包，返回 null
+                  // 返回 null 意味着“不使用自定义组件”，插件会自动使用上面的 CSS 样式来渲染它
+                  if (src.contains('static/image/smiley/')) {
+                    return null;
+                  }
 
-            // 3. 处理 iframe 问卷
-            if (element.localName == 'iframe') {
-              // ... 原有的 iframe 按钮逻辑 ...
-            }
-            return null;
-          },
+                  // 【核心修改】：遇到这种难搞的缩略图，直接转为“外部下载卡片”
+                  if (src.contains('mod=image')) {
+                    // 1. 强力清洗链接
+                    String cleanedUrl = src;
+                    while (cleanedUrl.contains('&amp;'))
+                      cleanedUrl = cleanedUrl.replaceAll('&amp;', '&');
+                    if (!cleanedUrl.startsWith('http'))
+                      cleanedUrl = "${currentBaseUrl.value}$cleanedUrl";
 
-          customStylesBuilder: (element) {
-            // 保持背景色清理逻辑
-            if (isDark) {
-              String style = element.attributes['style'] ?? '';
-              if (style.contains('background-color') ||
-                  style.contains('background:')) {
-                return {
-                  'background-color': 'transparent !important',
-                  'color': '#E0E0E0 !important',
-                };
-              }
-            }
-            return null;
-          },
+                    // 2. 提取 Key 方便用户对照
+                    var keyMatch = RegExp(
+                      r'key=([a-zA-Z0-9]+)',
+                    ).firstMatch(cleanedUrl);
+                    String keyName = keyMatch?.group(1) ?? "unknown";
 
-          // 处理网页链接点击
-          onTapUrl: (url) async {
-            await _launchURL(url);
-            return true;
-          },
+                    // 返回一个纯粹的“外部工具卡片”
+                    return _buildExternalThumbnailCard(cleanedUrl, keyName);
+                  }
+
+                  if (src.contains('favicon.ico') ||
+                      src.contains('loading.gif') ||
+                      src.contains('loading2.gif') ||
+                      src.contains('none.gif') ||
+                      src.contains('eh.ico') ||
+                      className.contains('pixiv_img') ||
+                      className.contains('ehicon'))
+                    return const SizedBox.shrink(); // 屏蔽小图标
+                  if (src.isNotEmpty)
+                    return _buildClickableImage(src); // 调用下方的预览逻辑
+                }
+
+                // 2. 处理之前写的 gn-file 附件卡片
+                if (element.localName == 'gn-file') {
+                  String url = element.attributes['url'] ?? '';
+                  String name = element.attributes['name'] ?? '附件';
+                  String size = element.attributes['size'] ?? '';
+                  return _buildFileAttachmentCard(url, name, size); // 建议封装一下
+                }
+                // --- 【新增：终极绝杀，直接把 EH 插件框转成原生卡片】 ---
+                String id = element.attributes['id'] ?? '';
+                if (element.localName == 'div' && id.startsWith('ehbox_')) {
+                  // 1. 抠出标题 (h3 标签里的文字)
+                  final h3Element = element
+                      .getElementsByTagName('h3')
+                      .firstOrNull;
+                  String ehTitle = h3Element?.text.trim() ?? "E-Hentai 画廊资源";
+
+                  // 2. 抠出来源网址 (找带有 exhentai 或 e-hentai 的 a 标签)
+                  String ehUrl = "";
+                  final aTags = element.getElementsByTagName('a');
+                  for (var a in aTags) {
+                    String href = a.attributes['href'] ?? '';
+                    if (href.contains('exhentai.org') ||
+                        href.contains('e-hentai.org')) {
+                      ehUrl = href;
+                      break;
+                    }
+                  }
+
+                  // 3. 直接返回原生组件，这块破烂 HTML 彻底消失！
+                  return _buildEHBoxCard(ehTitle, ehUrl);
+                }
+
+                // 3. 处理 iframe 问卷
+                if (element.localName == 'iframe') {
+                  // ... 原有的 iframe 按钮逻辑 ...
+                }
+                return null;
+              },
+
+              customStylesBuilder: (element) {
+                // 保持背景色清理逻辑
+                if (isDark) {
+                  String style = element.attributes['style'] ?? '';
+                  if (style.contains('background-color') ||
+                      style.contains('background:')) {
+                    return {
+                      'background-color': 'transparent !important',
+                      'color': '#E0E0E0 !important',
+                    };
+                  }
+                }
+                return null;
+              },
+
+              // 处理网页链接点击
+              onTapUrl: (url) async {
+                await _launchURL(url);
+                return true;
+              },
+            ),
+          ),
         ),
       ),
 

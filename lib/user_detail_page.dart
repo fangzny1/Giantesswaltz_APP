@@ -89,6 +89,7 @@ class _UserDetailPageState extends State<UserDetailPage> {
 
   String _errorMsg = "";
   int _currentPage = 1;
+  int _requestSeq = 0; // 防止过期响应覆盖新数据
 
   // 获取当前的 API 基础地址
   String get _baseUrl => currentBaseUrl.value;
@@ -124,18 +125,23 @@ class _UserDetailPageState extends State<UserDetailPage> {
     // 这里不需要 loadRequest，只是占位，请求全部走 HttpService
   }
 
+  Future<void> _refresh() async {
+    _hasMore = true;
+    _currentPage = 1;
+    await _loadData();
+  }
+
   Future<void> _loadData() async {
+    final int seq = ++_requestSeq;
     setState(() {
       _isFirstLoading = true;
       _errorMsg = "";
     });
 
-    // 同时请求用户信息和第一页帖子
     await Future.wait([_loadUserProfile(), _loadThreadPage(1)]);
 
-    if (mounted) {
-      setState(() => _isFirstLoading = false);
-    }
+    if (!mounted || seq != _requestSeq) return;
+    setState(() => _isFirstLoading = false);
   }
 
   Future<void> _loadUserProfile() async {
@@ -231,26 +237,27 @@ class _UserDetailPageState extends State<UserDetailPage> {
 
     if (page > 1 && mounted) setState(() => _isLoadingMore = true);
 
-    // 必须有 UID 才能查
     if (widget.uid == null) {
       if (mounted) setState(() => _errorMsg = "无法获取用户ID");
       return;
     }
 
+    final int seq = _requestSeq;
     String url =
         '${_baseUrl}home.php?mod=space&uid=${widget.uid}&do=thread&view=me&order=dateline&mobile=no&page=$page';
 
     try {
       String html = await HttpService().getHtml(url);
+      if (!mounted || seq != _requestSeq) return;
       _parseHtmlData(html, page);
     } catch (e) {
       print("❌ 帖子列表加载失败: $e");
-      if (mounted) {
-        setState(() {
-          _isLoadingMore = false;
-          if (page == 1) _errorMsg = "网络请求失败，请重试";
-        });
-      }
+      if (!mounted || seq != _requestSeq) return;
+      setState(() {
+        _isLoadingMore = false;
+        _isFirstLoading = false;
+        if (page == 1 && _threads.isEmpty) _errorMsg = "网络请求失败，请重试";
+      });
     }
   }
 
@@ -418,10 +425,12 @@ class _UserDetailPageState extends State<UserDetailPage> {
       animation: Listenable.merge([customWallpaperPath, forumCardOpacity]),
       builder: (context, _) {
         final wallpaperPath = customWallpaperPath.value;
+        final useTransparent = wallpaperPath != null && transparentBarsEnabled.value;
         return Scaffold(
           backgroundColor: wallpaperPath != null
               ? Colors.transparent
               : Theme.of(context).colorScheme.surfaceContainerHigh,
+          extendBodyBehindAppBar: useTransparent,
           body: Stack(
             children: [
               if (wallpaperPath != null)
@@ -451,60 +460,48 @@ class _UserDetailPageState extends State<UserDetailPage> {
                     },
                   ),
                 ),
-
-              NestedScrollView(
-                controller: _scrollController,
-                headerSliverBuilder: (context, innerBoxIsScrolled) {
-                  return [
+              RefreshIndicator(
+                onRefresh: _refresh,
+                child: CustomScrollView(
+                  controller: _scrollController,
+                  slivers: [
                     SliverAppBar.large(
                       title: Text(_userProfile?.username ?? widget.username),
-                      backgroundColor:
-                          (wallpaperPath != null &&
-                              transparentBarsEnabled.value)
-                          ? Colors.transparent
-                          : null,
+                      backgroundColor: useTransparent ? Colors.transparent : null,
                       actions: [
                         Padding(
                           padding: const EdgeInsets.all(12.0),
                           child: CircleAvatar(
-                            backgroundColor: Theme.of(
-                              context,
-                            ).colorScheme.primaryContainer,
-                            // 头像加载逻辑
+                            backgroundColor: Theme.of(context).colorScheme.primaryContainer,
                             backgroundImage: () {
-                              if (_userProfile != null &&
-                                  _userProfile!.uid.isNotEmpty) {
+                              if (_userProfile != null && _userProfile!.uid.isNotEmpty) {
                                 return NetworkImage(
                                   "${_baseUrl}uc_server/avatar.php?uid=${_userProfile!.uid}&size=middle",
                                 );
                               }
-                              if (widget.avatarUrl != null &&
-                                  widget.avatarUrl!.isNotEmpty) {
+                              if (widget.avatarUrl != null && widget.avatarUrl!.isNotEmpty) {
                                 return NetworkImage(widget.avatarUrl!);
                               }
                               return null;
                             }(),
-                            child:
-                                ((_userProfile == null) &&
-                                    (widget.avatarUrl == null ||
-                                        widget.avatarUrl!.isEmpty))
+                            child: ((_userProfile == null) &&
+                                    (widget.avatarUrl == null || widget.avatarUrl!.isEmpty))
                                 ? const Icon(Icons.person)
                                 : null,
                           ),
                         ),
                       ],
                     ),
-
-                    if (_userProfile != null)
+                    if (_isFirstLoading)
+                      SliverToBoxAdapter(child: _buildProfileSkeleton())
+                    else if (_userProfile != null)
                       SliverToBoxAdapter(
                         child: _buildUserProfileCard(context, wallpaperPath),
                       ),
-                  ];
-                },
-                body: _buildThreadList(wallpaperPath),
+                    _buildThreadSliverList(wallpaperPath),
+                  ],
+                ),
               ),
-
-              // 隐藏的 WebView
               SizedBox(
                 height: 0,
                 width: 0,
@@ -619,6 +616,133 @@ class _UserDetailPageState extends State<UserDetailPage> {
     );
   }
 
+  Widget _buildProfileSkeleton() {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
+      child: Card(
+        elevation: 0,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        child: Padding(
+          padding: const EdgeInsets.all(16.0),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Container(
+                    height: 24,
+                    width: 80,
+                    decoration: BoxDecoration(
+                      color: Colors.grey.withOpacity(0.2),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                  ),
+                  const SizedBox(width: 16),
+                  Container(
+                    height: 14,
+                    width: 100,
+                    decoration: BoxDecoration(
+                      color: Colors.grey.withOpacity(0.15),
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 16),
+              Row(
+                children: List.generate(
+                  4,
+                  (_) => Container(
+                    margin: const EdgeInsets.only(right: 24),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Container(
+                          height: 16,
+                          width: 40,
+                          decoration: BoxDecoration(
+                            color: Colors.grey.withOpacity(0.2),
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Container(
+                          height: 12,
+                          width: 30,
+                          decoration: BoxDecoration(
+                            color: Colors.grey.withOpacity(0.15),
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSkeletonCard() {
+    return Card(
+      margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+      elevation: 0,
+      color: Theme.of(context).colorScheme.surfaceContainerLow,
+      child: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            FractionallySizedBox(
+              widthFactor: 0.8,
+              child: Container(
+                height: 15,
+                decoration: BoxDecoration(
+                  color: Colors.grey.withOpacity(0.2),
+                  borderRadius: BorderRadius.circular(4),
+                ),
+              ),
+            ),
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                Container(
+                  height: 18,
+                  width: 60,
+                  decoration: BoxDecoration(
+                    color: Colors.grey.withOpacity(0.15),
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Container(
+                  height: 12,
+                  width: 40,
+                  decoration: BoxDecoration(
+                    color: Colors.grey.withOpacity(0.12),
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                ),
+                const Spacer(),
+                Container(
+                  height: 12,
+                  width: 50,
+                  decoration: BoxDecoration(
+                    color: Colors.grey.withOpacity(0.12),
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _buildStatItem(String label, String value) {
     return Container(
       margin: const EdgeInsets.only(right: 16),
@@ -635,41 +759,40 @@ class _UserDetailPageState extends State<UserDetailPage> {
     );
   }
 
-  Widget _buildThreadList(String? wallpaperPath) {
-    if (_isFirstLoading)
-      return const Center(child: CircularProgressIndicator());
-
-    // 【核心修复】显示空状态或错误信息
-    if (_threads.isEmpty) {
-      return Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            const Icon(
-              Icons.description_outlined,
-              size: 48,
-              color: Colors.grey,
-            ),
-            const SizedBox(height: 10),
-            Text(
-              _errorMsg.isNotEmpty ? _errorMsg : "这里空空如也",
-              style: const TextStyle(color: Colors.grey),
-            ),
-            if (_errorMsg.isNotEmpty)
-              TextButton(onPressed: _loadData, child: const Text("重试")),
-          ],
+  Widget _buildThreadSliverList(String? wallpaperPath) {
+    if (!_isFirstLoading && _threads.isEmpty) {
+      return SliverFillRemaining(
+        child: Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const Icon(Icons.description_outlined, size: 48, color: Colors.grey),
+              const SizedBox(height: 10),
+              Text(
+                _errorMsg.isNotEmpty ? _errorMsg : "这里空空如也",
+                style: const TextStyle(color: Colors.grey),
+              ),
+              if (_errorMsg.isNotEmpty)
+                TextButton(onPressed: _refresh, child: const Text("重试")),
+            ],
+          ),
         ),
       );
     }
 
-    return ListView.builder(
+    final items = _isFirstLoading ? List.filled(8, null) : _threads;
+    return SliverPadding(
       padding: const EdgeInsets.only(bottom: 30),
-      itemCount: _threads.length + 1,
-      itemBuilder: (ctx, index) {
-        if (index == _threads.length) return _buildFooter();
-        final item = _threads[index];
-        return _buildThreadTile(item, wallpaperPath);
-      },
+      sliver: SliverList(
+        delegate: SliverChildBuilderDelegate(
+          (ctx, index) {
+            if (index == items.length) return _buildFooter();
+            if (_isFirstLoading) return _buildSkeletonCard();
+            return _buildThreadTile(_threads[index], wallpaperPath);
+          },
+          childCount: items.length + 1,
+        ),
+      ),
     );
   }
 

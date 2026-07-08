@@ -152,9 +152,13 @@ class _BookmarkPageState extends State<BookmarkPage> {
                               onTap: () {
                                 if (item.targetFloor != null &&
                                     item.targetFloor!.startsWith("ultra_")) {
-                                  int ultraIndex = int.parse(
-                                    item.targetFloor!.split("_").last,
-                                  );
+                                  final parts = item.targetFloor!.split("_");
+                                  int ultraIndex = int.parse(parts[1]);
+                                  double scrollOffset = 0.0;
+                                  if (parts.length > 2) {
+                                    scrollOffset =
+                                        double.tryParse(parts[2]) ?? 0.0;
+                                  }
                                   adaptivePush(
                                     context,
                                     UltraReaderPage(
@@ -164,6 +168,7 @@ class _BookmarkPageState extends State<BookmarkPage> {
                                         "",
                                       ),
                                       initialIndex: ultraIndex,
+                                      initialScrollOffset: scrollOffset,
                                     ),
                                   );
                                 } else {

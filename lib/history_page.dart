@@ -33,7 +33,9 @@ class _HistoryPageState extends State<HistoryPage> {
       builder: (context, _) {
         final wallpaperPath = customWallpaperPath.value;
         return Scaffold(
-          backgroundColor: wallpaperPath != null ? Colors.transparent : null,
+          backgroundColor: wallpaperPath != null
+              ? Theme.of(context).colorScheme.surfaceContainerHighest
+              : null,
           appBar: AppBar(
             title: Text(
               _isEditMode ? "已选 ${_selectedTids.length} 项" : "足迹 (30天内)",

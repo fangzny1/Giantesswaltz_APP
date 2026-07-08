@@ -41,13 +41,15 @@ class ReaderChapter {
 class UltraReaderPage extends StatefulWidget {
   final String tid;
   final String title;
-  final int initialIndex; // 【新增】支持从书签跳入指定楼层
+  final int initialIndex;
+  final double initialScrollOffset; // 支持从书签恢复阅读进度
 
   const UltraReaderPage({
     super.key,
     required this.tid,
     required this.title,
     this.initialIndex = 0,
+    this.initialScrollOffset = 0.0,
   });
 
   @override
@@ -98,10 +100,13 @@ class _UltraReaderPageState extends State<UltraReaderPage>
     ),
   ];
 
+  double _initialScrollOffset = 0.0;
+
   @override
   void initState() {
     super.initState();
-    _currentIndex = widget.initialIndex; // 接入书签初始楼层
+    _currentIndex = widget.initialIndex;
+    _initialScrollOffset = widget.initialScrollOffset;
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
 
     _hideController = AnimationController(
@@ -219,10 +224,22 @@ class _UltraReaderPageState extends State<UltraReaderPage>
     if (mounted) {
       setState(() {
         _chapters = temp;
-        // 如果传入的索引超出范围，重置为0
         if (_currentIndex >= temp.length) _currentIndex = 0;
         _isLoading = false;
       });
+      // 恢复书签保存的阅读进度
+      if (_initialScrollOffset > 0) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (_scrollController.hasClients &&
+              _scrollController.position.maxScrollExtent > 0) {
+            double target = _initialScrollOffset.clamp(
+              0.0,
+              _scrollController.position.maxScrollExtent,
+            );
+            _scrollController.jumpTo(target);
+          }
+        });
+      }
     }
   }
 
@@ -254,9 +271,21 @@ class _UltraReaderPageState extends State<UltraReaderPage>
     });
   }
 
-  // 【新增】：保存超级模式专属书签
+  // 【新增】：保存超级模式专属书签（含阅读进度）
   Future<void> _saveUltraBookmark() async {
     if (_chapters.isEmpty) return;
+
+    // 获取当前滚动位置
+    double currentOffset = 0.0;
+    int progressPercent = 0;
+    if (_scrollController.hasClients &&
+        _scrollController.position.hasContentDimensions) {
+      currentOffset = _scrollController.offset;
+      double maxScroll = _scrollController.position.maxScrollExtent;
+      progressPercent = (maxScroll > 0)
+          ? (currentOffset / maxScroll * 100).clamp(0, 100).toInt()
+          : 100;
+    }
 
     final prefs = await SharedPreferences.getInstance();
     String? jsonStr = prefs.getString('local_bookmarks');
@@ -267,13 +296,12 @@ class _UltraReaderPageState extends State<UltraReaderPage>
       tid: widget.tid,
       subject: "${widget.title} [全量模式]",
       author: _chapters[_currentIndex].author,
-      authorId: "", // Printable API 不方便抓 authorId，留空不影响
+      authorId: "",
       page: 1,
       savedTime:
-          "${DateTime.now().toString().substring(5, 16)} · 读至 第${_currentIndex + 1}楼",
+          "${DateTime.now().toString().substring(5, 16)} · 第${_currentIndex + 1}楼 · $progressPercent%",
       isNovelMode: false,
-      // 使用特定前缀标识这是全量模式书签，并带上索引
-      targetFloor: "ultra_$_currentIndex",
+      targetFloor: "ultra_${_currentIndex}_${currentOffset.toStringAsFixed(1)}",
     );
 
     // 删除同一帖子的旧全量书签
@@ -286,9 +314,11 @@ class _UltraReaderPageState extends State<UltraReaderPage>
     await prefs.setString('local_bookmarks', jsonEncode(jsonList));
 
     if (mounted) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text("✅ 已保存全量专属书签")));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text("✅ 已保存书签 · 第${_currentIndex + 1}楼 · $progressPercent%"),
+        ),
+      );
     }
   }
 

@@ -72,7 +72,9 @@ class _OfflineListPageState extends State<OfflineListPage> {
       valueListenable: customWallpaperPath,
       builder: (context, wallpaperPath, _) {
         return Scaffold(
-          backgroundColor: wallpaperPath != null ? Colors.transparent : null,
+          backgroundColor: wallpaperPath != null
+              ? Theme.of(context).colorScheme.surfaceContainerHighest
+              : null,
           appBar: AppBar(
             title: Text(
               _isSelectionMode ? "已选 ${_selectedTids.length} 项" : "离线缓存",

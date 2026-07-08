@@ -34,6 +34,7 @@ class _ThreadListPageState extends State<ThreadListPage> {
   String _errorMsg = "";
   int _currentPage = 1;
   int _totalPages = 1; // 总页数
+  int _requestSeq = 0; // 请求序列号，防止过期响应覆盖新数据
 
   @override
   void initState() {
@@ -43,6 +44,12 @@ class _ThreadListPageState extends State<ThreadListPage> {
 
     // 初始加载第一页
     _loadPage(1);
+  }
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    super.dispose();
   }
 
   // WebView 初始化：仅用于在后台同步 Cookie，不直接参与解析列表
@@ -71,14 +78,18 @@ class _ThreadListPageState extends State<ThreadListPage> {
       apiUrl += '&filter=typeid&typeid=$_currentTypeId';
     }
 
-    print("📡 请求列表 API: $apiUrl");
+    final int seq = ++_requestSeq;
+    print("📡 请求列表 API [seq=$seq]: $apiUrl");
 
     try {
       String responseBody = await HttpService().getHtml(apiUrl);
+      if (!mounted || seq != _requestSeq) return;
       if (responseBody.startsWith('"') && responseBody.endsWith('"')) {
         responseBody = jsonDecode(responseBody);
       }
       final data = jsonDecode(responseBody);
+
+      if (!mounted || seq != _requestSeq) return;
 
       // 【新增】解析分类元数据 (仅在第一页时解析一次)
       final vars = data['Variables'];
@@ -93,7 +104,15 @@ class _ThreadListPageState extends State<ThreadListPage> {
 
       _parseApiData(data, page);
     } catch (e) {
-      // 错误处理...
+      print("❌ 列表加载失败 [seq=$seq]: $e");
+      if (!mounted || seq != _requestSeq) return;
+      setState(() {
+        _isFirstLoading = false;
+        _isLoadingMore = false;
+        if (_threads.isEmpty) {
+          _errorMsg = "加载失败，请检查网络后重试";
+        }
+      });
     }
   }
 
@@ -144,20 +163,16 @@ class _ThreadListPageState extends State<ThreadListPage> {
     await _loadPage(1);
   }
 
-  // ==========================================
-  // 【新增】构建横向分类筛选栏
-  // ==========================================
+  // 横向分类筛选栏（普通 Widget，不参与滚动）
   Widget _buildFilterBar() {
-    if (_threadTypes.isEmpty)
-      return const SliverToBoxAdapter(child: SizedBox.shrink());
+    if (_threadTypes.isEmpty) return const SizedBox.shrink();
 
-    return SliverToBoxAdapter(
-      child: Container(
-        height: 50,
-        margin: const EdgeInsets.only(bottom: 8),
-        child: ListView(
-          scrollDirection: Axis.horizontal,
-          padding: const EdgeInsets.symmetric(horizontal: 12),
+    return SizedBox(
+      height: 46,
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 12),
+        child: Row(
           children: [
             _buildTypeChip("全部", 0),
             ..._threadTypes.entries.map((entry) {
@@ -173,25 +188,35 @@ class _ThreadListPageState extends State<ThreadListPage> {
     bool isSelected = _currentTypeId == typeId;
     return Padding(
       padding: const EdgeInsets.only(right: 8),
-      child: ChoiceChip(
-        label: Text(label),
-        selected: isSelected,
-        onSelected: (bool selected) {
-          if (isSelected) return;
-          setState(() {
-            _currentTypeId = typeId;
-            _isFirstLoading = true; // 显示加载动画
-            _threads.clear();
-          });
-          _loadPage(1); // 切换分类后重新加载第一页
+      child: ValueListenableBuilder<ThemeMode>(
+        valueListenable: currentTheme,
+        builder: (context, mode, _) {
+          bool isDark = mode == ThemeMode.dark;
+          if (mode == ThemeMode.system)
+            isDark =
+                MediaQuery.of(context).platformBrightness == Brightness.dark;
+          return ChoiceChip(
+            label: Text(label),
+            selected: isSelected,
+            onSelected: (bool selected) {
+              if (isSelected) return;
+              setState(() {
+                _currentTypeId = typeId;
+                _isFirstLoading = true;
+                _threads.clear();
+              });
+              _loadPage(1);
+            },
+            labelStyle: TextStyle(
+              fontSize: 13,
+              color: isSelected
+                  ? Colors.white
+                  : (isDark ? Colors.white : Colors.black),
+              fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+            ),
+            selectedColor: Theme.of(context).primaryColor,
+          );
         },
-        // 样式美化
-        labelStyle: TextStyle(
-          fontSize: 13,
-          color: isSelected ? Colors.white : null,
-          fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
-        ),
-        selectedColor: Theme.of(context).primaryColor,
       ),
     );
   }
@@ -202,8 +227,20 @@ class _ThreadListPageState extends State<ThreadListPage> {
       animation: Listenable.merge([customWallpaperPath, forumCardOpacity]),
       builder: (context, _) {
         final wallpaperPath = customWallpaperPath.value;
+        final useTransparent = wallpaperPath != null && transparentBarsEnabled.value;
         return Scaffold(
           backgroundColor: wallpaperPath != null ? Colors.transparent : null,
+          extendBodyBehindAppBar: useTransparent,
+          appBar: AppBar(
+            title: Text(widget.forumName),
+            backgroundColor: useTransparent ? Colors.transparent : null,
+            actions: [
+              Padding(
+                padding: const EdgeInsets.only(right: 16),
+                child: Text("${_threads.length} 帖"),
+              ),
+            ],
+          ),
           body: Stack(
             children: [
               if (wallpaperPath != null)
@@ -232,30 +269,13 @@ class _ThreadListPageState extends State<ThreadListPage> {
                     },
                   ),
                 ),
-
-              NestedScrollView(
-                headerSliverBuilder: (context, innerBoxIsScrolled) {
-                  return [
-                    SliverAppBar.large(
-                      title: Text(widget.forumName),
-                      backgroundColor:
-                          (wallpaperPath != null &&
-                              transparentBarsEnabled.value)
-                          ? Colors.transparent
-                          : null,
-                      actions: [
-                        Center(
-                          child: Padding(
-                            padding: EdgeInsets.only(right: 16),
-                            child: Text("${_threads.length} 帖"),
-                          ),
-                        ),
-                      ],
-                    ),
+              SafeArea(
+                child: Column(
+                  children: [
                     _buildFilterBar(),
-                  ];
-                },
-                body: _buildList(),
+                    Expanded(child: _buildList()),
+                  ],
+                ),
               ),
               SizedBox(
                 height: 0,
@@ -270,26 +290,34 @@ class _ThreadListPageState extends State<ThreadListPage> {
   }
 
   Widget _buildList() {
-    if (_isFirstLoading)
-      return const Center(child: CircularProgressIndicator());
     if (_errorMsg.isNotEmpty && _threads.isEmpty)
-      return Center(
-        child: Column(
-          children: [
-            Text(_errorMsg),
-            ElevatedButton(onPressed: _refresh, child: const Text("重试")),
-          ],
-          mainAxisAlignment: MainAxisAlignment.center,
-        ),
+      return ListView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        children: [
+          const SizedBox(height: 120),
+          Center(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Text(_errorMsg),
+                ElevatedButton(onPressed: _refresh, child: const Text("重试")),
+              ],
+            ),
+          ),
+        ],
       );
+    // 加载中显示骨架屏，保持 scrollController 用于无限滚动检测
+    final items = _isFirstLoading ? List.filled(8, null) : _threads;
     return RefreshIndicator(
       onRefresh: _refresh,
       child: ListView.builder(
         controller: _scrollController,
         padding: const EdgeInsets.only(top: 8, bottom: 30),
-        itemCount: _threads.length + 1,
+        itemCount: items.length + 1,
         itemBuilder: (context, index) {
-          if (index == _threads.length) return _buildFooter();
+          if (index == items.length)
+            return _isFirstLoading ? null : _buildFooter();
+          if (_isFirstLoading) return _buildSkeletonCard();
           return _buildCard(_threads[index]);
         },
       ),
@@ -319,6 +347,43 @@ class _ThreadListPageState extends State<ThreadListPage> {
     }
   }
 
+  Widget _buildSkeletonCard() {
+    return Card(
+      margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+      elevation: 0,
+      color: Theme.of(context).colorScheme.surfaceContainerLow,
+      child: ListTile(
+        leading: CircleAvatar(
+          radius: 20,
+          backgroundColor: Colors.grey.withOpacity(0.2),
+        ),
+        title: FractionallySizedBox(
+          widthFactor: 0.7,
+          child: Container(
+            height: 14,
+            decoration: BoxDecoration(
+              color: Colors.grey.withOpacity(0.2),
+              borderRadius: BorderRadius.circular(4),
+            ),
+          ),
+        ),
+        subtitle: Padding(
+          padding: const EdgeInsets.only(top: 6),
+          child: FractionallySizedBox(
+            widthFactor: 0.3,
+            child: Container(
+              height: 12,
+              decoration: BoxDecoration(
+                color: Colors.grey.withOpacity(0.15),
+                borderRadius: BorderRadius.circular(4),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _buildCard(Thread thread) {
     return AnimatedBuilder(
       animation: Listenable.merge([customWallpaperPath, forumCardOpacity]),
@@ -336,9 +401,9 @@ class _ThreadListPageState extends State<ThreadListPage> {
           margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
           elevation: 0,
           color: wallpaperPath != null
-              ? Theme.of(
-                  context,
-                ).colorScheme.surfaceContainerLow.withOpacity(forumCardOpacity.value)
+              ? Theme.of(context).colorScheme.surfaceContainerLow.withOpacity(
+                  forumCardOpacity.value,
+                )
               : Theme.of(context).colorScheme.surfaceContainerLow,
           child: ListTile(
             // 【新增：头像显示】

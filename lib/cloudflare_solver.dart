@@ -71,6 +71,8 @@ class _SecurityDialogState extends State<_SecurityDialog> {
     // 将 wssplashchk 合并到原来的论坛登录 Cookie 里
     String mergedCookie = mergeCookies(oldCookie, [newCookies]);
     await prefs.setString('saved_cookie_string', mergedCookie);
+    // 通知所有页面:Cookie 变了,_userCookies 缓存需要刷新
+    cookieVersion.value = cookieVersion.value + 1;
 
     print("🔑 [Security] 捕获到安全令牌，已全线同步：$newCookies");
 

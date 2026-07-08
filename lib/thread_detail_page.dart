@@ -156,6 +156,14 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
   // 【新增】用于物理锚点定位
   double _exactFloor = 1.0; // 精确到小数点的当前楼层（如 3.5 代表第3楼看了一半）
   double _internalFraction = 0.0; // 记录楼层内部的百分比进度
+
+  // 监听全局 Cookie 版本变化,任何流程(如 SecuritySolver 通过验证)写入
+  // saved_cookie_string 后会 bump,这里就刷新 _userCookies 并 setState,
+  // 让 RetryableImage 在下一次 build 时拿到带新令牌的 Header。
+  void _onCookieVersionChanged() {
+    _loadLocalCookie();
+  }
+
   @override
   void initState() {
     super.initState();
@@ -207,10 +215,12 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
     });
 
     _scrollController.addListener(_handleEdgePaging);
+    cookieVersion.addListener(_onCookieVersionChanged);
   }
 
   @override
   void dispose() {
+    cookieVersion.removeListener(_onCookieVersionChanged);
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     _scrollController.dispose();
     _fabAnimationController.dispose();
@@ -416,7 +426,7 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
         // 如果是楼主且内容为空，通常是由于“仅作者可见”权限导致
         content =
             "<div style='padding: 20px; border: 1px dashed #ccc; text-align: center; color: grey;'>"
-            "内容受限：此帖子可能仅作者与管理员可见或者该楼层无内容"
+            "内容受限：此帖子可能仅作者与管理员可见或者该楼层无文字内容"
             "</div>";
       }
       // -----------------------------
@@ -4114,13 +4124,16 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
   }
 
   // 【新增】智能 Header 生成器
-  Map<String, String> _getHeadersForUrl(String url) {
+  // cookieOverride: 当从 prefs 实时读到新 Cookie 后(如 SecuritySolver 通过验证后),
+  // 直接传入,避免使用陈旧的 _userCookies 缓存。
+  Map<String, String> _getHeadersForUrl(String url, {String? cookieOverride}) {
+    final String cookie = cookieOverride ?? _userCookies;
     // 1. 获取当前论坛的主机名 (如 giantesswaltz.org)
     String currentHost = Uri.parse(currentBaseUrl.value).host;
     // 如果是备用站
     if (url.contains('gtswaltz.org')) {
       return {
-        'Cookie': _userCookies,
+        'Cookie': cookie,
         'User-Agent': kUserAgent,
         'Referer': "https://gtswaltz.org/", // 备用站强制要求 Referer 是自己
         'Connection': 'keep-alive', // 保持连接，不重新握手
@@ -4140,7 +4153,7 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
     if (isInternal) {
       // 站内图片：全副武装
       return {
-        'Cookie': _userCookies,
+        'Cookie': cookie,
         'User-Agent': kUserAgent,
         'Referer': currentBaseUrl.value,
       };
@@ -4242,6 +4255,13 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
                 ImagePreviewPage(imageUrl: u, headers: dynamicHeaders),
           ),
         ),
+        // 【玄学修复】SecuritySolver 通过验证后,这里实时从 prefs 读最新 Cookie,
+        // 重新构造 Header 给 RetryableImage,避免使用陈旧的 _userCookies。
+        refreshHeaders: () async {
+          final prefs = await SharedPreferences.getInstance();
+          final fresh = prefs.getString('saved_cookie_string') ?? '';
+          return _getHeadersForUrl(fullUrl, cookieOverride: fresh);
+        },
       ),
     );
   }
@@ -4277,6 +4297,9 @@ class RetryableImage extends StatefulWidget {
   final BaseCacheManager cacheManager;
   final Map<String, String> headers;
   final Function(String) onTap;
+  // 【玄学修复】通过 Cloudflare 验证后,父层 _userCookies 缓存可能尚未刷新,
+  // RetryableImage 用这个回调实时取最新 Cookie 构造的 Header。
+  final Future<Map<String, String>> Function() refreshHeaders;
 
   const RetryableImage({
     super.key,
@@ -4284,6 +4307,7 @@ class RetryableImage extends StatefulWidget {
     required this.cacheManager,
     required this.headers,
     required this.onTap,
+    required this.refreshHeaders,
   });
 
   @override
@@ -4292,23 +4316,83 @@ class RetryableImage extends StatefulWidget {
 
 class _RetryableImageState extends State<RetryableImage> {
   int _retryCount = 0;
+  // 保留一份可变 Header 副本,验证通过后能就地刷新,无需父级 rebuild
+  late Map<String, String> _currentHeaders;
+
+  @override
+  void initState() {
+    super.initState();
+    _currentHeaders = Map<String, String>.from(widget.headers);
+  }
+
+  @override
+  void didUpdateWidget(covariant RetryableImage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // 父级用新 headers rebuild 时同步过来(保留运行时验证后的覆盖)
+    if (oldWidget.headers != widget.headers) {
+      _currentHeaders = Map<String, String>.from(widget.headers);
+    }
+  }
+
+  String _buildFinalUrl() {
+    String u = widget.imageUrl;
+    if (_retryCount > 0) {
+      u += (u.contains('?') ? '&' : '?') + 'retry=$_retryCount';
+    }
+    return u;
+  }
+
+  Future<void> _onErrorTap() async {
+    // 先清掉这条 URL 在缓存里的失败/坏块记录
+    await widget.cacheManager.removeFile(widget.imageUrl);
+    await CachedNetworkImage.evictFromCache(widget.imageUrl);
+    if (!mounted) return;
+    setState(() => _retryCount++);
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text("已清理该图片坏块，正在重连..."),
+        duration: Duration(milliseconds: 800),
+      ),
+    );
+
+    // 第 2 次还失败 → 弹 SecuritySolver;通过验证后实时刷新 Header 再重试
+    if (_retryCount >= 2) {
+      debugPrint("🚨 [Security] 尝试修复特定链接: ${widget.imageUrl}");
+      bool success = await SecuritySolver.show(
+        context,
+        targetUrl: widget.imageUrl,
+      );
+      if (!mounted) return;
+      if (success) {
+        // 关键:验证通过后 Cookie 已被 solver 写入 prefs,这里实时拉新
+        try {
+          final fresh = await widget.refreshHeaders();
+          // 再清一次缓存,确保下次真正发起新请求而不是命中失败缓存
+          await widget.cacheManager.removeFile(widget.imageUrl);
+          await CachedNetworkImage.evictFromCache(widget.imageUrl);
+          if (!mounted) return;
+          setState(() {
+            _currentHeaders = fresh;
+            _retryCount = 0; // 重置,让 finalUrl 回到原始 URL(带新 Header)
+          });
+        } catch (e) {
+          debugPrint("⚠️ [RetryableImage] 刷新 Header 失败: $e");
+        }
+      }
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
-    String finalUrl = widget.imageUrl;
-    if (_retryCount > 0) {
-      finalUrl += (finalUrl.contains('?') ? '&' : '?') + 'retry=$_retryCount';
-    }
-
     return GestureDetector(
       onTap: () => widget.onTap(widget.imageUrl),
       child: Container(
         margin: const EdgeInsets.symmetric(vertical: 8),
         child: CachedNetworkImage(
           key: ValueKey("${widget.imageUrl}_$_retryCount"),
-          imageUrl: finalUrl,
+          imageUrl: _buildFinalUrl(),
           cacheManager: widget.cacheManager,
-          httpHeaders: widget.headers,
+          httpHeaders: _currentHeaders,
           fit: BoxFit.contain,
 
           // 【核心修复】删掉 memCacheWidth 和 maxWidthDiskCache！！！
@@ -4326,32 +4410,7 @@ class _RetryableImageState extends State<RetryableImage> {
           ),
           errorWidget: (ctx, url, error) {
             return InkWell(
-              onTap: () async {
-                await widget.cacheManager.removeFile(widget.imageUrl);
-                await CachedNetworkImage.evictFromCache(widget.imageUrl);
-                if (mounted) {
-                  setState(() => _retryCount++);
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text("已清理该图片坏块，正在重连..."),
-                      duration: Duration(milliseconds: 800),
-                    ),
-                  );
-                }
-                if (_retryCount >= 2) {
-                  debugPrint("🚨 [Security] 尝试修复特定链接: ${widget.imageUrl}");
-                  // 【核心修复】：把当前碎掉的图片 URL 传进去，让 WebView 针对性破盾
-                  bool success = await SecuritySolver.show(
-                    context,
-                    targetUrl: widget.imageUrl,
-                  );
-                  if (success) {
-                    setState(() => _retryCount = 0);
-                  }
-                } else {
-                  setState(() => _retryCount++);
-                }
-              },
+              onTap: _onErrorTap,
               child: Container(
                 height: 120,
                 width: double.infinity,

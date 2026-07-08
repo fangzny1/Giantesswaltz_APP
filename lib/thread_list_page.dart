@@ -229,7 +229,11 @@ class _ThreadListPageState extends State<ThreadListPage> {
         final wallpaperPath = customWallpaperPath.value;
         final useTransparent = wallpaperPath != null && transparentBarsEnabled.value;
         return Scaffold(
-          backgroundColor: wallpaperPath != null ? Colors.transparent : null,
+          backgroundColor: wallpaperPath != null
+              ? (useTransparent
+                  ? Colors.transparent
+                  : Theme.of(context).colorScheme.surfaceContainerHighest)
+              : null,
           extendBodyBehindAppBar: useTransparent,
           appBar: AppBar(
             title: Text(widget.forumName),

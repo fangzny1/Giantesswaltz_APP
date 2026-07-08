@@ -425,10 +425,13 @@ class _UserDetailPageState extends State<UserDetailPage> {
       animation: Listenable.merge([customWallpaperPath, forumCardOpacity]),
       builder: (context, _) {
         final wallpaperPath = customWallpaperPath.value;
-        final useTransparent = wallpaperPath != null && transparentBarsEnabled.value;
+        final useTransparent =
+            wallpaperPath != null && transparentBarsEnabled.value;
         return Scaffold(
           backgroundColor: wallpaperPath != null
-              ? Colors.transparent
+              ? (useTransparent
+                    ? Colors.transparent
+                    : Theme.of(context).colorScheme.surfaceContainerHigh)
               : Theme.of(context).colorScheme.surfaceContainerHigh,
           extendBodyBehindAppBar: useTransparent,
           body: Stack(
@@ -467,25 +470,33 @@ class _UserDetailPageState extends State<UserDetailPage> {
                   slivers: [
                     SliverAppBar.large(
                       title: Text(_userProfile?.username ?? widget.username),
-                      backgroundColor: useTransparent ? Colors.transparent : null,
+                      backgroundColor: useTransparent
+                          ? Colors.transparent
+                          : null,
                       actions: [
                         Padding(
                           padding: const EdgeInsets.all(12.0),
                           child: CircleAvatar(
-                            backgroundColor: Theme.of(context).colorScheme.primaryContainer,
+                            backgroundColor: Theme.of(
+                              context,
+                            ).colorScheme.primaryContainer,
                             backgroundImage: () {
-                              if (_userProfile != null && _userProfile!.uid.isNotEmpty) {
+                              if (_userProfile != null &&
+                                  _userProfile!.uid.isNotEmpty) {
                                 return NetworkImage(
                                   "${_baseUrl}uc_server/avatar.php?uid=${_userProfile!.uid}&size=middle",
                                 );
                               }
-                              if (widget.avatarUrl != null && widget.avatarUrl!.isNotEmpty) {
+                              if (widget.avatarUrl != null &&
+                                  widget.avatarUrl!.isNotEmpty) {
                                 return NetworkImage(widget.avatarUrl!);
                               }
                               return null;
                             }(),
-                            child: ((_userProfile == null) &&
-                                    (widget.avatarUrl == null || widget.avatarUrl!.isEmpty))
+                            child:
+                                ((_userProfile == null) &&
+                                    (widget.avatarUrl == null ||
+                                        widget.avatarUrl!.isEmpty))
                                 ? const Icon(Icons.person)
                                 : null,
                           ),
@@ -766,7 +777,11 @@ class _UserDetailPageState extends State<UserDetailPage> {
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              const Icon(Icons.description_outlined, size: 48, color: Colors.grey),
+              const Icon(
+                Icons.description_outlined,
+                size: 48,
+                color: Colors.grey,
+              ),
               const SizedBox(height: 10),
               Text(
                 _errorMsg.isNotEmpty ? _errorMsg : "这里空空如也",
@@ -784,14 +799,11 @@ class _UserDetailPageState extends State<UserDetailPage> {
     return SliverPadding(
       padding: const EdgeInsets.only(bottom: 30),
       sliver: SliverList(
-        delegate: SliverChildBuilderDelegate(
-          (ctx, index) {
-            if (index == items.length) return _buildFooter();
-            if (_isFirstLoading) return _buildSkeletonCard();
-            return _buildThreadTile(_threads[index], wallpaperPath);
-          },
-          childCount: items.length + 1,
-        ),
+        delegate: SliverChildBuilderDelegate((ctx, index) {
+          if (index == items.length) return _buildFooter();
+          if (_isFirstLoading) return _buildSkeletonCard();
+          return _buildThreadTile(_threads[index], wallpaperPath);
+        }, childCount: items.length + 1),
       ),
     );
   }

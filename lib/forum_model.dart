@@ -36,6 +36,11 @@ final ValueNotifier<String> currentBaseUrl = ValueNotifier(
   'https://giantesswaltz.org/',
 );
 
+// Cookie 版本号:任何写入 saved_cookie_string 的地方都应 bump 它,
+// 让 ThreadDetailPage 等持有 _userCookies 缓存的页面能及时刷新,避免
+// "通过 Cloudflare 验证后图片还是不加载,必须切模式重进才好" 的玄学问题。
+final ValueNotifier<int> cookieVersion = ValueNotifier(0);
+
 // 1. 定义一个带日志的下载服务
 class DebugHttpFileService extends HttpFileService {
   @override

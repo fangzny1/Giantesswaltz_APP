@@ -172,7 +172,7 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
     _maxPage = widget.initialPage; // 【新增】
     _targetPage = widget.initialPage;
     // 初始时使用传进来的标题（可能是“跳转中...”，也可能是正常的标题）
-    _displaySubject = widget.subject;
+    _displaySubject = html_parser.parseFragment(widget.subject).text ?? widget.subject;
 
     _scrollController = AutoScrollController(
       viewportBoundaryGetter: () =>
@@ -382,8 +382,10 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
       // --- 【新增：记录足迹逻辑】 ---
       // 只有在加载第一页（或初次进入）时记录，避免翻页重复记录
       if (reqPage == widget.initialPage && _posts.isEmpty) {
-        String finalSubject =
+        String rawSubject =
             threadInfo['subject']?.toString() ?? widget.subject;
+        String finalSubject =
+            html_parser.parseFragment(rawSubject).text ?? rawSubject;
         String finalAuthor = threadInfo['author']?.toString() ?? "未知";
 
         // 调用你的历史管理器（确保已经 import 'history_manager.dart'）

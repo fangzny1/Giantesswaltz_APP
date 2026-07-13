@@ -229,18 +229,29 @@ class _UltraReaderPageState extends State<UltraReaderPage>
       });
       // 恢复书签保存的阅读进度
       if (_initialScrollOffset > 0) {
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (_scrollController.hasClients &&
-              _scrollController.position.maxScrollExtent > 0) {
-            double target = _initialScrollOffset.clamp(
-              0.0,
-              _scrollController.position.maxScrollExtent,
-            );
-            _scrollController.jumpTo(target);
-          }
-        });
+        _retryRestoreScroll(retries: 0);
       }
     }
+  }
+
+  /// 递归等待 HtmlWidget 懒加载完成后恢复滚动位置
+  void _retryRestoreScroll({int retries = 0}) {
+    const int maxRetries = 50;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      if (_scrollController.hasClients &&
+          _scrollController.position.maxScrollExtent > 0) {
+        double target = _initialScrollOffset.clamp(
+          0.0,
+          _scrollController.position.maxScrollExtent,
+        );
+        _scrollController.jumpTo(target);
+        if (mounted) setState(() {});
+      } else if (retries < maxRetries) {
+        // 内容还没渲染完，下一帧再试
+        _retryRestoreScroll(retries: retries + 1);
+      }
+    });
   }
 
   // 【核心性能修复】：去掉 setState，纯通过 AnimationController 控制，杜绝 HtmlWidget 重绘！
@@ -441,6 +452,10 @@ class _UltraReaderPageState extends State<UltraReaderPage>
     finalHtml = finalHtml.replaceAll('</table>', '');
     finalHtml = finalHtml.replaceAll('</tr>', '');
     finalHtml = finalHtml.replaceAll('</td>', '');
+    // 2. 剥离 <font size="..."> 属性，保留标签本身使 textStyle 全局生效
+    finalHtml = finalHtml.replaceAll(RegExp(r'<font[^>]*size\s*=\s*"\d+"[^>]*>'), '<font>');
+    finalHtml = finalHtml.replaceAll(RegExp(r"<font[^>]*size\s*=\s*'\d+'[^>]*>"), '<font>');
+    finalHtml = finalHtml.replaceAll(RegExp(r'<font[^>]*size\s*=\s*\d+[^>]*>'), '<font>');
 
     return CustomScrollView(
       controller: _scrollController,
@@ -499,16 +514,18 @@ class _UltraReaderPageState extends State<UltraReaderPage>
               fontFamily: "Serif",
             ),
             customStylesBuilder: (element) {
+              // 始终覆盖字体大小，无视 HTML 内 CSS
+              final styles = <String, String>{
+                'font-size': '${_fontSize}px',
+              };
               if (_currentThemeIndex == 2) {
-                String style = element.attributes['style'] ?? '';
+                final style = element.attributes['style'] ?? '';
                 if (style.contains('background')) {
-                  return {
-                    'background-color': 'transparent !important',
-                    'color': '#BBBBBB !important',
-                  };
+                  styles['background-color'] = 'transparent !important';
+                  styles['color'] = '#BBBBBB !important';
                 }
               }
-              return null;
+              return styles;
             },
           ),
         ),

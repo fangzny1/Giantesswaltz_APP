@@ -1,12 +1,14 @@
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 import 'package:image_picker/image_picker.dart';
 
 import 'package:dio/dio.dart';
 import 'package:flutter_image_compress/flutter_image_compress.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:file_picker/file_picker.dart';
 import 'login_page.dart'; // 引用 kUserAgent
 
 class ReplyNativePage extends StatefulWidget {
@@ -45,6 +47,9 @@ class _ReplyNativePageState extends State<ReplyNativePage> {
   // 嗅探到的数据
   String? _sniffedUploadUrl;
   Map<String, String> _sniffedUploadParams = {}; // 上传图片用的
+  String? _sniffedAttachUrl;
+  Map<String, String> _sniffedAttachParams = {}; // 附件上传用的
+  List<Map<String, String>> _unusedAttachments = [];
   Map<String, String> _sniffedFormParams = {}; // 发帖提交用的 (hidden inputs)
   String? _sniffedSubmitUrl; // 发帖提交的真实 Action URL
 
@@ -204,6 +209,9 @@ class _ReplyNativePageState extends State<ReplyNativePage> {
             var info = {
                 uploadUrl: '',
                 uploadParams: {},
+                attachUrl: '',
+                attachParams: {},
+                unusedAttachments: [],
                 submitUrl: '',
                 formParams: {},
                 error: ''
@@ -255,6 +263,45 @@ class _ReplyNativePageState extends State<ReplyNativePage> {
                 console.log("Image sniff error: " + e);
             }
 
+            // 附件上传
+            try {
+                var attachForm = document.getElementById('attachform');
+                if (attachForm) {
+                    info.attachUrl = attachForm.action;
+                    var attInputs = attachForm.getElementsByTagName('input');
+                    for (var i = 0; i < attInputs.length; i++) {
+                        if (attInputs[i].name) info.attachParams[attInputs[i].name] = attInputs[i].value;
+                    }
+                }
+                if (!info.attachUrl) {
+                    var attachForm1 = document.getElementById('attachform_1');
+                    if (attachForm1) {
+                        info.attachUrl = attachForm1.action;
+                        var attInputs1 = attachForm1.getElementsByTagName('input');
+                        for (var i = 0; i < attInputs1.length; i++) {
+                            if (attInputs1[i].name) info.attachParams[attInputs1[i].name] = attInputs1[i].value;
+                        }
+                    }
+                }
+            } catch(e) {
+                console.log("Attach sniff error: " + e);
+            }
+
+            // 未使用的附件
+            try {
+                var unusedList = document.getElementById('unusedlist_attach');
+                if (unusedList) {
+                    var checks = unusedList.querySelectorAll('input[name="unused[]"]');
+                    for (var i = 0; i < checks.length; i++) {
+                        if (checks[i].value) {
+                            var label = unusedList.querySelector('label[for="' + checks[i].id + '"]');
+                            var title = label ? label.textContent.trim() : checks[i].value;
+                            info.unusedAttachments.push({aid: checks[i].value, name: title});
+                        }
+                    }
+                }
+            } catch(e) {}
+
             return JSON.stringify(info);
         })();
       """)
@@ -275,6 +322,21 @@ class _ReplyNativePageState extends State<ReplyNativePage> {
           );
           if (!_sniffedUploadParams.containsKey('fid'))
             _sniffedUploadParams['fid'] = widget.fid;
+
+          _sniffedAttachUrl = data['attachUrl'];
+          _sniffedAttachParams = Map<String, String>.from(data['attachParams'] ?? {});
+          if (!_sniffedAttachParams.containsKey('fid'))
+            _sniffedAttachParams['fid'] = widget.fid;
+
+          // 未使用的附件
+          final rawUnused = data['unusedAttachments'];
+          if (rawUnused is List && rawUnused.isNotEmpty) {
+            _unusedAttachments = rawUnused
+                .map((o) => Map<String, String>.from(o as Map))
+                .toList();
+          } else {
+            _unusedAttachments = [];
+          }
 
           _sniffedSubmitUrl = data['submitUrl'];
           _sniffedFormParams = Map<String, String>.from(
@@ -374,6 +436,8 @@ class _ReplyNativePageState extends State<ReplyNativePage> {
 
         if (aid != null && aid != "0") {
           _uploadedAids.add(aid);
+          // 告诉 Discuz 这个 aid 属于当前帖子，否则图片上传了但不会被引用
+          _sniffedFormParams['attachnew[$aid]'] = '1';
           _insertBBCode("[attachimg]$aid[/attachimg]", "");
           ScaffoldMessenger.of(
             context,
@@ -390,6 +454,121 @@ class _ReplyNativePageState extends State<ReplyNativePage> {
           await fileToUpload.delete();
         } catch (_) {}
       }
+      setState(() => _isUploadingImage = false);
+    }
+  }
+
+  // ====== TXT/MD 导入 ======
+  Future<void> _importTxtFile() async {
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['txt', 'md'],
+        withData: true,
+      );
+      if (result == null || result.files.isEmpty) return;
+      final picked = result.files.single;
+      print("📂 [Reply TXT导入] 文件: ${picked.name} 大小: ${picked.size}");
+      String content = utf8.decode(picked.bytes ?? await File(picked.path!).readAsBytes());
+
+      // MD→BBCode 转换
+      content = content
+          .replaceAllMapped(RegExp(r'^#{6}\s+(.*)$', multiLine: true), (m) => '[size=1]${m[1]}[/size]')
+          .replaceAllMapped(RegExp(r'^#{5}\s+(.*)$', multiLine: true), (m) => '[size=2]${m[1]}[/size]')
+          .replaceAllMapped(RegExp(r'^#{4}\s+(.*)$', multiLine: true), (m) => '[size=2]${m[1]}[/size]')
+          .replaceAllMapped(RegExp(r'^#{3}\s+(.*)$', multiLine: true), (m) => '[size=3]${m[1]}[/size]')
+          .replaceAllMapped(RegExp(r'^#{2}\s+(.*)$', multiLine: true), (m) => '[size=4]${m[1]}[/size]')
+          .replaceAllMapped(RegExp(r'^#\s+(.*)$', multiLine: true), (m) => '[size=5]${m[1]}[/size]')
+          .replaceAllMapped(RegExp(r'\*\*(.+?)\*\*', dotAll: true), (m) => '[b]${m[1]}[/b]')
+          .replaceAllMapped(RegExp(r'\*(.+?)\*', dotAll: true), (m) => '[i]${m[1]}[/i]')
+          .replaceAllMapped(RegExp(r'```([\s\S]*?)```', dotAll: true), (m) => '[code]${m[1]}[/code]');
+
+      const maxLen = 50000;
+      if (content.length > maxLen) {
+        final action = await showDialog<String>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: const Text("文件过长"),
+            content: Text("共 ${content.length} 字，单帖建议不超过 $maxLen 字。"),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(ctx, 'cancel'), child: const Text("取消")),
+              TextButton(onPressed: () => Navigator.pop(ctx, 'insert'), child: const Text("直接导入")),
+              TextButton(onPressed: () => Navigator.pop(ctx, 'split'), child: const Text("分段导入")),
+            ],
+          ),
+        );
+        if (action == null || action == 'cancel') return;
+        if (action == 'split') {
+          final remaining = content.substring(maxLen);
+          content = content.substring(0, maxLen);
+          await Clipboard.setData(ClipboardData(text: remaining));
+          _showError("✅ 已导入第 1 段，其余已复制到剪贴板");
+        }
+      }
+      _textController.text = content;
+      _showError("✅ 已导入 ${content.length} 字");
+    } catch (e) {
+      _showError("导入失败: $e");
+    }
+  }
+
+  // ====== 附件上传 ======
+  Future<void> _uploadAttachment() async {
+    try {
+      final result = await FilePicker.platform.pickFiles(withData: true);
+      if (result == null || result.files.isEmpty) return;
+      await _uploadFileWithBBCode(File(result.files.single.path!), '[attach]', '[/attach]');
+    } catch (e) {
+      _showError("选择文件失败: $e");
+    }
+  }
+
+  Future<void> _uploadFileWithBBCode(File file, String openTag, String closeTag) async {
+    final bool isAttach = openTag.contains('attach]');
+    final params = isAttach ? _sniffedAttachParams : _sniffedUploadParams;
+    if (params.isEmpty) {
+      _showError("未获取到上传授权");
+      return;
+    }
+    setState(() => _isUploadingImage = true);
+    File fileToUpload = await _compressFile(file);
+    var url = (isAttach ? _sniffedAttachUrl : _sniffedUploadUrl) ?? "";
+    if (!url.startsWith('http')) {
+      String base = widget.baseUrl;
+      if (base.endsWith('/')) base = base.substring(0, base.length - 1);
+      url = url.startsWith('/') ? base + url : "$base/$url";
+    }
+    try {
+      final dio = Dio();
+      dio.options.headers['Cookie'] = widget.userCookies;
+      dio.options.headers['User-Agent'] = kUserAgent;
+      dio.options.headers['Referer'] = widget.targetUrl;
+      final formData = FormData();
+      params.forEach((k, v) => formData.fields.add(MapEntry(k, v)));
+      formData.files.add(MapEntry('Filedata', await MultipartFile.fromFile(fileToUpload.path, filename: file.path.split('\\').last.split('/').last)));
+      final response = await dio.post(url, data: formData);
+      if (response.statusCode == 200) {
+        final body = response.data.toString();
+        String? aid;
+        if (body.contains("DISCUZUPLOAD")) {
+          var parts = body.split('|');
+          if (parts.length > 2 && parts[1] == '0') aid = parts[2];
+        } else if (RegExp(r'^\d+$').hasMatch(body.trim())) {
+          aid = body.trim();
+        }
+        if (aid != null && aid != "0") {
+          _uploadedAids.add(aid);
+          _sniffedFormParams['attachnew[$aid]'] = '1';
+          _insertBBCode("$openTag$aid$closeTag", "");
+          _showError("✅ 附件已添加");
+        } else {
+          _showError("上传失败: $body");
+        }
+      }
+    } catch (e) {
+      _showError("上传出错: 网络问题");
+    } finally {
+      if (fileToUpload.path != file.path) try { await fileToUpload.delete(); } catch (_) {}
       setState(() => _isUploadingImage = false);
     }
   }
@@ -684,6 +863,59 @@ class _ReplyNativePageState extends State<ReplyNativePage> {
             ),
           ),
 
+          // 未使用的附件提示
+          if (_unusedAttachments.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                decoration: BoxDecoration(
+                  color: Colors.orange.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Colors.orange.withOpacity(0.3)),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.attach_file, size: 16, color: Colors.orange),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        "${_unusedAttachments.length} 个未使用的附件",
+                        style: const TextStyle(fontSize: 13, color: Colors.orange),
+                      ),
+                    ),
+                    TextButton(
+                      onPressed: () {
+                        for (final att in _unusedAttachments) {
+                          final aid = att['aid'] ?? '';
+                          if (aid.isNotEmpty) {
+                            _sniffedFormParams['attachnew[$aid]'] = '1';
+                            _insertBBCode("[attach]$aid[/attach]", "");
+                          }
+                        }
+                        _showError("✅ 已插入 ${_unusedAttachments.length} 个附件");
+                        setState(() => _unusedAttachments = []);
+                      },
+                      child: const Text("插入全部", style: TextStyle(fontSize: 12)),
+                    ),
+                    TextButton(
+                      onPressed: () {
+                        for (final att in _unusedAttachments) {
+                          final aid = att['aid'] ?? '';
+                          if (aid.isNotEmpty && _webController != null) {
+                            _webController!.runJavaScript("attachoption('attach', 0, '$aid');");
+                          }
+                        }
+                        _showError("🗑️ 已删除 ${_unusedAttachments.length} 个附件");
+                        setState(() => _unusedAttachments = []);
+                      },
+                      child: Text("删除", style: TextStyle(fontSize: 12, color: Colors.red.shade300)),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+
           if (_isUploadingImage) const LinearProgressIndicator(minHeight: 2),
 
           _buildToolbar(),
@@ -746,6 +978,18 @@ class _ReplyNativePageState extends State<ReplyNativePage> {
             onPressed: _sniffedUploadParams.isEmpty || _isUploadingImage
                 ? null
                 : () => _pickImage(ImageSource.gallery),
+          ),
+          IconButton(
+            icon: const Icon(Icons.description_outlined),
+            tooltip: "导入 TXT/MD",
+            onPressed: _importTxtFile,
+          ),
+          IconButton(
+            icon: const Icon(Icons.attach_file),
+            tooltip: "上传附件",
+            onPressed: _sniffedUploadParams.isEmpty || _isUploadingImage
+                ? null
+                : _uploadAttachment,
           ),
           const VerticalDivider(width: 8, indent: 8, endIndent: 8),
           IconButton(

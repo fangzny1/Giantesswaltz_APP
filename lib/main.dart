@@ -6,6 +6,7 @@ import 'package:giantesswaltz_app/http_service.dart';
 import 'package:giantesswaltz_app/notification_page.dart';
 import 'package:giantesswaltz_app/offline_list_page.dart';
 import 'package:giantesswaltz_app/settings_page.dart';
+import 'package:giantesswaltz_app/new_thread_page.dart';
 import 'package:giantesswaltz_app/thread_detail_page.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:webview_flutter/webview_flutter.dart';
@@ -253,6 +254,16 @@ Future<Color> extractWallpaperColor(String imagePath) async {
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // Android 全屏适配：状态栏透明，内容延伸到后面
+  // Android 15+ 适配：状态栏与导航栏半透明，避免黑色底色透出
+  SystemChrome.setSystemUIOverlayStyle(
+    const SystemUiOverlayStyle(
+      statusBarColor: Color(0x33000000),
+      statusBarIconBrightness: Brightness.dark,
+      systemNavigationBarColor: Color(0x33000000),
+      systemNavigationBarIconBrightness: Brightness.dark,
+    ),
+  );
   HttpOverrides.global = _MyHttpOverrides();
   final prefs = await SharedPreferences.getInstance();
   // 【新增】在这里恢复上次的选择
@@ -454,6 +465,16 @@ class _MainScreenState extends State<MainScreen> {
   void initState() {
     super.initState();
 
+    // Android 15+ edge-to-edge 适配：状态栏透明，App内容延伸到状态栏后面
+    SystemChrome.setSystemUIOverlayStyle(
+      const SystemUiOverlayStyle(
+        statusBarColor: Colors.transparent,
+        statusBarIconBrightness: Brightness.dark,
+        systemNavigationBarColor: Colors.transparent,
+        systemNavigationBarIconBrightness: Brightness.dark,
+      ),
+    );
+
     // 【核心修复】使用 WidgetsBinding 确保在第一帧加载后再初始化
     WidgetsBinding.instance.addPostFrameCallback((_) {
       print("🚀 [System] 界面首帧加载完成，开始初始化监听器...");
@@ -616,6 +637,136 @@ class _MainScreenState extends State<MainScreen> {
     });
   }
 
+  /// 显示板块选择器 → 跳转到发帖页
+  void _showForumPicker() async {
+    // 首次发帖提示
+    final prefs = await SharedPreferences.getInstance();
+    if (prefs.getBool('first_post_tip_shown') != true) {
+      if (!mounted) return;
+      final agreed = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text("温馨提示"),
+          content: const Text("本客户端仅供学习交流。\n\n发帖行为请遵守论坛规则，请勿发布违规内容。"),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text("取消"),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text("我知道了"),
+            ),
+          ],
+        ),
+      );
+      if (agreed != true) return;
+      await prefs.setBool('first_post_tip_shown', true);
+    }
+
+    showModalBottomSheet(
+      context: context,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) {
+        // 从论坛首页 state 获取板块列表
+        final forumState = forumKey.currentState;
+        if (forumState == null || forumState._categories.isEmpty) {
+          return const SizedBox(
+            height: 200,
+            child: Center(child: Text("板块列表未加载，请稍后重试")),
+          );
+        }
+        return SafeArea(
+          child: DraggableScrollableSheet(
+            initialChildSize: 0.7,
+            maxChildSize: 0.9,
+            minChildSize: 0.3,
+            expand: false,
+            builder: (context, scrollController) {
+              return ListView(
+                controller: scrollController,
+                padding: const EdgeInsets.all(12),
+                children: [
+                  const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 12),
+                    child: Text(
+                      "选择板块",
+                      style: TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+                  ...forumState._categories.map((cat) {
+                    final forumsInCat = cat.forumIds
+                        .map((fid) => forumState._forumsMap[fid])
+                        .where((f) => f != null)
+                        .toList();
+                    if (forumsInCat.isEmpty) return const SizedBox();
+                    return Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Padding(
+                          padding: const EdgeInsets.only(
+                            left: 4,
+                            top: 12,
+                            bottom: 4,
+                          ),
+                          child: Text(
+                            cat.name,
+                            style: TextStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600,
+                              color: Theme.of(context).colorScheme.primary,
+                            ),
+                          ),
+                        ),
+                        ...forumsInCat.map(
+                          (f) => ListTile(
+                            dense: true,
+                            title: Text(
+                              f!.name,
+                              style: const TextStyle(fontSize: 15),
+                            ),
+                            subtitle: f.description.isNotEmpty
+                                ? Text(
+                                    f.description,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(fontSize: 12),
+                                  )
+                                : null,
+                            trailing: const Icon(Icons.chevron_right, size: 18),
+                            onTap: () {
+                              Navigator.pop(ctx);
+                              _openNewThread(f.fid, f.name);
+                            },
+                          ),
+                        ),
+                      ],
+                    );
+                  }),
+                ],
+              );
+            },
+          ),
+        );
+      },
+    );
+  }
+
+  /// 打开发帖页
+  void _openNewThread(String fid, String forumName) {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => NewThreadPage(fid: fid, baseUrl: currentBaseUrl.value),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     // 【核心修复】将 PopScope 放到最外层，全局拦截物理返回键和全面屏侧滑手势
@@ -709,7 +860,7 @@ class _MainScreenState extends State<MainScreen> {
                     Widget mainListContent = Scaffold(
                       backgroundColor: wallpaperPath != null
                           ? Colors.transparent
-                          : null,
+                          : Theme.of(context).colorScheme.surface,
                       extendBody:
                           wallpaperPath != null && transparentBarsEnabled.value,
                       body: IndexedStack(
@@ -753,16 +904,30 @@ class _MainScreenState extends State<MainScreen> {
                                       elevation: wallpaperPath != null ? 0 : 0,
                                       shadowColor: Colors.transparent,
                                       surfaceTintColor: Colors.transparent,
-                                      selectedIndex: _selectedIndex,
-                                      onDestinationSelected: (int index) =>
-                                          setState(
-                                            () => _selectedIndex = index,
-                                          ),
+                                      selectedIndex: _selectedIndex == 0
+                                          ? 0
+                                          : _selectedIndex + 1,
+                                      onDestinationSelected: (int index) {
+                                        if (index == 1) {
+                                          _showForumPicker();
+                                        } else {
+                                          setState(() {
+                                            _selectedIndex = index > 1
+                                                ? index - 1
+                                                : index;
+                                          });
+                                        }
+                                      },
                                       destinations: const [
                                         NavigationDestination(
                                           icon: Icon(Icons.home_outlined),
                                           selectedIcon: Icon(Icons.home),
                                           label: '大厅',
+                                        ),
+                                        NavigationDestination(
+                                          icon: Icon(Icons.add_box_outlined),
+                                          selectedIcon: Icon(Icons.add_box),
+                                          label: '发帖',
                                         ),
                                         NavigationDestination(
                                           icon: Icon(Icons.search),
@@ -1780,7 +1945,10 @@ class _ForumHomePageState extends State<ForumHomePage> {
           child: CustomScrollView(
             slivers: [
               AnimatedBuilder(
-                animation: Listenable.merge([customWallpaperPath, forumCardOpacity]),
+                animation: Listenable.merge([
+                  customWallpaperPath,
+                  forumCardOpacity,
+                ]),
                 builder: (context, _) {
                   final wallpaperPath = customWallpaperPath.value;
                   bool useTransparent =
@@ -1849,34 +2017,37 @@ class _ForumHomePageState extends State<ForumHomePage> {
                         child: ValueListenableBuilder<String>(
                           valueListenable: currentUserAvatar,
                           builder: (context, avatar, _) {
-                            return Container(
-                              decoration: BoxDecoration(
-                                shape: BoxShape.circle,
-                                border: Border.all(
-                                  color: MiuiTheme.primaryColor.withOpacity(
-                                    0.2,
+                            return GestureDetector(
+                              onTap: () => _jumpToMyPosts(context),
+                              child: Container(
+                                decoration: BoxDecoration(
+                                  shape: BoxShape.circle,
+                                  border: Border.all(
+                                    color: MiuiTheme.primaryColor.withOpacity(
+                                      0.2,
+                                    ),
+                                    width: 2,
                                   ),
-                                  width: 2,
                                 ),
-                              ),
-                              child: CircleAvatar(
-                                radius: 16,
-                                backgroundColor: Theme.of(
-                                  context,
-                                ).colorScheme.primaryContainer,
-                                backgroundImage: avatar.isNotEmpty
-                                    ? CachedNetworkImageProvider(
-                                        avatar,
-                                        cacheManager: globalImageCache,
-                                      )
-                                    : null,
-                                child: avatar.isEmpty
-                                    ? const Icon(
-                                        Icons.person,
-                                        size: 18,
-                                        color: Colors.grey,
-                                      )
-                                    : null,
+                                child: CircleAvatar(
+                                  radius: 16,
+                                  backgroundColor: Theme.of(
+                                    context,
+                                  ).colorScheme.primaryContainer,
+                                  backgroundImage: avatar.isNotEmpty
+                                      ? CachedNetworkImageProvider(
+                                          avatar,
+                                          cacheManager: globalImageCache,
+                                        )
+                                      : null,
+                                  child: avatar.isEmpty
+                                      ? const Icon(
+                                          Icons.person,
+                                          size: 18,
+                                          color: Colors.grey,
+                                        )
+                                      : null,
+                                ),
                               ),
                             );
                           },
@@ -2223,6 +2394,26 @@ class _ForumHomePageState extends State<ForumHomePage> {
         );
       },
     );
+  }
+
+  // 【新增】跳转到我的帖子
+  void _jumpToMyPosts(BuildContext context) {
+    if (currentUserUid.value.isNotEmpty && currentUserUid.value != "0") {
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (context) => UserDetailPage(
+            uid: currentUserUid.value,
+            username: currentUser.value,
+            avatarUrl: currentUserAvatar.value,
+          ),
+        ),
+      );
+    } else {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text("请先登录")));
+    }
   }
 }
 
@@ -3020,15 +3211,16 @@ class _ProfilePageState extends State<ProfilePage> {
     Color? titleColor,
     required VoidCallback onTap,
   }) {
+    final dynamicPrimary = Theme.of(context).colorScheme.primary;
     return ListTile(
       leading: Container(
         width: 38,
         height: 38,
         decoration: BoxDecoration(
-          color: (iconColor ?? MiuiTheme.primaryColor).withOpacity(0.08),
+          color: (iconColor ?? dynamicPrimary).withOpacity(0.08),
           borderRadius: BorderRadius.circular(10),
         ),
-        child: Icon(icon, color: iconColor ?? MiuiTheme.primaryColor, size: 20),
+        child: Icon(icon, color: iconColor ?? dynamicPrimary, size: 20),
       ),
       title: Text(
         title,

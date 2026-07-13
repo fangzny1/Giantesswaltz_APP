@@ -52,6 +52,3 @@ android {
 flutter {
     source = "../.."
 }
-kotlin {
-        jvmToolchain(21) 
-}

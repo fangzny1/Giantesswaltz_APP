@@ -823,6 +823,8 @@ class _UserDetailPageState extends State<UserDetailPage> {
   }
 
   Widget _buildThreadTile(UserThreadItem item, String? wallpaperPath) {
+    final cleanSubject =
+        html_parser.parseFragment(item.subject).text ?? item.subject;
     return Card(
       margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
       elevation: 0,
@@ -841,7 +843,7 @@ class _UserDetailPageState extends State<UserDetailPage> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
-                item.subject,
+                cleanSubject,
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis,
                 style: const TextStyle(

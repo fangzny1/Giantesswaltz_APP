@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:giantesswaltz_app/main.dart';
+import 'package:giantesswaltz_app/forum_model.dart';
+import 'package:giantesswaltz_app/new_thread_page.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'miui_theme.dart';
 
@@ -58,7 +60,8 @@ class _SettingsPageState extends State<SettingsPage> {
       _cacheMaxObjects = (prefs.getInt('cache_max_objects') ?? 1000).toDouble();
       _cacheStaleDays = (prefs.getInt('cache_stale_days') ?? 7).toDouble();
       _cardOpacity = prefs.getDouble('forum_card_opacity') ?? 0.7;
-      _transitionType = prefs.getString('transition_animation_type') ?? "default";
+      _transitionType =
+          prefs.getString('transition_animation_type') ?? "default";
       _colorSchemeMode = prefs.getString('color_scheme_mode') ?? "default";
       final int? seedVal = prefs.getInt('seed_color');
       if (seedVal != null) _seedColorValue = Color(seedVal);
@@ -92,7 +95,9 @@ class _SettingsPageState extends State<SettingsPage> {
         fontSize: 13,
       ),
       side: BorderSide(
-        color: isSelected ? MiuiTheme.primaryColor : Colors.grey.withOpacity(0.3),
+        color: isSelected
+            ? MiuiTheme.primaryColor
+            : Colors.grey.withOpacity(0.3),
       ),
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
     );
@@ -189,6 +194,19 @@ class _SettingsPageState extends State<SettingsPage> {
     }
   }
 
+  /// 开发测试：跳转到发帖页面 (fid=111 测试区)
+  Future<void> _testNewThread() async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => NewThreadPage(
+          fid: "111",
+          baseUrl: currentBaseUrl.value,
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_isLoading) {
@@ -204,9 +222,7 @@ class _SettingsPageState extends State<SettingsPage> {
       builder: (context, path, _) {
         return Scaffold(
           backgroundColor: Theme.of(context).scaffoldBackgroundColor,
-          appBar: AppBar(
-            title: const Text("高级设置"),
-          ),
+          appBar: AppBar(title: const Text("高级设置")),
           body: ListView(
             padding: const EdgeInsets.all(16),
             children: [
@@ -218,7 +234,10 @@ class _SettingsPageState extends State<SettingsPage> {
                   const SizedBox(height: 2),
                   Text(
                     "控制背景图片上方卡片与列表项的透明度",
-                    style: TextStyle(fontSize: 12, color: MiuiTheme.textSecondary),
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: MiuiTheme.textSecondary,
+                    ),
                   ),
                   const SizedBox(height: 8),
                   ValueListenableBuilder<String?>(
@@ -230,7 +249,9 @@ class _SettingsPageState extends State<SettingsPage> {
                         min: 0.1,
                         max: 1.0,
                         divisions: 18,
-                        activeColor: hasWallpaper ? MiuiTheme.primaryColor : Colors.grey,
+                        activeColor: hasWallpaper
+                            ? MiuiTheme.primaryColor
+                            : Colors.grey,
                         inactiveColor: Colors.grey.withOpacity(0.3),
                         label: "${(_cardOpacity * 100).toInt()}%",
                         onChanged: hasWallpaper
@@ -239,7 +260,8 @@ class _SettingsPageState extends State<SettingsPage> {
                         onChangeEnd: hasWallpaper
                             ? (v) async {
                                 forumCardOpacity.value = v;
-                                final prefs = await SharedPreferences.getInstance();
+                                final prefs =
+                                    await SharedPreferences.getInstance();
                                 await prefs.setDouble('forum_card_opacity', v);
                               }
                             : null,
@@ -265,7 +287,10 @@ class _SettingsPageState extends State<SettingsPage> {
                   const SizedBox(height: 2),
                   Text(
                     "选择页面跳转时的过渡动画效果",
-                    style: TextStyle(fontSize: 12, color: MiuiTheme.textSecondary),
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: MiuiTheme.textSecondary,
+                    ),
                   ),
                   const SizedBox(height: 12),
                   SizedBox(
@@ -273,9 +298,7 @@ class _SettingsPageState extends State<SettingsPage> {
                     child: OutlinedButton.icon(
                       onPressed: () => _showTransitionPicker(context),
                       icon: const Icon(Icons.animation, size: 18),
-                      label: Text(
-                        _transitionLabels[_transitionType] ?? "默认",
-                      ),
+                      label: Text(_transitionLabels[_transitionType] ?? "默认"),
                       style: OutlinedButton.styleFrom(
                         foregroundColor: MiuiTheme.primaryColor,
                         side: const BorderSide(color: MiuiTheme.primaryColor),
@@ -296,7 +319,10 @@ class _SettingsPageState extends State<SettingsPage> {
                   const SizedBox(height: 2),
                   Text(
                     "选择默认色彩、预设颜色或从壁纸提取主题色",
-                    style: TextStyle(fontSize: 12, color: MiuiTheme.textSecondary),
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: MiuiTheme.textSecondary,
+                    ),
                   ),
                   const SizedBox(height: 12),
                   // Mode toggle: default / preset / wallpaper
@@ -325,7 +351,9 @@ class _SettingsPageState extends State<SettingsPage> {
                               color: color,
                               shape: BoxShape.circle,
                               border: Border.all(
-                                color: isSelected ? Colors.white : Colors.transparent,
+                                color: isSelected
+                                    ? Colors.white
+                                    : Colors.transparent,
                                 width: 3,
                               ),
                               boxShadow: isSelected
@@ -339,7 +367,11 @@ class _SettingsPageState extends State<SettingsPage> {
                                   : null,
                             ),
                             child: isSelected
-                                ? const Icon(Icons.check, color: Colors.white, size: 20)
+                                ? const Icon(
+                                    Icons.check,
+                                    color: Colors.white,
+                                    size: 20,
+                                  )
                                 : null,
                           ),
                         );
@@ -359,10 +391,14 @@ class _SettingsPageState extends State<SettingsPage> {
                                 ? () => _extractFromWallpaper(wallpaperPath)
                                 : null,
                             icon: const Icon(Icons.palette, size: 18),
-                            label: Text(wallpaperPath != null ? "从壁纸提取主题色" : "请先设置自定义壁纸"),
+                            label: Text(
+                              wallpaperPath != null ? "从壁纸提取主题色" : "请先设置自定义壁纸",
+                            ),
                             style: OutlinedButton.styleFrom(
                               foregroundColor: MiuiTheme.primaryColor,
-                              side: const BorderSide(color: MiuiTheme.primaryColor),
+                              side: const BorderSide(
+                                color: MiuiTheme.primaryColor,
+                              ),
                               shape: RoundedRectangleBorder(
                                 borderRadius: BorderRadius.circular(12),
                               ),
@@ -372,7 +408,8 @@ class _SettingsPageState extends State<SettingsPage> {
                         );
                       },
                     ),
-                    if (_colorSchemeMode == "wallpaper" && _seedColorValue != MiuiTheme.primaryColor) ...[
+                    if (_colorSchemeMode == "wallpaper" &&
+                        _seedColorValue != MiuiTheme.primaryColor) ...[
                       const SizedBox(height: 8),
                       Row(
                         children: [
@@ -420,7 +457,10 @@ class _SettingsPageState extends State<SettingsPage> {
                   const SizedBox(height: 2),
                   Text(
                     "国内直连备用域名时速度极慢。调小此值可让卡住的图片尽早报错；调大此值适合下载高清原图。",
-                    style: TextStyle(fontSize: 12, color: MiuiTheme.textSecondary),
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: MiuiTheme.textSecondary,
+                    ),
                   ),
                   const SizedBox(height: 8),
                   Slider(
@@ -431,10 +471,8 @@ class _SettingsPageState extends State<SettingsPage> {
                     activeColor: MiuiTheme.primaryColor,
                     label: "${_imageTimeout.toInt()} 秒",
                     onChanged: (v) => setState(() => _imageTimeout = v),
-                    onChangeEnd: (v) => _saveIntSetting(
-                      'image_timeout_seconds',
-                      v.toInt(),
-                    ),
+                    onChangeEnd: (v) =>
+                        _saveIntSetting('image_timeout_seconds', v.toInt()),
                   ),
                   Center(
                     child: Text(
@@ -518,14 +556,46 @@ class _SettingsPageState extends State<SettingsPage> {
                     Expanded(
                       child: Text(
                         "更改以上设置需彻底关闭并重新打开 App 才会生效。",
-                        style: TextStyle(
-                          color: MiuiTheme.orange,
-                          fontSize: 12,
-                        ),
+                        style: TextStyle(color: MiuiTheme.orange, fontSize: 12),
                       ),
                     ),
                   ],
                 ),
+              ),
+              const SizedBox(height: 40),
+
+              // ============ 开发测试区 ============
+              _buildSectionHeader("开发测试"),
+              const SizedBox(height: 10),
+              _buildSettingCard(
+                children: [
+                  _buildSettingTitle("API 发帖测试 (fid=111 测试区)"),
+                  const SizedBox(height: 2),
+                  Text(
+                    "点击后自动获取 formhash 并向测试区发一条帖子，用于验证 API 发帖是否可用。",
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: MiuiTheme.textSecondary,
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  SizedBox(
+                    width: double.infinity,
+                    child: OutlinedButton.icon(
+                      onPressed: _testNewThread,
+                      icon: const Icon(Icons.send, size: 18),
+                      label: Text("发送测试帖"),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: MiuiTheme.orange,
+                        side: const BorderSide(color: MiuiTheme.orange),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                      ),
+                    ),
+                  ),
+                ],
               ),
               const SizedBox(height: 40),
             ],
@@ -556,7 +626,10 @@ class _SettingsPageState extends State<SettingsPage> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     const Padding(
-                      padding: EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+                      padding: EdgeInsets.symmetric(
+                        horizontal: 20,
+                        vertical: 8,
+                      ),
                       child: Text(
                         "选择页面切换动画",
                         style: TextStyle(
@@ -567,61 +640,72 @@ class _SettingsPageState extends State<SettingsPage> {
                     ),
                     const Divider(),
                     ..._transitionLabels.entries.map((entry) {
-                  final bool isSelected = _transitionType == entry.key;
-                  return ListTile(
-                    leading: Container(
-                      width: 36,
-                      height: 36,
-                      decoration: BoxDecoration(
-                        color: isSelected
-                            ? MiuiTheme.primaryColor.withOpacity(0.1)
-                            : Colors.transparent,
-                        borderRadius: BorderRadius.circular(10),
-                      ),
-                      child: Icon(
-                        _iconForTransition(entry.key),
-                        color: isSelected ? MiuiTheme.primaryColor : Colors.grey,
-                        size: 20,
-                      ),
-                    ),
-                    title: Text(
-                      entry.value,
-                      style: TextStyle(
-                        fontWeight: isSelected ? FontWeight.w600 : FontWeight.normal,
-                        color: isSelected
-                            ? MiuiTheme.primaryColor
-                            : Theme.of(context).colorScheme.onSurface,
-                      ),
-                    ),
-                    trailing: isSelected
-                        ? const Icon(Icons.check_circle, color: MiuiTheme.primaryColor, size: 20)
-                        : null,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    onTap: () async {
-                      setState(() => _transitionType = entry.key);
-                      transitionAnimationType.value = entry.key;
-                      final prefs = await SharedPreferences.getInstance();
-                      await prefs.setString('transition_animation_type', entry.key);
-                      if (ctx.mounted) Navigator.pop(ctx);
-                      if (mounted) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(
-                            content: Text("已切换为: ${entry.value}"),
-                            behavior: SnackBarBehavior.floating,
+                      final bool isSelected = _transitionType == entry.key;
+                      return ListTile(
+                        leading: Container(
+                          width: 36,
+                          height: 36,
+                          decoration: BoxDecoration(
+                            color: isSelected
+                                ? MiuiTheme.primaryColor.withOpacity(0.1)
+                                : Colors.transparent,
+                            borderRadius: BorderRadius.circular(10),
                           ),
-                        );
-                      }
-                    },
-                  );
-                }),
-              ],
+                          child: Icon(
+                            _iconForTransition(entry.key),
+                            color: isSelected
+                                ? MiuiTheme.primaryColor
+                                : Colors.grey,
+                            size: 20,
+                          ),
+                        ),
+                        title: Text(
+                          entry.value,
+                          style: TextStyle(
+                            fontWeight: isSelected
+                                ? FontWeight.w600
+                                : FontWeight.normal,
+                            color: isSelected
+                                ? MiuiTheme.primaryColor
+                                : Theme.of(context).colorScheme.onSurface,
+                          ),
+                        ),
+                        trailing: isSelected
+                            ? const Icon(
+                                Icons.check_circle,
+                                color: MiuiTheme.primaryColor,
+                                size: 20,
+                              )
+                            : null,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        onTap: () async {
+                          setState(() => _transitionType = entry.key);
+                          transitionAnimationType.value = entry.key;
+                          final prefs = await SharedPreferences.getInstance();
+                          await prefs.setString(
+                            'transition_animation_type',
+                            entry.key,
+                          );
+                          if (ctx.mounted) Navigator.pop(ctx);
+                          if (mounted) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: Text("已切换为: ${entry.value}"),
+                                behavior: SnackBarBehavior.floating,
+                              ),
+                            );
+                          }
+                        },
+                      );
+                    }),
+                  ],
+                ),
+              ),
             ),
           ),
-        ),
-      ),
-    );
+        );
       },
     );
   }

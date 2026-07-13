@@ -10,7 +10,6 @@ import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:file_picker/file_picker.dart';
 import 'login_page.dart'; // kUserAgent
-
 class NewThreadPage extends StatefulWidget {
   final String fid;
   final String baseUrl;
@@ -90,7 +89,9 @@ class _NewThreadPageState extends State<NewThreadPage> {
   void _initWebView() {
     _webController = WebViewController()
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
-      ..setUserAgent(kUserAgent)
+      ..setUserAgent(
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      )
       ..addJavaScriptChannel(
         'PostChannel',
         onMessageReceived: (m) => _handleJsMessage(m.message),

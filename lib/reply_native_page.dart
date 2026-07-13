@@ -92,7 +92,9 @@ class _ReplyNativePageState extends State<ReplyNativePage> {
   void _initWebView() {
     _webController = WebViewController()
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
-      ..setUserAgent(kUserAgent)
+      ..setUserAgent(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+          )
       ..addJavaScriptChannel(
         'ReplyChannel',
         onMessageReceived: (m) => _handleJsMessage(m.message),

@@ -26,7 +26,7 @@
 
 | 首页大厅 | 小说模式 | 图片预览 | 个人中心 |
 |:---:|:---:|:---:|:---:|
-| <img src="picture/home.jpg" width="200"/> | <img src="picture/novel.jpg" width="200"/> | <img src="picture/image.png" width="200"/> | <img src="picture/profile.png" width="200"/> |
+| <img src="picture/home.jpg" width="200"/> | <img src="picture/novel.jpg" width="200"/> | <img src="picture/image.png" width="200"/> | <img src="picture/profile.jpg" width="200"/> |
 
 ## 📥 下载安装 / Installation
 

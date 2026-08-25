@@ -13,6 +13,14 @@ analyzer:
   errors:
     deprecated_member_use: ignore
     undefined_lint: ignore
+  exclude:
+    - build/**
+    - android/**
+    - ios/**
+    - web/**
+    - windows/**
+    - macos/**
+    - linux/**
 
 linter:
   # The lint rules applied to this project can be customized in the

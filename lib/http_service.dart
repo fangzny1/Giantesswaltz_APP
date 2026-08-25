@@ -44,6 +44,10 @@ class HttpService {
         },
         followRedirects: false,
         validateStatus: (status) => status != null && status < 500,
+        // 【修复】续命请求必须带超时上限，否则切换线路/网络黑障时
+        // 会无限等待，导致首页"一直加载、强力重试也没用"
+        connectTimeout: const Duration(seconds: 12),
+        receiveTimeout: const Duration(seconds: 12),
       ),
     );
 
@@ -73,6 +77,8 @@ class HttpService {
   }) async {
     int maxRetries = 3;
     int currentTry = 0;
+    // 【新增】本次调用内只对 to_login 自动续命一次（切线路后旧域名 Cookie 会先被判失效）
+    bool toLoginHealed = false;
 
     // --- 【 Hosts 模式逻辑 】 ---
     String targetUrl = urlOrPath;
@@ -121,6 +127,17 @@ class HttpService {
           _saveCookies(response.headers['set-cookie']);
           await reviveSession();
           await Future.delayed(Duration(milliseconds: 1000 * currentTry));
+          continue;
+        }
+
+        // 【新增】登录失效(to_login)自愈：切线路后旧域名 Cookie 被新域名判失效，
+        // 这里续命一次再重试；若续命后仍失效，则照常返回原响应，让页面弹"重新登录"。
+        if (isApi && !toLoginHealed && data.contains('to_login')) {
+          toLoginHealed = true;
+          print("💩 [HttpService] API 返回登录失效(to_login)，续命后重试一次...");
+          _saveCookies(response.headers['set-cookie']);
+          await reviveSession();
+          await Future.delayed(const Duration(milliseconds: 1200));
           continue;
         }
 

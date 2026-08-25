@@ -71,6 +71,7 @@ dependencies:
   # rules and activating additional ones.
   flutter_lints: ^6.0.0
   flutter_cache_manager_dio: ^4.0.0
+  liquid_glass_renderer: ^0.2.0-dev.4 # 液态玻璃效果（非默认，设置里开启）
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec

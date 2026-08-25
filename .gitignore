@@ -36,8 +36,7 @@
 **/android/gradlew
 **/android/gradlew.bat
 **/android/local.properties
-**/android/key.jks
-**/android/key.properties
+# 注：Release 签名密钥 (gw_release.jks / key.properties) 为保持各机器签名一致，有意入库，不再忽略。
 
 # iOS related
 **/ios/.generated/

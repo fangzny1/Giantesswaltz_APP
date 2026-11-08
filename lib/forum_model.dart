@@ -9,7 +9,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter_cache_manager_dio/flutter_cache_manager_dio.dart';
 
 const String kAppVersion = "v3.0.0";
-const String kUpdateUrl = "https://fangzny-myupdate-gw-app.hf.space/update";
+const String kUpdateUrl = "https://mnski-myupdate-gw-app.hf.space/update"; // HF 用户名改为 mnski 后的直链
 
 // 1. 全局缓存管理器（改为 late 动态初始化）
 late CacheManager globalImageCache;

@@ -7,6 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'forum_model.dart';
 import 'thread_detail_page.dart';
+import 'friend_list_page.dart';
 import 'login_page.dart';
 import 'http_service.dart'; // 引入 HttpService
 import 'main.dart'; // 引入全局变量
@@ -474,6 +475,21 @@ class _UserDetailPageState extends State<UserDetailPage> {
                           ? Colors.transparent
                           : null,
                       actions: [
+                        IconButton(
+                          icon: const Icon(Icons.group_outlined),
+                          tooltip: "好友",
+                          onPressed: () {
+                            final uid = _userProfile?.uid ?? widget.uid;
+                            if (uid != null && uid.isNotEmpty) {
+                              Navigator.push(
+                                context,
+                                MaterialPageRoute(
+                                  builder: (c) => FriendListPage(uid: uid),
+                                ),
+                              );
+                            }
+                          },
+                        ),
                         Padding(
                           padding: const EdgeInsets.all(12.0),
                           child: CircleAvatar(

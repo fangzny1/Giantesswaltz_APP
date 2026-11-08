@@ -2,11 +2,9 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:webview_flutter/webview_flutter.dart';
 import 'package:html/parser.dart' as html_parser;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:cached_network_image/cached_network_image.dart';
-import 'dart:convert';
 import 'forum_model.dart';
 import 'thread_detail_page.dart';
 import 'user_detail_page.dart';
@@ -640,9 +638,8 @@ class _SearchPageState extends State<SearchPage> {
         return Card(
           margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
           color: wallpaperPath != null
-              ? Theme.of(
-                  context,
-                ).colorScheme.surfaceContainerHighest.withOpacity(forumCardOpacity.value)
+              ? Theme.of(context).colorScheme.surfaceContainerHighest
+                    .withOpacity(forumCardOpacity.value)
               : null,
           elevation: 0,
           child: ListTile(

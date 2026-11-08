@@ -39,7 +39,7 @@ dependencies:
   dio_cookie_manager: ^3.0.0
   cookie_jar: ^4.0.0
   shared_preferences: ^2.2.0
-  html: ^0.15.6
+  html: ^0.15.6 # flutter_html 已移除，无人再依赖 html 内部 API，可正常升级
   flutter_widget_from_html: ^0.10.0
   url_launcher: ^6.2.0
   flutter_launcher_icons: ^0.13.1
@@ -54,7 +54,6 @@ dependencies:
   file_picker: ^10.3.7
   flutter_image_compress: ^2.3.0  
   path_provider: ^2.0.0
-  flutter_html: ^3.0.0-beta.2
   printing: ^5.11.0 # 用于调用系统打印/保存PDF
   pdf: ^3.10.0      # 配合 printing 使用
   app_links: ^6.3.2 # 现代且稳定的深层链接库
@@ -72,6 +71,8 @@ dependencies:
   flutter_lints: ^6.0.0
   flutter_cache_manager_dio: ^4.0.0
   liquid_glass_renderer: ^0.2.0-dev.4 # 液态玻璃效果（非默认，设置里开启）
+  archive: ^3.6.1 # 离线数据备份导出/导入 ZIP
+  flutter_html: ^3.0.0
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec

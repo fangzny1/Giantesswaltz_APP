@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:dio/dio.dart';
@@ -18,7 +19,6 @@ import 'package:flutter_cache_manager/flutter_cache_manager.dart';
 import 'package:scroll_to_index/scroll_to_index.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 import 'general_webview_page.dart';
-import 'package:flutter_html/flutter_html.dart';
 import 'package:html/dom.dart' as html_dom; // 保持这个，用于类型
 import 'login_page.dart';
 import 'user_detail_page.dart';
@@ -26,7 +26,10 @@ import 'forum_model.dart';
 import 'http_service.dart';
 import 'reply_native_page.dart';
 import 'image_preview_page.dart';
+import 'global_cache_widget_factory.dart';
+import 'thread_watch_store.dart';
 import 'offline_manager.dart';
+import 'offline_media.dart';
 import 'package:share_plus/share_plus.dart';
 
 // ==========================================
@@ -105,6 +108,7 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
   bool get isDark => Theme.of(context).brightness == Brightness.dark;
   bool _hasPerformedInitialJump = false;
   double _lineHeight = 1.4; // 默认行高从 1.8 调小到 1.4
+  bool _readerExtendStatusBar = false; // 【新增】内容是否延伸到状态栏（默认关，避免顶部黑块）
   List<PostItem> _posts = [];
   bool _isLoading = true;
   bool _isLoadingMore = false;
@@ -220,6 +224,7 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
 
   @override
   void dispose() {
+    _floorScanTrailing?.cancel();
     cookieVersion.removeListener(_onCookieVersionChanged);
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     _scrollController.dispose();
@@ -311,7 +316,15 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
         }
       }
     } finally {
-      if (mounted) setState(() => _isLoading = false);
+      // 【修复】无论走哪条提前返回路径（登录失效/空数据/解析失败），
+      // 都必须释放分页锁，否则"加载更多/加载上一页"会永久卡死。
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+          _isLoadingMore = false;
+          _isLoadingPrev = false;
+        });
+      }
     }
   }
 
@@ -325,6 +338,10 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
     // 重新读取本地 Cookie 到内存
     await _loadLocalCookie();
   }
+
+  /// 楼层号排序键（"12楼" -> 12），用于同页替换后恢复楼层顺序
+  int _floorSortKey(PostItem p) =>
+      int.tryParse(p.floor.replaceAll(RegExp(r'[^0-9]'), '')) ?? 0;
 
   void _processApiResponse(dynamic data, int reqPage) {
     if (data == null || data['Variables'] == null) return;
@@ -514,12 +531,32 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
               .toList();
           _posts.insertAll(0, toInsert);
           _minPage = reqPage;
+        } else {
+          // 【修复】情况 D: 同页刷新（发帖后刷新、临时缓存后网络响应到达）
+          // 或非相邻页。原先这种情况会把新响应静默丢弃。
+          // 用最新响应该页的旧楼层，再按 页码+楼层号 恢复顺序。
+          _posts.removeWhere((old) => old.page == reqPage);
+          _posts.addAll(newPosts);
+          _posts.sort((a, b) {
+            final byPage = a.page.compareTo(b.page);
+            if (byPage != 0) return byPage;
+            final byFloor = _floorSortKey(a).compareTo(_floorSortKey(b));
+            if (byFloor != 0) return byFloor;
+            return a.pid.compareTo(b.pid);
+          });
+          if (reqPage < _minPage) _minPage = reqPage;
+          if (reqPage > _maxPage) _maxPage = reqPage;
         }
         // 【核心修复】：如果有还没执行的定位指令，等列表渲染完（100ms）后飞过去
         if (_pendingFloorJump != null) {
           Future.delayed(const Duration(milliseconds: 100), () {
             _doPreciseScroll(_pendingFloorJump!, fraction: _internalFraction);
           });
+        }
+        // 【修复】外部带目标进入（离线全文搜索/深链）时自动定位到目标楼层
+        if (widget.initialTargetPid != null ||
+            widget.initialTargetFloor != null) {
+          Future.delayed(const Duration(milliseconds: 100), _scrollToTargetFloor);
         }
       });
     }
@@ -687,6 +724,7 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
                           // 右侧属性值 (支持解析 HTML 链接)
                           Expanded(
                             child: HtmlWidget(
+                              factoryBuilder: GlobalCacheWidgetFactory.new,
                               item['value'] ?? "",
                               textStyle: TextStyle(
                                 fontSize: 13,
@@ -783,6 +821,7 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
 
         // 2. 行高也独立读取
         _lineHeight = prefs.getDouble('reader_line_height') ?? 1.4;
+        _readerExtendStatusBar = prefs.getBool('reader_extend_status_bar') ?? false;
 
         // 3. 背景色单独判断
         int? colorVal = prefs.getInt('reader_bg_color');
@@ -1424,6 +1463,7 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
                       controller: scrollController,
                       padding: const EdgeInsets.all(16),
                       child: HtmlWidget(
+                        factoryBuilder: GlobalCacheWidgetFactory.new,
                         post.contentHtml.replaceAll(
                           RegExp(r'<img[^>]*>', caseSensitive: false),
                           '',
@@ -1537,7 +1577,25 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
                       await prefs.setBool('no_image_mode', val);
                     },
                   ),
-                  // 【新增】无图模式开关
+                  // 【新增】纯净模式顶栏沉浸开关
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text(
+                      "沉浸顶栏（内容延伸到状态栏）",
+                      style: TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                    subtitle: const Text(
+                      "关闭后正文从状态栏下方开始，避免顶部黑块",
+                      style: TextStyle(fontSize: 11, color: Colors.grey),
+                    ),
+                    value: _readerExtendStatusBar,
+                    onChanged: (val) async {
+                      setSheetState(() => _readerExtendStatusBar = val);
+                      setState(() => _readerExtendStatusBar = val);
+                      final prefs = await SharedPreferences.getInstance();
+                      await prefs.setBool('reader_extend_status_bar', val);
+                    },
+                  ),
                   const Divider(height: 20),
 
                   // ====== 【新增：沉浸画廊模式入口】 ======
@@ -1550,8 +1608,10 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
                         borderRadius: BorderRadius.circular(8),
                       ),
                       child: Icon(
-                        Icons.collections,
-                        color: Theme.of(context).colorScheme.primary,
+                        // 【修复】实心图标 + primary 蓝在白天模式的 primaryContainer（浅蓝）
+                        // 上糊成一块，改用描边图标 + 容器对比色，任何主题都清晰
+                        Icons.collections_outlined,
+                        color: Theme.of(context).colorScheme.onPrimaryContainer,
                       ),
                     ),
                     title: const Text(
@@ -1700,6 +1760,26 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
   }
 
   // 【核心黑科技】：完全脱离高度计算，只扫描屏幕内渲染的楼层
+  // 【性能】楼层扫描节流：滚动时最多每 100ms 扫描一次，尾部补扫保证最终位置准确
+  DateTime _lastFloorScan = DateTime.fromMillisecondsSinceEpoch(0);
+  Timer? _floorScanTrailing;
+
+  void _scheduleFloorScan() {
+    const interval = Duration(milliseconds: 100);
+    if (DateTime.now().difference(_lastFloorScan) >= interval) {
+      _floorScanTrailing?.cancel();
+      _floorScanTrailing = null;
+      _lastFloorScan = DateTime.now();
+      _updateCurrentFloorValue();
+    } else {
+      _floorScanTrailing ??= Timer(interval, () {
+        _floorScanTrailing = null;
+        _lastFloorScan = DateTime.now();
+        if (mounted) _updateCurrentFloorValue();
+      });
+    }
+  }
+
   void _updateCurrentFloorValue() {
     // 如果正在拖动侧边条、正在加载、或者控制器还没准备好，不执行扫描
     if (!_scrollController.hasClients ||
@@ -1769,7 +1849,7 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
     return Scaffold(
       backgroundColor: bgColor,
       // 【核心修复】纯净模式下，让内容延伸到状态栏后面，解决顶部大白条问题
-      extendBodyBehindAppBar: _isReaderMode,
+      extendBodyBehindAppBar: _isReaderMode && _readerExtendStatusBar,
       // 防止键盘弹出挤压布局
       resizeToAvoidBottomInset: false,
 
@@ -1791,7 +1871,7 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
           // --- 【新增】实时更新进度条值的逻辑 ---
           // 当用户停止滚动或者正在滚动时，计算当前大概在第几楼
           if (notification is ScrollUpdateNotification) {
-            _updateCurrentFloorValue();
+            _scheduleFloorScan();
           }
           return true;
         },
@@ -1799,7 +1879,7 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
           onNotification: (notification) {
             // 【新增】：当屏幕正常滑动时，启动扫描仪
             if (!_isScrubbingScroll) {
-              _updateCurrentFloorValue();
+              _scheduleFloorScan();
             }
             return false; // 继续向上传递事件
           },
@@ -2057,6 +2137,21 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
         ),
       ),
     );
+  }
+
+  /// 从超级阅读的截断处无缝继续：回到普通阅读并定位到指定楼层
+  void _continueReadingFrom(int floor) {
+    final int jumpToPage = ((floor - 1) / _ppp).floor() + 1;
+    setState(() => _pendingFloorJump = floor);
+    if (jumpToPage >= _minPage && jumpToPage <= _maxPage) {
+      _doPreciseScroll(floor);
+    } else {
+      setState(() {
+        _posts = [];
+        _isLoading = true;
+      });
+      _loadPage(jumpToPage, resetScroll: true);
+    }
   }
 
   void _doPreciseScroll(int floorNumber, {double fraction = 0.0}) async {
@@ -2387,6 +2482,8 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
 
     // 2. 显示进度弹窗
     int successCount = 0;
+    int imgDone = 0;
+    int imgTotal = 0;
     bool isCancelled = false;
 
     await showDialog(
@@ -2406,6 +2503,14 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
                     });
                   }
                 },
+                onImageProgress: (total, done) {
+                  if (context.mounted) {
+                    setDialogState(() {
+                      imgTotal += total;
+                      imgDone += done;
+                    });
+                  }
+                },
                 onFinished: () {
                   if (context.mounted) Navigator.pop(context); // 下载完自动关闭
                 },
@@ -2421,9 +2526,9 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
                   const SizedBox(height: 15),
                   Text("正在下载: 第 $successCount / $_totalPages 页"),
                   const SizedBox(height: 5),
-                  const Text(
-                    "只保存文字数据，不包含图片",
-                    style: TextStyle(fontSize: 12, color: Colors.grey),
+                  Text(
+                    "文字与图片一并缓存（图片 $imgDone / $imgTotal 张）",
+                    style: const TextStyle(fontSize: 12, color: Colors.grey),
                   ),
                 ],
               ),
@@ -2450,7 +2555,11 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
         ).showSnackBar(const SnackBar(content: Text("下载已取消")));
       } else {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text("✅ 成功离线 $successCount / $_totalPages 页")),
+          SnackBar(
+            content: Text(
+              "✅ 成功离线 $successCount / $_totalPages 页，图片 $imgDone / $imgTotal 张",
+            ),
+          ),
         );
       }
     }
@@ -2459,6 +2568,7 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
   // 内部下载循环逻辑
   void _startBatchDownload({
     required Function(int) onProgress,
+    required Function(int, int) onImageProgress,
     required Function() onFinished,
   }) async {
     final offlineMgr = OfflineManager();
@@ -2496,6 +2606,10 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
           authorId: _landlordUid ?? "",
           jsonContent: responseBody,
         );
+
+        // 【新增】图片一并缓存进磁盘，离线阅读可见图
+        final imgResult = await prefetchOfflineImages(responseBody);
+        onImageProgress(imgResult.total, imgResult.done);
 
         // 回调进度
         onProgress(i);
@@ -2573,7 +2687,10 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
                   authorId: _landlordUid ?? "",
                   jsonContent: _currentRawJson!,
                 );
-                if (mounted)
+                // 【新增】单页保存同样补图
+              await prefetchOfflineImages(_currentRawJson ?? '');
+
+              if (mounted)
                   ScaffoldMessenger.of(
                     context,
                   ).showSnackBar(const SnackBar(content: Text("✅ 已保存到离线列表")));
@@ -2602,6 +2719,22 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
             onTap: _handleFavorite,
           ),
           const SizedBox(height: 12),
+          _buildFabItem(
+            icon: Icons.notifications_active_outlined,
+            label: "追更",
+            onTap: () async {
+              _toggleFab();
+              final added = await ThreadWatchStore.toggle(
+                  widget.tid, _displaySubject);
+              if (mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                    content: Text(added
+                        ? "✅ 已追更，帖子有新楼层会出现在「追更订阅」"
+                        : "已取消追更")));
+              }
+            },
+          ),
+          const SizedBox(height: 12),
           if (!_isNovelMode) ...[
             _buildFabItem(
               icon: _isReaderMode ? Icons.view_list : Icons.article,
@@ -2622,7 +2755,12 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
                   builder: (c) =>
                       UltraReaderPage(tid: widget.tid, title: _displaySubject),
                 ),
-              );
+              ).then((result) {
+                // 超级阅读在打印页截断处选择"继续阅读"时，回来定位到下一楼
+                if (result is int && result > 0) {
+                  _continueReadingFrom(result);
+                }
+              });
             },
           ),
 
@@ -3162,6 +3300,7 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
       SliverPadding(
         padding: const EdgeInsets.symmetric(horizontal: 16),
         sliver: HtmlWidget(
+          factoryBuilder: GlobalCacheWidgetFactory.new,
           finalHtml,
           key: ValueKey(isDark),
           renderMode: RenderMode.sliverList,
@@ -3699,6 +3838,7 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
                   ),
 
                 HtmlWidget(
+                  factoryBuilder: GlobalCacheWidgetFactory.new,
                   finalHtml,
                   key: ValueKey(isDark),
                   //后面考虑要不要删吧
@@ -4084,6 +4224,7 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
             ),
             const SizedBox(height: 10),
             HtmlWidget(
+              factoryBuilder: GlobalCacheWidgetFactory.new,
               finalHtml,
               key: ValueKey(isDark),
               textStyle: TextStyle(

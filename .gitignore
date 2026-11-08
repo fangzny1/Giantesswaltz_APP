@@ -48,5 +48,6 @@
 **/ios/Runner/GeneratedPluginRegistrant.*
 **/ios/Pods/
 *.apk
+DEVELOPMENT.md
 *.html
 *_files/

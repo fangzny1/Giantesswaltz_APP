@@ -3,18 +3,22 @@ import 'dart:io';
 
 import 'package:flutter_cache_manager/flutter_cache_manager.dart';
 import 'package:flutter/foundation.dart';
-import 'package:flutter_cache_manager/src/web/file_service.dart';
-import 'package:http/http.dart' as http;
 import 'package:dio/dio.dart';
 import 'package:native_dio_adapter/native_dio_adapter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter_cache_manager_dio/flutter_cache_manager_dio.dart';
 
-const String kAppVersion = "v2.1.0";
+const String kAppVersion = "v3.0.0";
 const String kUpdateUrl = "https://fangzny-myupdate-gw-app.hf.space/update";
 
 // 1. 全局缓存管理器（改为 late 动态初始化）
 late CacheManager globalImageCache;
+
+/// 带图片缩放支持的缓存管理器：CachedNetworkImage 的 maxWidth/maxHeight
+/// 只有在 ImageCacheManager 上才生效（普通 CacheManager 会触发断言并忽略缩放）。
+class GnImageCacheManager extends CacheManager with ImageCacheManager {
+  GnImageCacheManager(super.config);
+}
 
 // 【优化】解除图片龟速限制，大幅提升多图加载速度
 class PoliteFileService extends HttpFileService {
@@ -284,7 +288,7 @@ Future<void> initGlobalImageCache() async {
     acceleratedDio.httpClientAdapter = NativeAdapter();
   }
 
-  globalImageCache = CacheManager(
+  globalImageCache = GnImageCacheManager(
     Config(
       'gn_forum_imageCache_v5', // 升级到 v5 抛弃之前的旧账
       stalePeriod: Duration(days: staleDays),

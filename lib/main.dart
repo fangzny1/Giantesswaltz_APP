@@ -7,7 +7,11 @@ import 'package:giantesswaltz_app/notification_page.dart';
 import 'package:giantesswaltz_app/offline_list_page.dart';
 import 'package:giantesswaltz_app/settings_page.dart';
 import 'package:giantesswaltz_app/new_thread_page.dart';
+import 'package:giantesswaltz_app/discovery_page.dart';
+import 'package:giantesswaltz_app/forum_extras_api.dart';
+import 'package:giantesswaltz_app/friend_list_page.dart';
 import 'package:giantesswaltz_app/thread_detail_page.dart';
+import 'package:giantesswaltz_app/watchlist_page.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -72,33 +76,32 @@ bool _isTabletMode(BuildContext context) {
   return size.width > 600 && orientation == Orientation.landscape;
 }
 
-// 【核心修复】左侧点击 (板块/菜单)。返回 push 的结果 Future（平板下为右侧面板的）
-Future<dynamic>? openOnTablet(BuildContext context, Widget page) {
+// 【核心修复】左侧点击 (板块/菜单)
+void openOnTablet(BuildContext context, Widget page) {
   if (_isTabletMode(context)) {
     tabletRightRootPage.value = page;
     if (tabletNavigatorKey.currentState != null) {
-      return tabletNavigatorKey.currentState!.pushAndRemoveUntil(
+      tabletNavigatorKey.currentState!.pushAndRemoveUntil(
         _buildTransitionRoute(page),
         (route) => false,
       );
     }
   } else {
-    return Navigator.push(context, _buildTransitionRoute(page));
+    Navigator.push(context, _buildTransitionRoute(page));
   }
-  return null;
 }
 
-// 2. 右侧点击 (帖子详情/全站热点)。手机全屏 push；平板压入右侧面板（不整屏盖住双栏）
-Future<dynamic>? adaptivePush(BuildContext context, Widget page) {
+// 2. 右侧点击 (帖子详情/全站热点)
+void adaptivePush(BuildContext context, Widget page) {
   final route = _buildTransitionRoute(page);
   if (_isTabletMode(context)) {
     if (tabletNavigatorKey.currentState != null) {
-      return tabletNavigatorKey.currentState!.push(route);
+      tabletNavigatorKey.currentState!.push(route);
     } else {
-      return openOnTablet(context, page);
+      openOnTablet(context, page);
     }
   } else {
-    return Navigator.push(context, route);
+    Navigator.push(context, route);
   }
 }
 
@@ -917,7 +920,7 @@ class _MainScreenState extends State<MainScreen> {
                                           });
                                         }
                                       },
-                                      destinations: const [
+                                      destinations: [
                                         NavigationDestination(
                                           icon: Icon(Icons.home_outlined),
                                           selectedIcon: Icon(Icons.home),
@@ -933,8 +936,10 @@ class _MainScreenState extends State<MainScreen> {
                                           label: '搜索',
                                         ),
                                         NavigationDestination(
-                                          icon: Icon(Icons.person_outline),
-                                          selectedIcon: Icon(Icons.person),
+                                          icon: const NoticeBadge(
+                                              child: Icon(Icons.person_outline)),
+                                          selectedIcon: const NoticeBadge(
+                                              child: Icon(Icons.person)),
                                           label: '我的',
                                         ),
                                       ],
@@ -1117,11 +1122,6 @@ class _ForumHomePageState extends State<ForumHomePage> {
   WebViewController? _hiddenController;
   Timer? _timeoutTimer;
   bool _apiHttpFallbackTried = false;
-  // 【新增】加载在途闸门：同一时间只允许一个 _fetchData，防并发叠加请求
-  // （否则切换线路/登录返回瞬间会多个流程同时跑并抢着合并 Cookie → 登录态疯狂失效）
-  bool _fetchInFlight = false;
-  // 【新增】登录失效提示防刷屏：一次失效只提示一次，数据有效后复位
-  bool _reloginPromptShown = false;
   int _totalNotices = 0; // 总提醒数
 
   // 1. 增加一个状态变量
@@ -1150,27 +1150,13 @@ class _ForumHomePageState extends State<ForumHomePage> {
 
   void _forceRetry() {
     print("💪 用户手动触发强力加载");
-    _fetchInFlight = false; // 让强力重试总能立刻生效（哪怕旧流程还在跑）
     _fetchData();
   }
 
   // 【修复点】这就是之前报错缺失的方法，现在补上了
   void refreshData() {
     if (!mounted) return;
-    // 普通刷新遵守在途闸门（并发调用会被去重，防止 Cookie 竞态风暴）
-    if (_fetchInFlight) {
-      print("🔄 收到外部刷新请求，但已有加载在途，忽略本次...");
-      return;
-    }
     print("🔄 收到外部刷新请求...");
-    _fetchData();
-  }
-
-  // 【新增】强刷新：无视在途闸门，用于切线路 / 手动救急这类"必须重来"的场景
-  void forceRefresh() {
-    if (!mounted) return;
-    _fetchInFlight = false;
-    print("🔄 收到强刷请求，先让旧流程让位并重启加载...");
     _fetchData();
   }
 
@@ -1295,15 +1281,6 @@ class _ForumHomePageState extends State<ForumHomePage> {
   void _fetchData() async {
     if (!mounted) return;
 
-    // 【去重闸门】同一时间只允许一个加载流程。切换线路/登录返回瞬间会并发触发
-    // 多个 _fetchData，大家一起抢着合并 Cookie，导致 auth/saltkey 互相覆盖、
-    // 登录态疯狂失效。这里直接掐掉叠加请求。
-    if (_fetchInFlight) {
-      print("🚫 [_fetchData] 已有加载在途，忽略本次并发请求");
-      return;
-    }
-    _fetchInFlight = true;
-
     // 1. 初始化状态
     _timeoutTimer?.cancel();
     ScaffoldMessenger.of(context).hideCurrentSnackBar();
@@ -1329,7 +1306,6 @@ class _ForumHomePageState extends State<ForumHomePage> {
     // 如果它返回 true，说明数据已经加载好了，直接结束
     bool dioSuccess = await _fetchDataByDio();
     if (dioSuccess) {
-      _fetchInFlight = false;
       if (mounted) setState(() => _isLoading = false);
       return;
     }
@@ -1354,7 +1330,7 @@ class _ForumHomePageState extends State<ForumHomePage> {
         HttpService().getHtml(
           '${currentBaseUrl.value}api/mobile/index.php?version=4&module=hotthread',
         ),
-      ]).timeout(const Duration(seconds: 25));
+      ]);
 
       // 解析板块
       String homeJson = results[0];
@@ -1368,6 +1344,7 @@ class _ForumHomePageState extends State<ForumHomePage> {
       if (hotData['Variables']?['data'] != null) {
         setState(() {
           _hotThreads = hotData['Variables']['data'];
+        globalNoticeCounts.value = parseNotice(hotData['Variables']);
         });
       }
 
@@ -1382,7 +1359,6 @@ class _ForumHomePageState extends State<ForumHomePage> {
         ).showSnackBar(const SnackBar(content: Text("加载失败，请检查网络或重新登录")));
       }
     } finally {
-      _fetchInFlight = false;
       if (mounted) setState(() => _isLoading = false);
     }
   }
@@ -1702,6 +1678,7 @@ class _ForumHomePageState extends State<ForumHomePage> {
             setState(() {
               _hotThreads = finalList;
             });
+            globalNoticeCounts.value = parseNotice(data['Variables']);
             print("🔥 [HotThread] 网络刷新成功，缓存已更新");
           }
         }
@@ -1754,28 +1731,6 @@ class _ForumHomePageState extends State<ForumHomePage> {
     }
   }
 
-  // 【新增】登录失效提示（防刷屏）：一键跳登录页。适应"切换线路后旧会话
-  // 在新线路失效"的场景——明确告诉用户该重新登录，而不是看着它默默转圈/暂无内容
-  void _maybePromptRelogin() {
-    if (_reloginPromptShown || !mounted) return;
-    _reloginPromptShown = true;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: const Text("登录态已失效，请重新登录"),
-        duration: const Duration(seconds: 4),
-        action: SnackBarAction(
-          label: "重新登录",
-          onPressed: () {
-            Navigator.push(
-              context,
-              MaterialPageRoute(builder: (_) => const LoginPage()),
-            );
-          },
-        ),
-      ),
-    );
-  }
-
   // 抽取出的数据处理逻辑
   void _processData(dynamic data) async {
     // 处理 to_login 错误 (Cookie 失效)
@@ -1783,8 +1738,6 @@ class _ForumHomePageState extends State<ForumHomePage> {
         (data['Message'] != null &&
             data['Message']['messageval'] == 'to_login')) {
       print("⚠️ 检测到 Cookie 失效或需要登录");
-      // 【新增】明确提示用户重新登录，而不是默默失败（防刷屏）
-      _maybePromptRelogin();
       if (mounted) {
         _timeoutTimer?.cancel();
         setState(() {
@@ -1900,7 +1853,6 @@ class _ForumHomePageState extends State<ForumHomePage> {
     if (mounted) {
       _timeoutTimer?.cancel();
       ScaffoldMessenger.of(context).hideCurrentSnackBar();
-      _reloginPromptShown = false; // 数据有效：复位登录失效提示
       setState(() {
         _categories = tempCats;
         _forumsMap = tempForumMap;
@@ -2106,7 +2058,12 @@ class _ForumHomePageState extends State<ForumHomePage> {
                           ),
                           onPressed: () {
                             setState(() => _newNoticeCount = 0);
-                            adaptivePush(context, const NotificationPage());
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (c) => const NotificationPage(),
+                              ),
+                            ).then((_) => refreshNoticeCounts());
                           },
                         ),
                       ),
@@ -2177,10 +2134,12 @@ class _ForumHomePageState extends State<ForumHomePage> {
                         ),
                         const SizedBox(height: 20),
                         ElevatedButton.icon(
-                          onPressed: () async {
-                            await adaptivePush(context, const LoginPage());
-                            _fetchData();
-                          },
+                          onPressed: () => Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (c) => const LoginPage(),
+                            ),
+                          ).then((_) => _fetchData()),
                           icon: const Icon(Icons.login),
                           label: const Text("立即重新登录"),
                         ),
@@ -2268,6 +2227,12 @@ class _ForumHomePageState extends State<ForumHomePage> {
                         fontWeight: FontWeight.w700,
                         color: Theme.of(context).colorScheme.onSurface,
                       ),
+                    ),
+                    const Spacer(),
+                    TextButton(
+                      onPressed: () =>
+                          openOnTablet(context, const DiscoveryPage()),
+                      child: const Text("更多 ›"),
                     ),
                   ],
                 ),
@@ -2492,15 +2457,17 @@ class _ForumHomePageState extends State<ForumHomePage> {
     );
   }
 
-  // 【新增】跳转到我的帖子 (平板模式压入右侧面板，不整屏盖住双栏)
+  // 【新增】跳转到我的帖子
   void _jumpToMyPosts(BuildContext context) {
     if (currentUserUid.value.isNotEmpty && currentUserUid.value != "0") {
-      adaptivePush(
+      Navigator.push(
         context,
-        UserDetailPage(
-          uid: currentUserUid.value,
-          username: currentUser.value,
-          avatarUrl: currentUserAvatar.value,
+        MaterialPageRoute(
+          builder: (context) => UserDetailPage(
+            uid: currentUserUid.value,
+            username: currentUser.value,
+            avatarUrl: currentUserAvatar.value,
+          ),
         ),
       );
     } else {
@@ -3029,15 +2996,17 @@ class _ProfilePageState extends State<ProfilePage> {
     }
   }
 
-  // 【新增】跳转到我的帖子 (平板模式压入右侧面板，不整屏盖住双栏)
+  // 【新增】跳转到我的帖子
   void _jumpToMyPosts(BuildContext context) {
     if (currentUserUid.value.isNotEmpty && currentUserUid.value != "0") {
-      adaptivePush(
+      Navigator.push(
         context,
-        UserDetailPage(
-          uid: currentUserUid.value,
-          username: currentUser.value,
-          avatarUrl: currentUserAvatar.value,
+        MaterialPageRoute(
+          builder: (context) => UserDetailPage(
+            uid: currentUserUid.value,
+            username: currentUser.value,
+            avatarUrl: currentUserAvatar.value,
+          ),
         ),
       );
     } else {
@@ -3141,10 +3110,6 @@ class _ProfilePageState extends State<ProfilePage> {
   }
 
   void _showDomainSwitchDialog(BuildContext context) {
-    // 【修复】这里必须用最外层的 ProfilePage context（不会随弹窗关闭而失活）。
-    // 之前把 Radio 弹窗自己的 ctx 传进 _changeDomain，弹窗关闭后 ctx 已 deactivated，
-    // 收尾时再 Navigator.pop 会抛 FlutterError，导致转圈弹窗永远退不出来。
-    final pageContext = context;
     showDialog(
       context: context,
       builder: (ctx) {
@@ -3159,12 +3124,9 @@ class _ProfilePageState extends State<ProfilePage> {
                 leading: Radio<String>(
                   value: 'https://giantesswaltz.org/',
                   groupValue: currentBaseUrl.value,
-                  onChanged: (v) => _changeDomain(pageContext, v!),
+                  onChanged: (v) => _changeDomain(ctx, v!),
                 ),
-                onTap: () => _changeDomain(
-                  pageContext,
-                  'https://giantesswaltz.org/',
-                ),
+                onTap: () => _changeDomain(ctx, 'https://giantesswaltz.org/'),
               ),
               ListTile(
                 title: const Text("备用线路 (gtswaltz.org)"),
@@ -3172,12 +3134,9 @@ class _ProfilePageState extends State<ProfilePage> {
                 leading: Radio<String>(
                   value: 'https://gtswaltz.org/',
                   groupValue: currentBaseUrl.value,
-                  onChanged: (v) => _changeDomain(pageContext, v!),
+                  onChanged: (v) => _changeDomain(ctx, v!),
                 ),
-                onTap: () => _changeDomain(
-                  pageContext,
-                  'https://gtswaltz.org/',
-                ),
+                onTap: () => _changeDomain(ctx, 'https://gtswaltz.org/'),
               ),
             ],
           ),
@@ -3187,12 +3146,12 @@ class _ProfilePageState extends State<ProfilePage> {
   }
 
   void _changeDomain(BuildContext context, String newUrl) async {
-    // 1. 关闭选择列表弹窗 (context 现在是 ProfilePage 的，不会失活)
+    // 1. 关闭选择列表弹窗
     Navigator.pop(context);
 
     if (newUrl == currentBaseUrl.value) return;
 
-    // 记录加载弹窗是否还开着，防止并发/重复关闭
+    // 记录加载弹窗是否还开着，防止物理返回键导致的错乱
     bool dialogIsOpen = true;
 
     // 2. 显示加载弹窗
@@ -3206,22 +3165,11 @@ class _ProfilePageState extends State<ProfilePage> {
       ),
     ).then((_) => dialogIsOpen = false);
 
-    // 3. 统一关闭加载弹窗：用 rootNavigator + canPop 兜底，保证任何路径都能关掉、
-    //    且不会误关到页面本身（杜绝"转圈退不出来"）
-    void closeLoadingDialog() {
-      if (!dialogIsOpen) return;
-      final navigator = Navigator.of(context, rootNavigator: true);
-      if (mounted && navigator.canPop()) {
-        dialogIsOpen = false;
-        navigator.pop();
-      }
-    }
-
     try {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString('selected_base_url', newUrl);
 
-      // 4. 【核心修复2】：为文件清理加上超时枷锁
+      // 3. 【核心修复2】：为文件清理加上超时枷锁
       // 就算底层文件被系统锁死了，2秒后也会自动掐断跳过，绝不无限转圈
       try {
         await DefaultCacheManager().emptyCache().timeout(
@@ -3235,24 +3183,11 @@ class _ProfilePageState extends State<ProfilePage> {
       PaintingBinding.instance.imageCache.clear();
       PaintingBinding.instance.imageCache.clearLiveImages();
 
-      // 【切换线路专用】清 WebView 缓存（否则隐藏 WebView 预热会沿用旧域名缓存，
-      // 造成"怎么都上不去、重启才好的现象"）+ 清旧文本缓存，避免残留旧域名数据
-      try {
-        await WebViewController().clearCache().timeout(
-          const Duration(seconds: 2),
-        );
-      } catch (e) {
-        debugPrint("⚠️ WebView 缓存清理跳过: $e");
-      }
-      await prefs.remove('home_page_cache');
-      await prefs.remove('hot_threads_cache_v2');
-      await prefs.remove('hot_thread_cache');
-
-      // 5. 更新基础域名
+      // 4. 更新基础域名
       currentBaseUrl.value = newUrl;
       HttpService().updateBaseUrl(newUrl);
 
-      // 6. 【核心修复3】：为 WebView Cookie 迁移加上总超时限制
+      // 5. 【核心修复3】：为 WebView Cookie 迁移加上总超时限制
       // 各种国产魔改系统的 WebView 最容易在这里死锁挂起
       try {
         String savedCookie = prefs.getString('saved_cookie_string') ?? "";
@@ -3287,18 +3222,17 @@ class _ProfilePageState extends State<ProfilePage> {
         debugPrint("⚠️ WebView Cookie 同步超时被跳过: $e");
       }
 
-      // 7. 安全关闭弹窗并刷新（切线路必须强刷让旧流程让位，否则新域名会被旧的加载卡住）
-      closeLoadingDialog();
-      if (mounted) {
+      // 6. 安全关闭弹窗并刷新
+      if (mounted && dialogIsOpen) {
+        Navigator.pop(context); // 关闭转圈弹窗
         ScaffoldMessenger.of(
           context,
         ).showSnackBar(const SnackBar(content: Text("线路已切换，缓存已重置")));
+        forumKey.currentState?.refreshData();
       }
-      forumKey.currentState?.forceRefresh();
     } catch (e) {
-      // 8. 无论成功失败，转圈弹窗都必须能关掉
-      closeLoadingDialog();
-      if (mounted) {
+      if (mounted && dialogIsOpen) {
+        Navigator.pop(context);
         ScaffoldMessenger.of(
           context,
         ).showSnackBar(const SnackBar(content: Text("切换线路失败，请重试")));
@@ -3600,6 +3534,24 @@ class _ProfilePageState extends State<ProfilePage> {
                 onTap: () => openOnTablet(context, const HistoryPage()),
               ),
               _buildMenuItem(
+                icon: Icons.notifications_active_outlined,
+                title: "追更订阅",
+                subtitle: "关注的帖子更新提醒",
+                onTap: () => openOnTablet(context, const WatchListPage()),
+              ),
+              _buildMenuItem(
+                icon: Icons.explore_outlined,
+                title: "发现",
+                subtitle: "热帖榜 · 新帖导读",
+                onTap: () => openOnTablet(context, const DiscoveryPage()),
+              ),
+              _buildMenuItem(
+                icon: Icons.group_outlined,
+                title: "好友",
+                subtitle: "我的好友与关注",
+                onTap: () => openOnTablet(context, const FriendListPage(uid: '')),
+              ),
+              _buildMenuItem(
                 icon: Icons.settings_ethernet,
                 title: "加载模式设置",
                 subtitleWidget: ValueListenableBuilder<bool>(
@@ -3706,7 +3658,12 @@ class _ProfilePageState extends State<ProfilePage> {
                   title: "登录账号",
                   iconColor: MiuiTheme.primaryColor,
                   onTap: () async {
-                    final result = await adaptivePush(context, const LoginPage());
+                    final result = await Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (context) => const LoginPage(),
+                      ),
+                    );
                     if (result == true) {
                       if (mounted) {
                         ScaffoldMessenger.of(

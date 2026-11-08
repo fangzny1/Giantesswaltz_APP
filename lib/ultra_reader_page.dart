@@ -1,13 +1,14 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
-import 'package:html/parser.dart' as html_parser;
 import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter_widget_from_html/flutter_widget_from_html.dart';
 import 'dart:convert';
 import 'forum_model.dart';
-import 'main.dart';
+import 'global_cache_widget_factory.dart';
+import 'printable_parser.dart';
 
 // 阅读器主题配置
 class ReaderTheme {
@@ -23,18 +24,6 @@ class ReaderTheme {
     required this.text,
     required this.surface,
     required this.primary,
-  });
-}
-
-class ReaderChapter {
-  final String author;
-  final String time;
-  final String content;
-
-  ReaderChapter({
-    required this.author,
-    required this.time,
-    required this.content,
   });
 }
 
@@ -61,6 +50,8 @@ class _UltraReaderPageState extends State<UltraReaderPage>
   List<ReaderChapter> _chapters = [];
   bool _isLoading = true;
   String _errorMsg = "";
+  bool _truncated = false; // 打印页被截断：超出单页上限且无法继续加载
+  bool _isFetchingMore = false; // 正在加载后续打印页
 
   double _fontSize = 18.0;
   int _currentThemeIndex = 1;
@@ -101,6 +92,9 @@ class _UltraReaderPageState extends State<UltraReaderPage>
   ];
 
   double _initialScrollOffset = 0.0;
+
+  // 【性能】章节渲染结果缓存（只保留最近 3 个变体，避免长帖内存膨胀）
+  final Map<String, String> _renderedHtmlCache = {};
 
   @override
   void initState() {
@@ -152,104 +146,142 @@ class _UltraReaderPageState extends State<UltraReaderPage>
   Future<void> _fetchContent() async {
     final prefs = await SharedPreferences.getInstance();
     String cookie = prefs.getString('saved_cookie_string') ?? "";
-    final String url =
-        "${currentBaseUrl.value}forum.php?mod=viewthread&action=printable&tid=${widget.tid}";
+
+    final List<ReaderChapter> loaded = [];
+    final Set<String> seenSignatures = {};
+    bool truncated = false;
+    bool maybeMore = false;
+    int page = 1;
 
     try {
-      var response = await Dio().get(
-        url,
-        options: Options(
-          headers: {
-            'User-Agent':
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            'Cookie': cookie,
-          },
+      // 【核心】打印页单页最多 kPrintableFloorLimit 楼，按 page 参数续载，
+      // 服务器忽略 page 参数时依靠签名去重安全停下，并给出截断提示。
+      while (page <= kMaxPrintablePages) {
+        final String url =
+            "${currentBaseUrl.value}forum.php?mod=viewthread&action=printable&tid=${widget.tid}&page=$page";
+
+        if (mounted && page > 1) setState(() => _isFetchingMore = true);
+
+        var response = await Dio().get(
+          url,
+          options: Options(
+            headers: {
+              'User-Agent':
+                  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+              'Cookie': cookie,
+            },
+          ),
+        );
+
+        // 【性能优化】HTML 解析放到后台 isolate，超长帖不再卡住 UI 主线程
+        final result =
+            await compute(parsePrintableHtml, response.data.toString());
+        final fresh = result.chapters
+            .where((c) => seenSignatures.add(c.signature))
+            .toList();
+
+        if (fresh.isEmpty) {
+          // 没有新楼层：到底了，或服务器重复返回同一页。
+          // 只有上一页刚好打满单页上限时，才认为后面还有内容被截断。
+          truncated = maybeMore;
+          break;
+        }
+
+        loaded.addAll(fresh);
+        maybeMore = result.chapters.length == kPrintableFloorLimit;
+
+        // 边加载边显示：第一页解析完即可开始阅读
+        if (mounted) {
+          setState(() {
+            _chapters = List.of(loaded);
+            _isLoading = false;
+            _isFetchingMore = result.hitPageLimit;
+            if (_currentIndex >= _chapters.length) {
+              _currentIndex = _chapters.isEmpty ? 0 : _chapters.length - 1;
+            }
+          });
+        }
+
+        // 未打满单页 → 已到底；一次给了超过单页的量 → 服务器未截断，也到底
+        if (!result.hitPageLimit ||
+            result.chapters.length > kPrintableFloorLimit) {
+          break;
+        }
+        page++;
+      }
+
+      if (page > kMaxPrintablePages) truncated = maybeMore;
+    } catch (e) {
+      if (loaded.isEmpty) {
+        if (mounted) {
+          setState(() {
+            _isLoading = false;
+            _errorMsg = "加载失败: $e";
+          });
+        }
+        return;
+      }
+      // 已有内容时出错：保留已加载楼层，并明确提示可能被截断
+      truncated = true;
+    }
+
+    if (!mounted) return;
+
+    setState(() {
+      _chapters = List.of(loaded);
+      _isLoading = false;
+      _isFetchingMore = false;
+      _truncated = truncated;
+      // 恢复书签指定的楼层（此时列表才完整）
+      if (widget.initialIndex >= 0 && widget.initialIndex < _chapters.length) {
+        _currentIndex = widget.initialIndex;
+      } else if (_currentIndex >= _chapters.length) {
+        _currentIndex = _chapters.isEmpty ? 0 : _chapters.length - 1;
+      }
+    });
+
+    if (_chapters.isEmpty) {
+      setState(() {
+        _errorMsg = "没有解析到内容：可能需要登录，或该帖没有可打印的内容";
+      });
+      return;
+    }
+
+    if (truncated) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            "⚠️ 论坛打印页最多提供前 ${_chapters.length} 楼（论坛接口限制），后续楼层可点底部按钮回普通阅读继续",
+          ),
         ),
       );
-      _parseHtml(response.data.toString());
-    } catch (e) {
-      if (mounted)
-        setState(() {
-          _isLoading = false;
-          _errorMsg = "加载失败: $e";
-        });
-    }
-  }
-
-  void _parseHtml(String html) {
-    String cleanHtml = html.replaceAll(
-      RegExp(r'<script[^>]*>[\s\S]*?<\/script>'),
-      '',
-    );
-    var body = html_parser.parse(cleanHtml).body;
-    if (body == null) return;
-
-    List<ReaderChapter> temp = [];
-    List<String> blocks = body.innerHtml.split(RegExp(r'<hr[^>]*>'));
-
-    for (int i = 0; i < blocks.length; i++) {
-      String trimmedBlock = blocks[i].trim();
-      if (trimmedBlock.isEmpty || trimmedBlock.contains("Powered by Discuz"))
-        continue;
-
-      if (i == 0 && !trimmedBlock.contains("作者:")) continue;
-
-      String author =
-          RegExp(
-            r'作者:\s*<\/b>\s*([^&<]+)',
-          ).firstMatch(trimmedBlock)?.group(1)?.trim() ??
-          "匿名";
-      String time =
-          RegExp(
-            r'时间:\s*<\/b>\s*([^<]+)',
-          ).firstMatch(trimmedBlock)?.group(1)?.trim() ??
-          "";
-
-      String content = trimmedBlock;
-      Match? timeMatch = RegExp(
-        r'时间:\s*<\/b>.*?(<br\s*\/?>)',
-      ).firstMatch(content);
-      if (timeMatch != null) {
-        content = content.substring(timeMatch.end).trim();
-      }
-
-      content = content
-          .replaceFirst(RegExp(r'^<b>标题:\s*<\/b>.*?(<br\s*\/?>)'), '')
-          .trim();
-      content = content.replaceFirst(RegExp(r'^(<br\s*\/?>)+'), '').trim();
-
-      temp.add(ReaderChapter(author: author, time: time, content: content));
     }
 
-    if (mounted) {
-      setState(() {
-        _chapters = temp;
-        if (_currentIndex >= temp.length) _currentIndex = 0;
-        _isLoading = false;
-      });
-      // 恢复书签保存的阅读进度
-      if (_initialScrollOffset > 0) {
-        _retryRestoreScroll(retries: 0);
-      }
+    // 恢复书签保存的阅读进度
+    if (_initialScrollOffset > 0) {
+      _retryRestoreScroll(retries: 0);
     }
   }
 
   /// 递归等待 HtmlWidget 懒加载完成后恢复滚动位置
-  void _retryRestoreScroll({int retries = 0}) {
-    const int maxRetries = 50;
+  void _retryRestoreScroll({int retries = 0, double lastExtent = 0}) {
+    const int maxRetries = 100;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
-      if (_scrollController.hasClients &&
-          _scrollController.position.maxScrollExtent > 0) {
-        double target = _initialScrollOffset.clamp(
-          0.0,
-          _scrollController.position.maxScrollExtent,
-        );
-        _scrollController.jumpTo(target);
-        if (mounted) setState(() {});
-      } else if (retries < maxRetries) {
-        // 内容还没渲染完，下一帧再试
-        _retryRestoreScroll(retries: retries + 1);
+      if (_scrollController.hasClients) {
+        final currentExtent = _scrollController.position.maxScrollExtent;
+        // 等待 maxScrollExtent 稳定（连续两帧相同）且 > 0 才跳转
+        if (currentExtent > 0 && currentExtent == lastExtent) {
+          double target = _initialScrollOffset.clamp(0.0, currentExtent);
+          _scrollController.jumpTo(target);
+          if (mounted) setState(() {});
+          return;
+        }
+      }
+      if (retries < maxRetries) {
+        _retryRestoreScroll(retries: retries + 1, lastExtent: _scrollController.hasClients
+            ? _scrollController.position.maxScrollExtent
+            : 0);
       }
     });
   }
@@ -384,6 +416,78 @@ class _UltraReaderPageState extends State<UltraReaderPage>
     );
   }
 
+  /// 超出打印页上限时的常驻提示条：明确告诉用户内容被截断、去哪看完整版
+  /// 生成最终渲染 HTML：主题色修正 + 全局字号样式（正则清洗已在解析阶段完成）
+  String _renderChapterHtml(ReaderChapter ch) {
+    String html = ch.content;
+    if (_currentThemeIndex == 2) {
+      html = html
+          .replaceAll('color:rgb(0, 0, 0)', 'color:#BBBBBB')
+          .replaceAll('color: rgb(0, 0, 0)', 'color:#BBBBBB')
+          .replaceAll('color:#000000', 'color:#BBBBBB')
+          .replaceAll('color="#000000"', 'color="#BBBBBB"')
+          .replaceAll('color="#000"', 'color="#BBBBBB"');
+    }
+    return '<style>*{font-size:${_fontSize}px!important;line-height:1.8!important}</style>$html';
+  }
+
+  Widget _buildTruncationBanner(ReaderTheme theme) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: theme.primary.withOpacity(0.12),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: theme.primary.withOpacity(0.4)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(Icons.warning_amber_rounded, color: theme.primary),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              "论坛打印页最多提供前 $kPrintableFloorLimit 楼内容（论坛接口的限制），本帖后续楼层没有包含。点「继续」可回普通阅读从第 ${_chapters.length + 1} 楼无缝接上。",
+              style: TextStyle(color: theme.text, fontSize: 13, height: 1.5),
+            ),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, _chapters.length + 1),
+            child: Text("继续", style: TextStyle(color: theme.primary)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: Text("返回", style: TextStyle(color: theme.primary)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 续载后续打印页时的轻量进度提示
+  Widget _buildFetchingMore(ReaderTheme theme) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: Row(
+        children: [
+          SizedBox(
+            width: 12,
+            height: 12,
+            child: CircularProgressIndicator(
+              strokeWidth: 2,
+              color: theme.primary,
+            ),
+          ),
+          const SizedBox(width: 8),
+          Text(
+            "正在加载后续楼层…（已加载 ${_chapters.length} 楼）",
+            style: TextStyle(color: theme.text.withOpacity(0.6), fontSize: 12),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildTopAppBar(ReaderTheme theme) {
     return SlideTransition(
       position: Tween<Offset>(
@@ -436,26 +540,12 @@ class _UltraReaderPageState extends State<UltraReaderPage>
 
     final ch = _chapters[_currentIndex];
 
-    String finalHtml = ch.content;
-    if (_currentThemeIndex == 2) {
-      finalHtml = finalHtml
-          .replaceAll('color:rgb(0, 0, 0)', 'color:#BBBBBB')
-          .replaceAll('color: rgb(0, 0, 0)', 'color:#BBBBBB')
-          .replaceAll('color:#000000', 'color:#BBBBBB')
-          .replaceAll('color="#000000"', 'color="#BBBBBB"')
-          .replaceAll('color="#000"', 'color="#BBBBBB"');
-    }
-    // 1. 强力拆除 dzcode 表格包装，解决横向超出屏幕问题
-    finalHtml = finalHtml.replaceAll(RegExp(r'<table[^>]*>'), '');
-    finalHtml = finalHtml.replaceAll(RegExp(r'<tr[^>]*>'), '');
-    finalHtml = finalHtml.replaceAll(RegExp(r'<td[^>]*>'), '');
-    finalHtml = finalHtml.replaceAll('</table>', '');
-    finalHtml = finalHtml.replaceAll('</tr>', '');
-    finalHtml = finalHtml.replaceAll('</td>', '');
-    // 2. 剥离 <font size="..."> 属性，保留标签本身使 textStyle 全局生效
-    finalHtml = finalHtml.replaceAll(RegExp(r'<font[^>]*size\s*=\s*"\d+"[^>]*>'), '<font>');
-    finalHtml = finalHtml.replaceAll(RegExp(r"<font[^>]*size\s*=\s*'\d+'[^>]*>"), '<font>');
-    finalHtml = finalHtml.replaceAll(RegExp(r'<font[^>]*size\s*=\s*\d+[^>]*>'), '<font>');
+    // 【性能】渲染结果按 (章节,主题,字号) 缓存；表格/字体清洗已在解析阶段完成
+    final cacheKey = '$_currentIndex|$_currentThemeIndex|$_fontSize';
+    final String finalHtml = _renderedHtmlCache.putIfAbsent(cacheKey, () {
+      if (_renderedHtmlCache.length >= 3) _renderedHtmlCache.clear();
+      return _renderChapterHtml(ch);
+    });
 
     return CustomScrollView(
       controller: _scrollController,
@@ -471,6 +561,8 @@ class _UltraReaderPageState extends State<UltraReaderPage>
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
+                if (_truncated) _buildTruncationBanner(theme),
+                if (_isFetchingMore) _buildFetchingMore(theme),
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
@@ -505,6 +597,7 @@ class _UltraReaderPageState extends State<UltraReaderPage>
         SliverPadding(
           padding: const EdgeInsets.symmetric(horizontal: 16),
           sliver: HtmlWidget(
+            factoryBuilder: GlobalCacheWidgetFactory.new,
             finalHtml,
             renderMode: RenderMode.sliverList, // 开启懒加载，保证滑动不卡顿
             textStyle: TextStyle(
@@ -542,9 +635,28 @@ class _UltraReaderPageState extends State<UltraReaderPage>
                     label: const Text("进入下一楼"),
                     onPressed: () => _goToChapter(_currentIndex + 1),
                   )
-                : Text(
-                    "--- 完 ---",
-                    style: TextStyle(color: theme.text.withOpacity(0.5)),
+                : Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        _truncated
+                            ? "⚠️ 论坛打印页只提供到第 ${_chapters.length} 楼（论坛接口限制）"
+                            : "--- 完 ---",
+                        textAlign: TextAlign.center,
+                        style: TextStyle(color: theme.text.withOpacity(0.5)),
+                      ),
+                      if (_truncated) ...[
+                        const SizedBox(height: 12),
+                        OutlinedButton.icon(
+                          icon: const Icon(Icons.menu_book),
+                          label: Text(
+                            "去普通阅读继续（第 ${_chapters.length + 1} 楼）",
+                          ),
+                          onPressed: () =>
+                              Navigator.pop(context, _chapters.length + 1),
+                        ),
+                      ],
+                    ],
                   ),
           ),
         ),

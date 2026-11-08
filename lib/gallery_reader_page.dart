@@ -12,7 +12,6 @@ import 'package:flutter_cache_manager/flutter_cache_manager.dart';
 
 import 'forum_model.dart';
 import 'login_page.dart';
-import 'main.dart';
 
 class GalleryImageItem {
   final String url;
@@ -313,6 +312,11 @@ class _GalleryReaderPageState extends State<GalleryReaderPage>
                     item.url,
                     headers: _getHeadersForUrl(item.url),
                     cacheManager: globalImageCache,
+                    // 【性能】限制解码宽度为屏幕物理宽 2 倍，翻页内存稳定
+                    maxWidth: (MediaQuery.of(context).size.width *
+                            MediaQuery.of(context).devicePixelRatio *
+                            2)
+                        .round(),
                   ),
                   initialScale: PhotoViewComputedScale.contained,
                   minScale: PhotoViewComputedScale.contained,

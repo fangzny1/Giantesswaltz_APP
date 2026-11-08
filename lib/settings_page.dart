@@ -14,6 +14,7 @@ class SettingsPage extends StatefulWidget {
 
 class _SettingsPageState extends State<SettingsPage> {
   double _imageTimeout = 15.0;
+  bool _liquidGlass = false; // 液态玻璃底栏（非默认，实验性）
   double _cacheMaxObjects = 1000.0;
   double _cacheStaleDays = 7.0;
   double _cardOpacity = 0.7;
@@ -21,7 +22,6 @@ class _SettingsPageState extends State<SettingsPage> {
   String _colorSchemeMode = "default";
   Color _seedColorValue = MiuiTheme.primaryColor;
   bool _isLoading = true;
-  bool _liquidGlass = false; // 液态玻璃底栏（非默认，实验性）
 
   static const Map<String, String> _transitionLabels = {
     "default": "默认",
@@ -54,6 +54,23 @@ class _SettingsPageState extends State<SettingsPage> {
     _loadSettings();
   }
 
+  // 【液态玻璃】开关：实时生效，底层不支持着色器时库会自动回退到近似效果
+  Future<void> _setLiquidGlass(bool val) async {
+    setState(() => _liquidGlass = val);
+    useLiquidGlass.value = val;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('use_liquid_glass', val);
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(val ? "已开启液态玻璃底栏" : "已关闭液态玻璃底栏"),
+          behavior: SnackBarBehavior.floating,
+          duration: const Duration(milliseconds: 800),
+        ),
+      );
+    }
+  }
+
   Future<void> _loadSettings() async {
     final prefs = await SharedPreferences.getInstance();
     setState(() {
@@ -61,12 +78,12 @@ class _SettingsPageState extends State<SettingsPage> {
       _cacheMaxObjects = (prefs.getInt('cache_max_objects') ?? 1000).toDouble();
       _cacheStaleDays = (prefs.getInt('cache_stale_days') ?? 7).toDouble();
       _cardOpacity = prefs.getDouble('forum_card_opacity') ?? 0.7;
+      _liquidGlass = prefs.getBool('use_liquid_glass') ?? false;
       _transitionType =
           prefs.getString('transition_animation_type') ?? "default";
       _colorSchemeMode = prefs.getString('color_scheme_mode') ?? "default";
       final int? seedVal = prefs.getInt('seed_color');
       if (seedVal != null) _seedColorValue = Color(seedVal);
-      _liquidGlass = prefs.getBool('use_liquid_glass') ?? false;
       _isLoading = false;
     });
   }
@@ -191,23 +208,6 @@ class _SettingsPageState extends State<SettingsPage> {
           content: Text("已恢复默认色彩"),
           behavior: SnackBarBehavior.floating,
           duration: Duration(milliseconds: 800),
-        ),
-      );
-    }
-  }
-
-  // 【液态玻璃】开关：实时生效，底层不支持着色器时库会自动回退到近似效果
-  Future<void> _setLiquidGlass(bool val) async {
-    setState(() => _liquidGlass = val);
-    useLiquidGlass.value = val;
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool('use_liquid_glass', val);
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(val ? "已开启液态玻璃底栏" : "已关闭液态玻璃底栏"),
-          behavior: SnackBarBehavior.floating,
-          duration: const Duration(milliseconds: 800),
         ),
       );
     }
@@ -350,6 +350,7 @@ class _SettingsPageState extends State<SettingsPage> {
                   ),
                 ],
               ),
+
               const SizedBox(height: 16),
               _buildSettingCard(
                 children: [

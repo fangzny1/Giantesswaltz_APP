@@ -1,0 +1,89 @@
+
+> Configure project :gradle
+WARNING: Unsupported Kotlin plugin version.
+The `embedded-kotlin` and `kotlin-dsl` plugins rely on features of Kotlin `2.0.21` that might work differently than in the requested version `2.2.20`.
+
+> Task :gradle:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :gradle:compileKotlin UP-TO-DATE
+> Task :gradle:compileJava NO-SOURCE
+> Task :gradle:compileGroovy NO-SOURCE
+> Task :gradle:pluginDescriptors UP-TO-DATE
+> Task :gradle:processResources UP-TO-DATE
+> Task :gradle:classes UP-TO-DATE
+> Task :gradle:jar UP-TO-DATE
+
+> Configure project :receive_sharing_intent
+Warning: The plugin receive_sharing_intent requires Android SDK version 37 or higher.
+For more information about build configuration, see https://flutter.dev/to/review-gradle-config.
+
+> Configure project :webview_flutter_android
+Your project is configured to compile against Android SDK 36, but the following plugin(s) require to be compiled against a higher Android SDK version:
+- receive_sharing_intent compiles against Android SDK 37
+Fix this issue by compiling against the highest Android SDK version (they are backward compatible).
+Add the following to E:\Giantesswaltz_APP-3240b2a62b147840ac46c55c9eb688bd5c12f5ef\android\app\build.gradle.kts:
+
+    android {
+        compileSdk = 37
+        ...
+    }
+WARNING: Your Android app project: app located at: E:\Giantesswaltz_APP-3240b2a62b147840ac46c55c9eb688bd5c12f5ef\android\app\build.gradle.kts
+applies the Kotlin Gradle Plugin, which will cause build failures in future versions of Flutter. 
+Please migrate your app to Built-in Kotlin using this guide: https://docs.flutter.dev/release/breaking-changes/migrate-to-built-in-kotlin/for-app-developers
+
+WARNING: Your app uses the following plugins that apply Kotlin Gradle Plugin (KGP): cronet_http, file_picker, flutter_image_compress_common, package_info_plus, share_plus, wakelock_plus
+Future versions of Flutter will fail to build if your app uses plugins that apply KGP.
+
+Please check the changelogs of these plugins and upgrade to a version that supports Built-in Kotlin.
+If no such version exists, report the issue to the plugin. If necessary, here is a guide on filing 
+an issue against a plugin: https://docs.flutter.dev/release/breaking-changes/migrate-to-built-in-kotlin/for-app-developers#report-incompatible-kotlin-gradle-plugin-usage-to-plugin-authors
+
+If you are a plugin author, please migrate your plugin to Built-in Kotlin using this guide: https://docs.flutter.dev/release/breaking-changes/migrate-to-built-in-kotlin/for-plugin-authors
+
+> Task :jni:preBuild UP-TO-DATE
+> Task :jni:preProfileBuild UP-TO-DATE
+> Task :jni:configureCMakeDebug[arm64-v8a]
+
+> Task :jni:buildCMakeDebug[arm64-v8a] FAILED
+C/C++: ninja: Entering directory `C:\Users\Administrator\AppData\Local\Pub\Cache\hosted\mirrors.tuna.tsinghua.edu.cn%47dart-pub%47\jni-1.1.2\android\.cxx\Debug\22p2x141\arm64-v8a'
+C/C++: cmd.exe /C "cd . && C:\Users\Administrator\AppData\Local\Android\Sdk\ndk\28.2.13676358\toolchains\llvm\prebuilt\windows-x86_64\bin\clang.exe --target=aarch64-none-linux-android21 --sysroot=C:/Users/Administrator/AppData/Local/Android/Sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/windows-x86_64/sysroot -fPIC -g -DANDROID -fdata-sections -ffunction-sections -funwind-tables -fstack-protector-strong -no-canonical-prefixes -D_FORTIFY_SOURCE=2 -Wformat -Werror=format-security  -fno-limit-debug-info  -static-libstdc++ -Wl,--build-id=sha1 -Wl,--no-rosegment -Wl,--no-undefined-version -Wl,--fatal-warnings -Wl,--no-undefined -Qunused-arguments    -Wl,-z,max-page-size=16384 -shared -Wl,-soname,libdartjni.so -o C:\Users\Administrator\AppData\Local\Pub\Cache\hosted\mirrors.tuna.tsinghua.edu.cn%47dart-pub%47\jni-1.1.2\android\build\intermediates\cxx\Debug\22p2x141\obj\arm64-v8a\libdartjni.so CMakeFiles/jni.dir/dartjni.c.o CMakeFiles/jni.dir/third_party/global_jni_env.c.o CMakeFiles/jni.dir/include/dart_api_dl.c.o  -llog  -latomic -lm && cd ."
+C/C++: ld.lld: error: cannot open output file C:\Users\Administrator\AppData\Local\Pub\Cache\hosted\mirrors.tuna.tsinghua.edu.cn%47dart-pub%47\jni-1.1.2\android\build\intermediates\cxx\Debug\22p2x141\obj\arm64-v8a\libdartjni.so: No such file or directory
+C/C++: clang: error: linker command failed with exit code 1 (use -v to see invocation)
+C/C++: ninja: build stopped: subcommand failed.
+
+[Incubating] Problems report is available at: file:///E:/Giantesswaltz_APP-3240b2a62b147840ac46c55c9eb688bd5c12f5ef/build/reports/problems/problems-report.html
+
+FAILURE: Build failed with an exception.
+
+* What went wrong:
+Execution failed for task ':jni:buildCMakeDebug[arm64-v8a]'.
+> com.android.ide.common.process.ProcessException: ninja: Entering directory `C:\Users\Administrator\AppData\Local\Pub\Cache\hosted\mirrors.tuna.tsinghua.edu.cn%47dart-pub%47\jni-1.1.2\android\.cxx\Debug\22p2x141\arm64-v8a'
+  [1/1] Linking C shared library C:\Users\Administrator\AppData\Local\Pub\Cache\hosted\mirrors.tuna.tsinghua.edu.cn%47dart-pub%47\jni-1.1.2\android\build\intermediates\cxx\Debug\22p2x141\obj\arm64-v8a\libdartjni.so
+  FAILED: C:/Users/Administrator/AppData/Local/Pub/Cache/hosted/mirrors.tuna.tsinghua.edu.cn%47dart-pub%47/jni-1.1.2/android/build/intermediates/cxx/Debug/22p2x141/obj/arm64-v8a/libdartjni.so 
+  cmd.exe /C "cd . && C:\Users\Administrator\AppData\Local\Android\Sdk\ndk\28.2.13676358\toolchains\llvm\prebuilt\windows-x86_64\bin\clang.exe --target=aarch64-none-linux-android21 --sysroot=C:/Users/Administrator/AppData/Local/Android/Sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/windows-x86_64/sysroot -fPIC -g -DANDROID -fdata-sections -ffunction-sections -funwind-tables -fstack-protector-strong -no-canonical-prefixes -D_FORTIFY_SOURCE=2 -Wformat -Werror=format-security  -fno-limit-debug-info  -static-libstdc++ -Wl,--build-id=sha1 -Wl,--no-rosegment -Wl,--no-undefined-version -Wl,--fatal-warnings -Wl,--no-undefined -Qunused-arguments    -Wl,-z,max-page-size=16384 -shared -Wl,-soname,libdartjni.so -o C:\Users\Administrator\AppData\Local\Pub\Cache\hosted\mirrors.tuna.tsinghua.edu.cn%47dart-pub%47\jni-1.1.2\android\build\intermediates\cxx\Debug\22p2x141\obj\arm64-v8a\libdartjni.so CMakeFiles/jni.dir/dartjni.c.o CMakeFiles/jni.dir/third_party/global_jni_env.c.o CMakeFiles/jni.dir/include/dart_api_dl.c.o  -llog  -latomic -lm && cd ."
+  ld.lld: error: cannot open output file C:\Users\Administrator\AppData\Local\Pub\Cache\hosted\mirrors.tuna.tsinghua.edu.cn%47dart-pub%47\jni-1.1.2\android\build\intermediates\cxx\Debug\22p2x141\obj\arm64-v8a\libdartjni.so: No such file or directory
+  clang: error: linker command failed with exit code 1 (use -v to see invocation)
+  ninja: build stopped: subcommand failed.
+  
+  C++ build system [build] failed while executing:
+      @echo off
+      "C:\\Users\\Administrator\\AppData\\Local\\Android\\Sdk\\cmake\\3.22.1\\bin\\ninja.exe" ^
+        -C ^
+        "C:\\Users\\Administrator\\AppData\\Local\\Pub\\Cache\\hosted\\mirrors.tuna.tsinghua.edu.cn%%47dart-pub%%47\\jni-1.1.2\\android\\.cxx\\Debug\\22p2x141\\arm64-v8a" ^
+        jni
+    from C:\Users\Administrator\AppData\Local\Pub\Cache\hosted\mirrors.tuna.tsinghua.edu.cn%47dart-pub%47\jni-1.1.2\android
+
+* Try:
+> Run with --stacktrace option to get the stack trace.
+> Run with --info or --debug option to get more log output.
+> Run with --scan to get full insights.
+> Get more help at https://help.gradle.org.
+
+Deprecated Gradle features were used in this build, making it incompatible with Gradle 9.0.
+
+You can use '--warning-mode all' to show the individual deprecation warnings and determine if they come from your own scripts or plugins.
+
+For more on this, please refer to https://docs.gradle.org/8.14/userguide/command_line_interface.html#sec:command_line_warnings in the Gradle documentation.
+
+BUILD FAILED in 4s
+6 actionable tasks: 2 executed, 4 up-to-date
+

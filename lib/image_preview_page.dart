@@ -1,14 +1,11 @@
-import 'dart:typed_data';
 import 'dart:io'; // 用于 File
 import 'package:flutter/material.dart';
 import 'package:giantesswaltz_app/forum_model.dart';
-import 'package:giantesswaltz_app/image_download_service.dart';
 import 'package:photo_view/photo_view.dart';
-import 'package:dio/dio.dart';
 import 'package:gal/gal.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter_cache_manager/flutter_cache_manager.dart';
-import 'main.dart'; // 【引入】访问 currentBaseUrl
+// 【引入】访问 currentBaseUrl
 import 'login_page.dart'; // 【引入】访问 kUserAgent
 
 class ImagePreviewPage extends StatefulWidget {
@@ -144,6 +141,11 @@ class _ImagePreviewPageState extends State<ImagePreviewPage> {
             widget.imageUrl,
             headers: realHeaders,
             cacheManager: widget.cacheManager,
+            // 【性能】限制解码宽度为屏幕物理宽 2 倍，大图不炸内存
+            maxWidth: (MediaQuery.of(context).size.width *
+                    MediaQuery.of(context).devicePixelRatio *
+                    2)
+                .round(),
           ),
           loadingBuilder: (context, event) => Center(
             child: CircularProgressIndicator(

@@ -18,6 +18,9 @@ class OfflineManager {
     return path;
   }
 
+  /// 公开存储目录路径（备份/恢复用）
+  Future<String> getStoragePath() => _getDirPath();
+
   // === 核心功能：保存/更新某一页 ===
   // 逻辑：直接覆盖文件，绝对不会滚雪球
   Future<void> savePage({

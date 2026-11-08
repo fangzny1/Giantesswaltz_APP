@@ -1,7 +1,6 @@
-import 'dart:typed_data'; // 需要引入以支持下面的类型
+// 需要引入以支持下面的类型
 import 'package:dio/dio.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:webview_flutter/webview_flutter.dart';
 import 'forum_model.dart';
 import 'login_page.dart' show kUserAgent;
 

@@ -206,7 +206,7 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
       _isNovelMode = true;
       _isOnlyLandlord = true;
       _isReaderMode = true;
-      SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+      _applyReaderSystemUi();
       if (widget.initialAuthorId != null &&
           widget.initialAuthorId!.isNotEmpty) {
         _landlordUid = widget.initialAuthorId;
@@ -832,7 +832,18 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
               : Colors.black87;
         }
       });
+      // 读完设置立即应用系统栏样式（initState 时尚未读到开关值）
+      _applyReaderSystemUi();
     }
+  }
+
+  /// 系统栏样式统一出口：沉浸顶栏开关 ON→immersiveSticky（收起状态栏、内容全出血），
+  /// OFF（默认）→ edgeToEdge（状态栏常驻，内容由 SafeArea 让位）
+  void _applyReaderSystemUi() {
+    final immersive = _isReaderMode && _readerExtendStatusBar;
+    SystemChrome.setEnabledSystemUIMode(
+      immersive ? SystemUiMode.immersiveSticky : SystemUiMode.edgeToEdge,
+    );
   }
 
   Future<void> _saveSettings(Color color) async {
@@ -1034,12 +1045,12 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
       if (_isNovelMode) {
         _isOnlyLandlord = true;
         _isReaderMode = true;
-        SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+        _applyReaderSystemUi();
         _targetPage = 1;
       } else {
         _isOnlyLandlord = false;
         _isReaderMode = false;
-        SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+        _applyReaderSystemUi();
       }
       _posts.clear();
       _pidKeys.clear();
@@ -1056,13 +1067,13 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
       _isReaderMode = !_isReaderMode;
 
       if (_isReaderMode) {
-        // 进入纯净模式：隐藏状态栏 (全屏)
-        SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+        // 进入纯净模式（是否隐藏状态栏由沉浸顶栏开关决定）
+        _applyReaderSystemUi();
         _isBarsVisible = false;
         _hideController.reverse(); // 隐藏底部栏
       } else {
-        // 退出纯净模式：显示状态栏 (边缘到边缘)
-        SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+        // 退出纯净模式：显示状态栏
+        _applyReaderSystemUi();
         _isBarsVisible = true;
         _hideController.forward(); // 显示底部栏
       }
@@ -1592,6 +1603,7 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
                     onChanged: (val) async {
                       setSheetState(() => _readerExtendStatusBar = val);
                       setState(() => _readerExtendStatusBar = val);
+                      _applyReaderSystemUi(); // 立即生效，不用退出设置
                       final prefs = await SharedPreferences.getInstance();
                       await prefs.setBool('reader_extend_status_bar', val);
                     },
@@ -1848,8 +1860,8 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
 
     return Scaffold(
       backgroundColor: bgColor,
-      // 【核心修复】纯净模式下，让内容延伸到状态栏后面，解决顶部大白条问题
-      extendBodyBehindAppBar: _isReaderMode && _readerExtendStatusBar,
+      // 【修复】本页 Scaffold 无 appBar，extendBodyBehindAppBar 是空操作；
+      // 沉浸与否由 SafeArea（内容让位）+ _applyReaderSystemUi（系统栏模式）共同控制
       // 防止键盘弹出挤压布局
       resizeToAvoidBottomInset: false,
 
@@ -1897,7 +1909,11 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
               });
             },
 
-            child: Stack(
+            child: SafeArea(
+              // 【修复】非沉浸时内容让位到状态栏下方，杜绝文字钻进状态栏/顶部黑块
+              top: !_isReaderMode || !_readerExtendStatusBar,
+              bottom: false,
+              child: Stack(
               children: [
                 CustomScrollView(
                   // 【核心修复1】：当呼出侧边条时，彻底锁死底层滚动，防止手势被抢走！
@@ -2132,6 +2148,7 @@ class _ThreadDetailPageState extends State<ThreadDetailPage>
                     ),
                   ),
               ],
+              ),
             ),
           ),
         ),
